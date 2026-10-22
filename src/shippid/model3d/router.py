@@ -251,7 +251,7 @@ class VoxelGrid:
         self.segs_by_key: dict[str, list[int]] = defaultdict(list)  # terminal key -> its chains' segments
         self.items = _BoxSet()  # inline / hub / isolated bodies: tag = (object id, exempt nodes)
         self.approaches = _BoxSet()  # nozzle approach segments: radius, tag = terminal key
-        # per inflation (5 cm steps): how many segments / bodies cover each cell, kept up to date
+        # per inflation (1 cm steps): how many segments / bodies cover each cell, kept up to date
         self._seg_cov: dict[float, np.ndarray] = {}
         self._item_cov: dict[float, np.ndarray] = {}
 
@@ -304,8 +304,9 @@ class VoxelGrid:
 
     @staticmethod
     def qkey(x: float) -> float:
-        """Inflation rounded up to 5 cm (cache key; never smaller than asked)."""
-        return round(math.ceil(x / 0.05 - 1e-9) * 0.05, 2)
+        """Inflation rounded up to 1 cm (cache key; never smaller than asked, and fine enough that
+        two DN400 pipes still fit in neighbouring 0.5 m cells)."""
+        return round(math.ceil(x / 0.01 - 1e-9) * 0.01, 2)
 
     def _raster(self, arr: np.ndarray, lo: Sequence[float], hi: Sequence[float], v: int = 1) -> None:
         gs = self.cell_slices(lo, hi)
@@ -317,7 +318,7 @@ class VoxelGrid:
         key = self.qkey(extra)
         arr = self._seg_cov.get(key)
         if arr is None:
-            arr = np.zeros(self.shape, dtype=np.int32)
+            arr = np.zeros(self.shape, dtype=np.int16)
             LO, HI, R = self.segs.arrays()
             for i in range(len(R)):
                 self._raster(arr, LO[i] - R[i] - key, HI[i] + R[i] + key)
@@ -329,7 +330,7 @@ class VoxelGrid:
         key = self.qkey(inflate)
         arr = self._item_cov.get(key)
         if arr is None:
-            arr = np.zeros(self.shape, dtype=np.int32)
+            arr = np.zeros(self.shape, dtype=np.int16)
             LO, HI, _ = self.items.arrays()
             for i in range(len(LO)):
                 self._raster(arr, LO[i] - key, HI[i] + key)
@@ -943,7 +944,7 @@ def _obstacles(ctx: _Ctx, sl: tuple[slice, slice, slice], od: float, inflate: fl
         return tuple(loc)  # type: ignore[return-value]
 
     shared: dict[str, np.ndarray] = {}
-    minus = np.zeros(shape, dtype=np.int32)
+    minus = np.zeros(shape, dtype=np.int16)
     if len(g.segs):
         LO, HI, R = g.segs.arrays()
         seen: set[int] = set()
@@ -961,7 +962,7 @@ def _obstacles(ctx: _Ctx, sl: tuple[slice, slice, slice], od: float, inflate: fl
         other = np.zeros(shape, dtype=bool)
     if len(g.items):
         LO, HI, _ = g.items.arrays()
-        iminus = np.zeros(shape, dtype=np.int32)
+        iminus = np.zeros(shape, dtype=np.int16)
         for i, (_, exempt) in enumerate(g.items.tag):
             if exempt & cc.nodes:  # a hub this chain ends at
                 q = local(LO[i] - ikey, HI[i] + ikey)
