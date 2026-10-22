@@ -417,6 +417,53 @@ def point_bbox_dist(x: float, y: float, b: Sequence[float]) -> float:
     return math.hypot(dx, dy)
 
 
+class BoxGrid:
+    """Uniform-grid index of items with bounding boxes (spatial hash, ``cell`` points per cell):
+    :meth:`near` returns the items whose bbox is within ``reach`` of a box, in insertion order,
+    without scanning every item. An item spanning more than :attr:`MAX_CELLS` cells (a hull or
+    package outline) is kept in a short list that every query checks."""
+
+    MAX_CELLS = 256
+
+    def __init__(self, cell: float):
+        self.cell = max(float(cell), 1e-3)
+        self._cells: dict[tuple[int, int], list[int]] = defaultdict(list)
+        self._big: list[int] = []
+        self._items: list = []
+        self._boxes: list[tuple[float, float, float, float]] = []
+
+    def _span(self, b: Sequence[float], pad: float = 0.0) -> tuple[int, int, int, int]:
+        c = self.cell
+        return (int(math.floor((b[0] - pad) / c)), int(math.floor((b[1] - pad) / c)),
+                int(math.floor((b[2] + pad) / c)), int(math.floor((b[3] + pad) / c)))
+
+    def add(self, item, bbox: Sequence[float]) -> None:
+        k = len(self._items)
+        self._items.append(item)
+        self._boxes.append(tuple(bbox))
+        i0, j0, i1, j1 = self._span(bbox)
+        if (i1 - i0 + 1) * (j1 - j0 + 1) > self.MAX_CELLS:
+            self._big.append(k)
+            return
+        for i in range(i0, i1 + 1):
+            for j in range(j0, j1 + 1):
+                self._cells[(i, j)].append(k)
+
+    def near(self, bbox: Sequence[float], reach: float) -> list:
+        i0, j0, i1, j1 = self._span(bbox, reach)
+        found: set[int] = set(self._big)
+        if (i1 - i0 + 1) * (j1 - j0 + 1) > 4 * self.MAX_CELLS:  # a huge query box: test every item
+            found.update(range(len(self._items)))
+        else:
+            for i in range(i0, i1 + 1):
+                for j in range(j0, j1 + 1):
+                    found.update(self._cells.get((i, j), ()))
+        return [self._items[k] for k in sorted(found) if bbox_dist(self._boxes[k], bbox) <= reach]
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+
 def bbox_inside(inner: Sequence[float], outer: Sequence[float], tol: float = 0.0) -> bool:
     return inner[0] >= outer[0] - tol and inner[1] >= outer[1] - tol and inner[2] <= outer[2] + tol and inner[3] <= outer[3] + tol
 
@@ -529,8 +576,26 @@ def find_loose_polygons(prims: list[Prim], ids: Sequence[int], tol: float, max_s
     return out
 
 
-def estimate_unit(prims: list[Prim], ids: Sequence[int], tol: float, default: float = 18.0) -> float:
-    """Typical symbol size (points per symbol unit) from clusters of symbol-only strokes."""
+A0_SHORT_SIDE = 2384.0  # points: pages larger than A0 are (almost always) drawings exported at a scale factor
+
+
+def page_scale(page_size: Optional[tuple[float, float]]) -> float:
+    """Size factor of a page beyond A0 (1.0 up to A0): the stroke-size windows that are absolute
+    for ordinary sheets grow with it (a sheet exported at 5x or 6x of A1 / A2 size)."""
+    if not page_size:
+        return 1.0
+    return max(1.0, min(page_size) / A0_SHORT_SIDE)
+
+
+def estimate_unit(prims: list[Prim], ids: Sequence[int], tol: float, default: Optional[float] = 18.0,
+                  page_size: Optional[tuple[float, float]] = None) -> float:
+    """Typical symbol size (points per symbol unit) from clusters of symbol-only strokes: the median
+    size of the clusters between 5 and 80 points, on a page larger than A0 between 5 and 80 times
+    :func:`page_scale` (``default``, also scaled, with fewer than three clusters)."""
+    s = page_scale(page_size)
+    default = 18.0 * s if default is None else default
+    if page_size is not None and default == 18.0:
+        default = 18.0 * s
     core = [i for i in ids if prims[i].is_core and not prims[i].dashed]
     if not core:
         return default
@@ -543,9 +608,9 @@ def estimate_unit(prims: list[Prim], ids: Sequence[int], tol: float, default: fl
     for members in dsu.groups(core).values():
         bb = bbox_union(prims[m].bbox for m in members)
         size = max(bb[2] - bb[0], bb[3] - bb[1])
-        if all(prims[m].filled for m in members) and size < 6:
+        if all(prims[m].filled for m in members) and size < 6.0 * s:
             continue  # junction dots / arrowheads
-        if 5.0 <= size <= 80.0:
+        if 5.0 * s <= size <= 80.0 * s:
             sizes.append(size)
     if len(sizes) < 3:
         return default

@@ -10,8 +10,18 @@ pipeline; every step keeps the deterministic result and records provenance:
 * ``read_drawing_info`` -- title-block texts (exact PDF text) + a title-block render;
 * ``resolve_texts``   -- tags / line numbers / instrument texts with a missing or
   ambiguous owner, decided from candidate owners and distances;
+* ``resolve_sheet_links`` -- multi-sheet sets: off-page connectors the deterministic
+  linker (:mod:`shippid.analysis.sheets`) left ambiguous, decided among their candidates;
 * ``review``          -- engineering review of an :class:`AnalysisReport` (findings
   with rule references, English + Korean summaries); satisfies ``ReportReviewer``.
+  The request is sized in tokens to the server context (``context_tokens``) and the
+  summaries may not claim compliance while deterministic rule checks fail.
+
+Drawing text is untrusted data: every prompt says so, and model output that could
+change deterministic verdicts is grounded first -- a drawing system is accepted only
+with title-block evidence it cites (or line-number codes / the vector result), the
+vector primary system is never replaced without title-block evidence (a disagreement
+is recorded instead), and title-block fields must be printed in the title block.
 
 Each method returns a new object. Model output is validated against the ids
 of the document (invalid output triggers a repair round inside
@@ -36,7 +46,8 @@ from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, TypeVar
 from pydantic import BaseModel, ConfigDict
 
 from ..catalog import SYSTEM_BY_CODE, SYSTEMS, classify_tag, detect_system, parse_line_number
-from ..llm.base import ImagePart, LLMClient, LLMError, Message
+from ..llm.base import ImagePart, LLMClient, LLMError, Message, schema_for
+from ..llm.budget import context_of, messages_tokens, repair_reserve
 from ..model import (
     ActuatorType,
     AnalysisReport,
@@ -78,6 +89,10 @@ _INSTR_LETTERS = re.compile(r"^[A-Z]{1,5}$")
 _INSTR_NUMBER = re.compile(r"^\d{1,5}[A-Z]?$")
 _INSTR_JOINED = re.compile(r"^([A-Z]{1,5})(\d{1,5}[A-Z]?)$")
 _TAG_KIND_FOR = {Category.VALVE: "valve", Category.EQUIPMENT: "equipment", Category.INSTRUMENT: "instrument"}
+REVIEW_MIN_ANSWER_TOKENS = 2500  # findings + both summaries of a review answer
+REVIEW_THINKING_TOKENS = 1500  # minimum room for thinking before the review JSON
+_INFO_TEXT_FIELDS = ("title", "ship_type", "revision", "sheet", "scale")  # grounded in the title-block texts
+_TOKEN_EDGE = ".,;:()[]{}\"'"
 
 
 # --------------------------------------------------------------------------- output schemas
@@ -140,6 +155,17 @@ class ReviewOut(_Out):
     findings: list[ReviewFinding]
     summary_en: str
     summary_ko: str
+
+
+class SheetLinkDecision(_Out):
+    connector: str
+    reason: str = ""
+    partner: Optional[str] = None
+    confidence: float = 0.5
+
+
+class SheetLinkDecisions(_Out):
+    decisions: list[SheetLinkDecision]
 
 
 # --------------------------------------------------------------------------- helpers
@@ -379,16 +405,18 @@ def _cap_list(items: Sequence[Any], max_items: int) -> list[Any]:
     return items[:max_items] + [f"…(+{len(items) - max_items} more)"]
 
 
-def _scalarize(row: dict[str, Any], max_len: int = 240, min_conf: float = 0.75, max_list: int = 40) -> dict[str, Any]:
+def _scalarize(row: dict[str, Any], max_len: int = 240, min_conf: float = 0.75, max_list: int = 40,
+               keep: Sequence[str] = ()) -> dict[str, Any]:
     """The scalar and list fields of a list row for the review digest.
 
     Joined lists (``"a; b; c"`` and space-separated ``*_ids``) are split back into
     lists; long lists and long free text are cut with an explicit ``…(+n …)``
     marker, never silently (the digest-size guard limits the number of rows).
+    ``keep`` names normally dropped keys to keep (``page`` for multi-sheet sets).
     """
     out: dict[str, Any] = {}
     for k, v in row.items():
-        if v is None or v == "" or v == [] or k in _DIGEST_DROP:
+        if v is None or v == "" or v == [] or (k in _DIGEST_DROP and k not in keep):
             continue
         if k == "confidence" and isinstance(v, (int, float)) and v >= min_conf:
             continue
@@ -429,7 +457,14 @@ class GemmaAnalyzer:
         runner_up_margin: float = RUNNER_UP_MARGIN,
         review_max_chars: int = 60000,
         adopt_min_confidence: float = ADOPT_MIN_CONFIDENCE,
+        context_tokens: Any = "auto",
+        review_max_tokens: Optional[int] = None,
+        sheet_link_batch: int = 30,
     ):
+        """``context_tokens`` is the server context (prompt + max_tokens, vLLM ``--max-model-len``):
+        ``"auto"`` = the client's (``LLMConfig.context_tokens``), else 32768; None = unlimited. The
+        review digest is shrunk and its ``max_tokens`` (``review_max_tokens``, default the client's)
+        capped so the request fits it; ``review_max_chars`` caps the digest size in addition."""
         self.client = client
         self.symbol_batch = max(1, int(symbol_batch))
         self.min_confidence = min_confidence
@@ -439,7 +474,10 @@ class GemmaAnalyzer:
         self.text_batch = max(1, int(text_batch))
         self.concurrency = max(1, int(concurrency))
         self.runner_up_margin = runner_up_margin
-        self.review_max_chars = review_max_chars  # digest budget (~17k tokens) for a 32k-context server
+        self.review_max_chars = review_max_chars  # digest size cap (characters)
+        self.context_tokens = context_of(client) if context_tokens == "auto" else context_tokens
+        self.review_max_tokens = review_max_tokens
+        self.sheet_link_batch = max(1, int(sheet_link_batch))
         # provenance label: output of the test MockBackend must never pass for Gemma output
         self.label = "mock" if client.backend.name == "mock" else "gemma"
 
@@ -448,9 +486,14 @@ class GemmaAnalyzer:
         return self.client.usage.model_copy(deep=True)
 
     # -- bookkeeping -------------------------------------------------------------------
+    def _redact(self, text: Any) -> str:
+        """Defence in depth: backends already keep credentials out of their error texts."""
+        redact = getattr(self.client.backend, "redact", None)
+        return redact(str(text)) if callable(redact) else str(text)
+
     def _error(self, doc_meta: dict[str, Any], step: str, exc: BaseException) -> None:
-        msg = f"{step}: {exc}"
-        log.warning("Gemma %s failed, keeping the deterministic result: %s", step, str(exc)[:300])
+        msg = self._redact(f"{step}: {exc}")
+        log.warning("Gemma %s failed, keeping the deterministic result: %s", step, self._redact(exc)[:300])
         doc_meta.setdefault("llm_errors", []).append(msg[:1000])
 
     def _record_usage(self, doc: PIDDocument, before: LLMUsage) -> None:
@@ -532,6 +575,7 @@ class GemmaAnalyzer:
             entry["tag"] = o.tag
         if isinstance(o.attributes.get("name"), str):
             entry["name"] = o.attributes["name"][:60]
+        entry.update(_extractor_hints(o))
         return entry
 
     def _merge_symbol(self, o: PIDObject, v: SymbolVerdict) -> str:
@@ -666,6 +710,9 @@ class GemmaAnalyzer:
         jobs: list[Callable[[], SymbolBatch]] = []
         batches: list[list[PIDObject]] = []
         nearby = {o.id: self._nearby_texts(out, o) for o in targets}
+        drawing_legend = drawing_legend_digest(out)
+        if drawing_legend:
+            stats["drawing_legend_rows"] = len(drawing_legend.get("rows", []))
         try:
             for page_no in sorted(by_page):
                 objs = by_page[page_no]
@@ -686,7 +733,10 @@ class GemmaAnalyzer:
                                                                f"{labels[0]}-{labels[-1]}"))
                     head = {"system": system, "page": page_no, "count": len(batch),
                             "images": "contact sheet above" if parts else "not available - use the digest"}
-                    parts.append("Drawing: " + prompts.to_json(head) + "\nCandidates:\n" + prompts.to_json(digest)
+                    legend_block = ("Drawing legend (this drawing's own legend; it overrides the built-in legend):\n"
+                                    + prompts.to_json(drawing_legend) + "\n") if drawing_legend else ""
+                    parts.append("Drawing: " + prompts.to_json(head) + "\n" + legend_block + "Candidates:\n"
+                                 + prompts.to_json(digest)
                                  + "\nReturn one item for each id: " + ", ".join(o.id for o in batch) + ".")
                     msgs = [Message("system", sys_prompt), Message("user", parts)]
                     ids = [o.id for o in batch]
@@ -783,14 +833,19 @@ class GemmaAnalyzer:
             return out
         items = [{"id": t.id, "text": t.text, "x": _r(t.bbox.x0), "y": _r(t.bbox.y0), "size": _r(t.size)} for t in tb]
         note_items = [{"id": t.id, "text": t.text[:200]} for t in notes]
+        line_systems = _line_number_systems(out)
         hints = {"keyword_system": stats["keyword_system"],
                  "parsed": det.model_dump(mode="json", exclude={"extra"}, exclude_defaults=True)}
+        if line_systems:
+            hints["line_number_systems"] = [s_.value for s_ in line_systems]
         parts: list[Any] = [ImagePart(image, label="title-block region")] if image else []
         parts.append("Title-block texts:\n" + prompts.to_json(items) + "\nNotes:\n" + prompts.to_json(note_items)
                      + "\nHints:\n" + prompts.to_json(hints))
         msgs = [Message("system", prompts.drawing_info_system_prompt()), Message("user", parts)]
         known_ids = {t.id for t in tb} | {t.id for t in notes}
         printed = printed_values(tb + notes)
+        tb_printed = printed_values(tb)
+        tb_tokens = {tok for t in tb for tok in value_tokens(t.text)}
 
         def validate(res: DrawingInfoOut) -> Optional[str]:
             problems = []
@@ -803,6 +858,12 @@ class GemmaAnalyzer:
                     if value and _norm(value) not in printed:
                         problems.append(f"{field} {value!r} is not printed as a text item (or as the value after a "
                                         "field label); copy the complete value exactly or use null")
+            if tb:
+                for field in _INFO_TEXT_FIELDS:
+                    value = getattr(res, field)
+                    if isinstance(value, str) and value.strip() and not grounded_in(value, tb_printed, tb_tokens):
+                        problems.append(f"{field} {value!r} is not printed in the title-block texts; copy it exactly "
+                                        "from the title-block text items or use null")
             if res.drawing_no and res.hull_no and _norm(res.drawing_no) == _norm(res.hull_no):
                 problems.append(f"drawing_no and hull_no are both {res.drawing_no!r}; they are different fields")
             return "; ".join(problems) or None
@@ -815,9 +876,13 @@ class GemmaAnalyzer:
             self._apply_keyword_system(out, keyword_system)
             self._record_usage(out, before)
             return out
-        out.info = self._merge_info(det, res, keyword_system)
+        support = {"title_block": {t.id: t.text for t in tb}, "line_systems": line_systems,
+                   "title_block_system": detect_system(" ".join(t.text for t in tb)) if tb else None}
+        out.info = self._merge_info(det, res, keyword_system, support)
         stats["status"] = "ok"
         stats["source"] = out.info.extra.get("source")
+        if out.info.extra.get("system_check"):
+            stats["system_check"] = out.info.extra["system_check"]
         self._record_usage(out, before)
         return out
 
@@ -833,7 +898,19 @@ class GemmaAnalyzer:
             extra["keyword_system"] = keyword_system.value
             doc.info.extra = extra
 
-    def _merge_info(self, det: DrawingInfo, res: DrawingInfoOut, keyword_system: Optional[SystemType]) -> DrawingInfo:
+    def _merge_info(self, det: DrawingInfo, res: DrawingInfoOut, keyword_system: Optional[SystemType],
+                    support: Optional[dict[str, Any]] = None) -> DrawingInfo:
+        """Gemma's title-block reading merged over the vector result.
+
+        Text fields come from the (validated) answer. The drawing systems decide which rules apply,
+        so they are grounded: Gemma's main system replaces the vector one only when a title-block
+        text it cites as evidence names that system (``support["title_block"]``: id -> text); with
+        no vector system it is accepted when cited title-block text, the line-number codes
+        (``support["line_systems"]``), the title-block keywords or the keyword fallback support it.
+        Secondary systems need the same support (or the vector result). Everything rejected is
+        recorded in ``extra["system_check"]`` for the review instead of changing the verdicts.
+        """
+        support = support or {}
         fields = ("drawing_no", "title", "hull_no", "ship_type", "revision", "sheet", "scale")
         values: dict[str, Any] = {}
         sources: dict[str, str] = {}
@@ -844,22 +921,63 @@ class GemmaAnalyzer:
                 values[f], sources[f] = g, self.label
             elif getattr(det, f):
                 values[f], sources[f] = getattr(det, f), "vector"
-        if res.system != SystemType.UNKNOWN:
-            values["system"], sources["system"] = res.system, self.label
-        elif det.system != SystemType.UNKNOWN:
+        unknown = SystemType.UNKNOWN
+        tb_texts: dict[str, str] = support.get("title_block") or {}
+        line_systems = {s_ for s_ in support.get("line_systems") or () if s_ != unknown}
+        tb_system = support.get("title_block_system")
+        cited = {s_ for s_ in (detect_system(tb_texts[i]) for i in res.evidence_text_ids if i in tb_texts) if s_}
+        vector = {s_ for s_ in [det.system, *det.systems] if s_ != unknown}
+        check: dict[str, Any] = {}
+        g = res.system
+        if g != unknown and det.system != unknown and g != det.system:
+            if g in cited:
+                values["system"], sources["system"] = g, self.label
+                check = {"decision": "replaced", "gemma": g.value, "vector": det.system.value,
+                         "basis": "cited title-block text"}
+            else:
+                values["system"], sources["system"] = det.system, "vector"
+                check = {"decision": "kept_vector", "gemma": g.value, "vector": det.system.value,
+                         "reason": "no cited title-block text names that system"}
+        elif g != unknown and det.system == unknown:
+            basis = ("cited title-block text" if g in cited else "line numbers" if g in line_systems else
+                     "title-block keywords" if g == tb_system else "keyword fallback" if g == keyword_system else None)
+            if basis:
+                values["system"], sources["system"] = g, self.label
+                check = {"decision": "accepted", "gemma": g.value, "basis": basis}
+            else:
+                check = {"decision": "rejected", "gemma": g.value,
+                         "reason": "no title-block text, line number or keyword supports that system"}
+                if keyword_system:
+                    values["system"], sources["system"] = keyword_system, "keyword"
+        elif g != unknown:  # confirms the vector system
+            values["system"], sources["system"] = g, self.label
+        elif det.system != unknown:
             values["system"], sources["system"] = det.system, "vector"
         elif keyword_system:
             values["system"], sources["system"] = keyword_system, "keyword"
+        allowed = vector | line_systems | cited | ({tb_system} if tb_system else set())
         systems: list[SystemType] = []
-        for s in [values.get("system", SystemType.UNKNOWN)] + list(res.systems) + list(det.systems):
-            if s != SystemType.UNKNOWN and s not in systems:
-                systems.append(s)
+        rejected: list[str] = []
+        primary = values.get("system", unknown)
+        for s_ in [primary] + list(res.systems) + list(det.systems):
+            if s_ == unknown or s_ in systems:
+                continue
+            if s_ == primary or s_ in vector or s_ in allowed:
+                systems.append(s_)
+            elif s_.value not in rejected:
+                rejected.append(s_.value)
+        if rejected:
+            check = {**check, "systems_rejected": rejected}
+        if det.system != unknown and det.system not in systems:  # never drop the vector system silently
+            systems.append(det.system)
         used = set(sources.values())
         source = self.label if used and used <= {self.label} else ("merged" if self.label in used else "vector")
         extra = {**det.extra, "source": source, "field_sources": sources,
                  "vector_info": det.model_dump(mode="json", exclude={"extra"}, exclude_defaults=True),
                  "keyword_system": keyword_system.value if keyword_system else None,
                  "evidence_text_ids": list(res.evidence_text_ids)}
+        if check:
+            extra["system_check"] = check
         return DrawingInfo(systems=systems, extra=extra, **values)
 
     # -- text ownership ----------------------------------------------------------------------
@@ -1035,9 +1153,138 @@ class GemmaAnalyzer:
                         p.medium = SYSTEMS[system].medium
         return changed
 
+    # -- cross-sheet links ----------------------------------------------------------------
+    def resolve_sheet_links(self, doc: PIDDocument, pdf_path: Optional[str | Path] = None) -> PIDDocument:
+        """Let Gemma pair the off-page connectors the deterministic linker left ambiguous.
+
+        A multi-page document without ``meta["sheet_links"]`` is linked first
+        (:func:`shippid.analysis.sheets.link_sheets`, stored in the document so ``analyze()``
+        reuses it). Each ambiguous connector (:func:`~shippid.analysis.sheets.ambiguous_links`:
+        texts, references, names, equipment beside it, candidates with scores) is decided among
+        its listed candidates only; one-to-one and mutually consistent answers are required, and
+        decisions with confidence >= ``adopt_min_confidence`` are applied through
+        :func:`~shippid.analysis.sheets.apply_link_decisions` with ``source`` = the label.
+        """
+        from ..llm.render import contact_sheet
+        from .sheets import ambiguous_links, apply_link_decisions, link_sheets
+
+        out = doc.model_copy(deep=True)
+        before = self.client.usage.model_copy(deep=True)
+        stats: dict[str, Any] = {"source": self.label, "status": "skipped", "connectors": 0, "batches": 0,
+                                 "failed_batches": 0, "linked": 0, "unlinked": 0, "not_adopted": 0, "images": False}
+        self._gemma_meta(out)["sheet_links"] = stats
+        if _n_pages(out) <= 1:
+            return out
+        if "sheet_links" not in out.meta:
+            link_sheets(out)
+        stats["rule_links"] = len(out.meta.get("sheet_links") or [])
+        amb = ambiguous_links(out, compute=False)
+        stats["connectors"] = len(amb)
+        if not amb:
+            return out
+        pdf, pdf_err = self._open_pdf(pdf_path)
+        if pdf_err and pdf_path is not None:
+            out.meta.setdefault("llm_notes", []).append(f"resolve_sheet_links: {pdf_err}; digest-only prompts")
+        objs = out.object_by_id()
+        sys_prompt = prompts.sheet_link_system_prompt()
+        jobs: list[Callable[[], SheetLinkDecisions]] = []
+        batches: list[list[dict[str, Any]]] = []
+        try:
+            for i in range(0, len(amb), self.sheet_link_batch):
+                batch = amb[i: i + self.sheet_link_batch]
+                parts: list[Any] = []
+                if pdf is not None:
+                    ids = list(dict.fromkeys([e["connector"]["id"] for e in batch]
+                                             + [c["id"] for e in batch for c in e["candidates"]]))
+                    by_page: dict[int, list[tuple[str, Any]]] = defaultdict(list)
+                    for oid in ids:
+                        o = objs.get(oid)
+                        if o is not None and 0 <= o.page < pdf.page_count:
+                            m = max(30.0, 1.5 * max(o.bbox.width, o.bbox.height))
+                            by_page[o.page].append((oid, _pymupdf_rect(o.bbox.expand(m))))
+                    for page_no in sorted(by_page):
+                        for png, labels in contact_sheet(pdf[page_no], by_page[page_no], max_side=self.crop_max_side):
+                            parts.append(ImagePart(png, label=f"page {page_no} connectors {', '.join(labels)}"))
+                    stats["images"] = stats["images"] or bool(parts)
+                parts.append("Ambiguous connectors:\n" + prompts.to_json(batch) + "\nReturn one decision for each "
+                             "connector: " + ", ".join(e["connector"]["id"] for e in batch) + ".")
+                jobs.append(self._sheet_link_job([Message("system", sys_prompt), Message("user", parts)], batch))
+                batches.append(batch)
+        finally:
+            if pdf is not None:
+                pdf.close()
+        stats["batches"] = len(jobs)
+        records = out.meta.setdefault("sheet_link_resolution", [])
+        linked: set[frozenset[str]] = set()
+        for batch, (res, err) in zip(batches, self._run_parallel(jobs)):
+            if err is not None or res is None:
+                stats["failed_batches"] += 1
+                self._error(out.meta, f"resolve_sheet_links[{batch[0]['connector']['id']}..{batch[-1]['connector']['id']}]",
+                            err or LLMError("no result"))
+                continue
+            for d in res.decisions:
+                conf = _clamp01(d.confidence)
+                applied = False
+                if d.partner is None:
+                    stats["unlinked"] += 1
+                elif conf < self.adopt_min_confidence:
+                    stats["not_adopted"] += 1
+                elif frozenset((d.connector, d.partner)) in linked:  # the partner's mirror decision
+                    applied = True
+                else:
+                    added = apply_link_decisions(out, [{"a": d.connector, "b": d.partner, "confidence": conf,
+                                                        "reason": d.reason}], source=self.label)
+                    applied = bool(added)
+                    stats["linked"] += len(added)
+                    linked.update(frozenset((lk["a"], lk["b"])) for lk in added)
+                records.append({"connector": d.connector, "partner": d.partner, "confidence": conf,
+                                "applied": applied, "reason": d.reason[:200], "source": self.label})
+        stats["status"] = _step_status(stats["batches"], stats["failed_batches"])
+        self._record_usage(out, before)
+        return out
+
+    def _sheet_link_job(self, msgs: list[Message], batch: list[dict[str, Any]]) -> Callable[[], SheetLinkDecisions]:
+        allowed = {e["connector"]["id"]: {c["id"] for c in e["candidates"]} for e in batch}
+        order = [e["connector"]["id"] for e in batch]
+
+        def validate(res: SheetLinkDecisions) -> Optional[str]:
+            got = [d.connector for d in res.decisions]
+            problems = []
+            unknown = [i for i in got if i not in allowed]
+            missing = [i for i in order if i not in got]
+            dups = sorted({i for i in got if got.count(i) > 1})
+            bad = [f"{d.connector}->{d.partner}" for d in res.decisions
+                   if d.connector in allowed and d.partner is not None and d.partner not in allowed[d.connector]]
+            chosen: dict[str, list[str]] = defaultdict(list)
+            decided = {d.connector: d.partner for d in res.decisions}
+            pairs = {a: b for a, b in decided.items() if b is not None}
+            for a, b in pairs.items():
+                chosen[b].append(a)
+            shared = {b: sorted(a) for b, a in chosen.items() if len(a) > 1}
+            inconsistent = sorted(f"{a}->{b} but {b}->{decided[b]}" for a, b in pairs.items()
+                                  if b in decided and decided[b] != a)
+            if unknown:
+                problems.append(f"unknown connector ids {unknown} (decide only the listed connectors)")
+            if missing:
+                problems.append(f"missing connectors {missing} (one decision each)")
+            if dups:
+                problems.append(f"duplicate connectors {dups}")
+            if bad:
+                problems.append(f"partner not among that connector's candidates: {bad} (pick a candidate id or null)")
+            if shared:
+                problems.append(f"partners chosen for more than one connector: {shared} (each connector pairs with "
+                                "one partner)")
+            if inconsistent:
+                problems.append(f"inconsistent pairs: {inconsistent}")
+            return "; ".join(problems) or None
+
+        return lambda: self.client.generate_json(msgs, SheetLinkDecisions, validator=validate)
+
     # -- whole document --------------------------------------------------------------------
     def refine_document(self, doc: PIDDocument, pdf_path: Optional[str | Path] = None) -> PIDDocument:
-        """read_drawing_info + refine_symbols + resolve_texts; an LLMError in a step keeps its input.
+        """read_drawing_info + refine_symbols + resolve_texts (+ resolve_sheet_links for a multi-page
+        set, which also stores the deterministic sheet links for ``analyze()``); an LLMError in a
+        step keeps its input.
 
         ``meta["refine"]`` records every step's status (ok / partial / error /
         skipped); ``meta["refined_by"]`` is written only when at least one step got
@@ -1049,6 +1296,8 @@ class GemmaAnalyzer:
             ("refine_symbols", "symbols", lambda d: self.refine_symbols(d, pdf_path)),
             ("resolve_texts", "texts", self.resolve_texts),
         ]
+        if _n_pages(doc) > 1:
+            steps.append(("resolve_sheet_links", "sheet_links", lambda d: self.resolve_sheet_links(d, pdf_path)))
         status: dict[str, str] = {}
         for name, key, step in steps:
             try:
@@ -1083,6 +1332,8 @@ class GemmaAnalyzer:
             return rows[:limit]
 
         object_ids = {o.id for o in doc.objects}
+        multi = _n_pages(doc) > 1
+        keep = ("page",) if multi else ()
         names: dict[str, list[str]] = defaultdict(list)
         for t in doc.texts:
             if t.owner_id and t.role in (TextRole.LABEL, TextRole.CONNECTOR):
@@ -1099,10 +1350,12 @@ class GemmaAnalyzer:
                 row["name"] = (name or " / ".join(names[o.id][:2]))[:80]
             if o.confidence < self.min_confidence:
                 row["conf"] = round(o.confidence, 2)
+            if multi:
+                row["page"] = o.page
             return row
 
         def rows_or(name: str, given: list[dict[str, Any]], derived: Callable[[], list[dict[str, Any]]]) -> list[Any]:
-            rows = [_scalarize(r, min_conf=self.min_confidence) for r in given] if given else derived()
+            rows = [_scalarize(r, min_conf=self.min_confidence, keep=keep) for r in given] if given else derived()
             return cap(name, rows, max_items)
 
         cats = {c: [o for o in doc.objects if o.category == c] for c in Category}
@@ -1139,10 +1392,72 @@ class GemmaAnalyzer:
                 {"rule_id": f.rule_id, "verdict": f.verdict.value, "severity": f.severity.value, "title": f.title[:160],
                  "object_ids": f.object_ids[:12], "reference": f.reference}
                 for f in report.findings if f.source not in ("gemma", "mock")], min(120, max_items)),
+            "verdict_counts": deterministic_verdicts(report),
         }
+        if multi:
+            digest["drawing"].pop("sheet", None)  # page 0's sheet number; sheets.sheet_of_page has every page
+            digest["sheets"] = self._sheets_digest(doc, max_items)
         if truncated:
             digest["truncated_lists_total_lengths"] = truncated
         return digest
+
+    @staticmethod
+    def _sheets_digest(doc: PIDDocument, max_items: int) -> dict[str, Any]:
+        """Sheet structure of a multi-page set: sheet number per page, linked connector pairs and
+        the connectors left ambiguous (``doc.meta`` from :func:`~shippid.analysis.sheets.link_sheets`)."""
+        from .graph import sheet_link_pairs
+        from .sheets import page_sheet_numbers
+
+        sheets = page_sheet_numbers(doc)
+        objs = doc.object_by_id()
+        sheet_of = {p: v["sheet"] for p, v in sorted(sheets.items())}
+        links = []
+        for a, b, lk in sheet_link_pairs(doc)[:max_items]:
+            row: dict[str, Any] = {"a": a, "b": b, "sheets": [sheet_of.get(objs[a].page), sheet_of.get(objs[b].page)]}
+            if lk.get("key"):
+                row["key"] = str(lk["key"])[:60]
+            if lk.get("source") and lk.get("source") != "rule":
+                row["source"] = lk["source"]
+            links.append(row)
+        ambiguous = [row.get("id") for row in doc.meta.get("sheet_links_ambiguous") or []
+                     if isinstance(row, dict) and row.get("id") in objs]
+        out: dict[str, Any] = {"pages": _n_pages(doc), "sheet_of_page": {str(p): n for p, n in sheet_of.items()},
+                               "links": links}
+        if ambiguous:
+            out["ambiguous_connectors"] = _cap_list(ambiguous, max_items)
+        if "sheet_links" not in doc.meta:
+            out["note"] = "connectors not linked yet"
+        return out
+
+    def _review_request(self, out: AnalysisReport) -> tuple[list[Message], str, dict[str, Any]]:
+        """Review messages sized to the context: the digest shrinks (fewer rows per list) until system
+        prompt + digest + schema note + a repair-round reserve + ``max_tokens`` fit ``context_tokens``
+        (and the digest fits ``review_max_chars``); if even the smallest digest does not, ``max_tokens``
+        is capped at what is left. Returns (messages, digest text, budget record)."""
+        sys_prompt = prompts.review_system_prompt()
+        describe = self.client.schema_in_prompt or self.client.json_mode != "json_schema"
+        schema = schema_for(ReviewOut) if describe else None
+        want = int(self.review_max_tokens or self.client.max_tokens)
+        ctx = self.context_tokens
+        reserve = repair_reserve(self.client.max_attempts)
+        min_answer = REVIEW_MIN_ANSWER_TOKENS + (REVIEW_THINKING_TOKENS if self.review_thinking else 0)
+        for max_items in (300, 150, 80, 40, 20, 10):
+            digest_text = prompts.to_json(self.review_digest(out, max_items=max_items))
+            msgs = [Message("system", sys_prompt), Message("user", "P&ID digest:\n" + digest_text)]
+            prompt_tokens = messages_tokens(msgs, schema)
+            if len(digest_text) <= self.review_max_chars and (not ctx or prompt_tokens + reserve + want <= ctx):
+                break
+        max_tokens = want
+        if ctx:
+            room = ctx - prompt_tokens - reserve
+            if room < min_answer:  # no room for a repair round: give the first answer what is left
+                room = ctx - prompt_tokens - 256
+            max_tokens = max(256, min(want, room))
+        budget = {"context_tokens": ctx, "prompt_tokens_est": prompt_tokens, "max_tokens": max_tokens,
+                  "max_items": max_items}
+        if ctx and prompt_tokens + max_tokens > ctx:
+            budget["over_context"] = True
+        return msgs, digest_text, budget
 
     def review(self, report: AnalysisReport) -> AnalysisReport:
         """Engineering review: append Gemma findings, set summaries, account LLM usage.
@@ -1158,13 +1473,9 @@ class GemmaAnalyzer:
             out.meta["llm_refine_usage_included"] = True
         before = self.client.usage.model_copy(deep=True)
         valid = {o.id for o in doc.objects} | {p.id for p in doc.pipes} | {j.id for j in doc.junctions}
-        digest_text = prompts.to_json(self.review_digest(out))
-        for max_items in (150, 80, 40, 20):  # shrink the lists until the digest fits the budget
-            if len(digest_text) <= self.review_max_chars:
-                break
-            digest_text = prompts.to_json(self.review_digest(out, max_items=max_items))
-        msgs = [Message("system", prompts.review_system_prompt()),
-                Message("user", "P&ID digest:\n" + digest_text)]
+        msgs, digest_text, budget = self._review_request(out)
+        verdicts = deterministic_verdicts(out)
+        fails = verdicts["failed_rule_ids"]
 
         def validate(res: ReviewOut) -> Optional[str]:
             problems = []
@@ -1177,19 +1488,26 @@ class GemmaAnalyzer:
                 problems.append("summary_ko must be written in Korean (Hangul)")
             if any(not f.rule_id.strip() for f in res.findings):
                 problems.append("every finding needs a rule_id")
+            if verdicts["fail"]:
+                for name, text in (("summary_en", res.summary_en), ("summary_ko", res.summary_ko)):
+                    claim = compliance_claim(text)
+                    if claim:
+                        problems.append(f"{name} claims {claim!r}, but {verdicts['fail']} deterministic rule check(s) "
+                                        f"failed ({', '.join(fails[:8])}); do not claim compliance, state the failures")
             return "; ".join(problems) or None
 
         try:
-            res = self.client.generate_json(msgs, ReviewOut, validator=validate,
+            res = self.client.generate_json(msgs, ReviewOut, validator=validate, max_tokens=budget["max_tokens"],
                                             thinking=True if self.review_thinking else None)
         except LLMError as exc:
             delta = _usage_delta(before, self.client.usage)
             self._error(out.meta, "review", exc)
             out.meta["review"] = {"source": self.label, "status": "error", "digest_chars": len(digest_text),
-                                  "calls": delta.calls}
+                                  "calls": delta.calls, **budget}
             out.llm = _usage_add(out.llm, delta)
-            if f"review: {exc}"[:1000] not in out.llm.errors:
-                out.llm.errors.append(f"review: {exc}"[:1000])
+            msg = self._redact(f"review: {exc}")[:1000]
+            if msg not in out.llm.errors:
+                out.llm.errors.append(msg)
             return out  # analyze() reports meta["review"]["status"] as the review_status
         prefix = f"{self.label.upper()}-"
         taken = {f.id for f in out.findings}
@@ -1214,7 +1532,8 @@ class GemmaAnalyzer:
         out.summary_en = res.summary_en.strip()
         out.meta["summary_source"] = self.label
         out.meta["review"] = {"source": self.label, "status": "ok", "findings": len(res.findings),
-                              "thinking": self.review_thinking, "digest_chars": len(digest_text)}
+                              "thinking": self.review_thinking, "digest_chars": len(digest_text),
+                              "deterministic_fail": verdicts["fail"], **budget}
         out.llm = _usage_add(out.llm, _usage_delta(before, self.client.usage))
         return out
 
@@ -1239,6 +1558,34 @@ def make_analyzer(cfg: "LLMConfig", responder: Optional[Callable[..., Any]] = No
 
 _TB_KEYWORDS = re.compile(r"\b(DWG|DRAWING|DRAWN|HULL|TITLE|SCALE|REV|REVISION|SHEET|DATE|APPROVED|CHECKED|"
                           r"DESIGNED|SHIP|PROJECT|OWNER|YARD|CLASS)\b|NO\.", re.I)
+
+
+def value_tokens(text: str) -> list[str]:
+    """Upper-case words of a printed value with surrounding punctuation removed ('SYSTEM.' -> 'SYSTEM')."""
+    return [w for w in (tok.strip(_TOKEN_EDGE) for tok in text.upper().split()) if w]
+
+
+def grounded_in(value: str, printed: set[str], tokens: set[str]) -> bool:
+    """``value`` is printed: a whole (labelled) value of a text item, or made only of printed words
+    (a multi-line title joined with spaces, 'BALLAST WATER' + 'SYSTEM')."""
+    if _norm(value) in printed:
+        return True
+    words = value_tokens(value)
+    return bool(words) and all(w in tokens for w in words)
+
+
+def _line_number_systems(doc: PIDDocument) -> list[SystemType]:
+    """Systems named by the system codes of the drawing's line numbers (pipes and line-number texts),
+    most frequent first."""
+    counts: dict[SystemType, int] = defaultdict(int)
+    numbers = [p.line_number for p in doc.pipes if p.line_number]
+    numbers += [t.text for t in doc.texts if t.role == TextRole.LINE_NUMBER]
+    for ln in numbers:
+        parsed = parse_line_number(normalize_text(ln))
+        system = SYSTEM_BY_CODE.get(parsed["system"]) if parsed else None
+        if system:
+            counts[system] += 1
+    return [s_ for s_, _ in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].value))]
 
 
 _FIELD_LABEL = re.compile(r"(?:NO|NUMBER|DWG|DRAWING|HULL|SHIP|YARD|PROJECT|REV|REVISION|SHEET|SCALE)\.?:?$|.*:$", re.I)
@@ -1330,6 +1677,109 @@ def select_title_block(texts: Sequence[TextItem], page_w: float, page_h: float) 
 
 
 
+def deterministic_verdicts(report: AnalysisReport) -> dict[str, Any]:
+    """Counts of the deterministic (rule engine) findings per verdict and the failed rule ids."""
+    det = [f for f in report.findings if f.source not in ("gemma", "mock")]
+    out: dict[str, Any] = {v.value: sum(1 for f in det if f.verdict == v) for v in Verdict}
+    out["failed_rule_ids"] = sorted({f.rule_id for f in det if f.verdict == Verdict.FAIL})
+    return out
+
+
+_NEGATION = re.compile(r"\b(?:not|never|nor|neither|cannot|fails?\s+to|failing\s+to)\b|n't\b", re.I)
+_CLAIMS_EN = [re.compile(p, re.I) for p in (
+    r"\ball\s+(?:of\s+)?(?:the\s+)?(?:\w+\s+){0,2}?(?:checks?|rules?|requirements?|regulations?|criteria)\s+"
+    r"(?:have\s+|were\s+|are\s+|is\s+)?(?:been\s+)?(?:passed|pass|met|satisfied|fulfill?ed|complied\s+with)\b",
+    r"\b(?:passes|passed|meets|satisfies|fulfill?s)\s+all\b",
+    r"\b(?:fully|entirely|completely)\s+(?:compliant|complies|comply|conforms?|conformant)\b",
+    r"\b(?:drawing|design|system|p&id|arrangement|installation)\s+(?:\w+\s+){0,2}?(?:complies|conforms|is\s+compliant)\b",
+    r"\bno\s+(?:rule\s+|deterministic\s+)?(?:checks?\s+)?(?:failures?|violations?|non-?conformit(?:y|ies)|"
+    r"non-?complian(?:ce|ces))\b(?!\s+(?:for|in|on|at|within|of|regarding|related)\b)",
+    r"\bno\s+(?:rule\s+|deterministic\s+)?checks?\s+(?:have\s+|has\s+)?failed\b",
+)]
+_CLAIMS_KO = [re.compile(p) for p in (
+    r"모두\s*(?:적합|통과|만족|충족|준수)",
+    r"(?:부적합|위반|결함)\s*(?:사항|항목|건)?\s*(?:이|은|는|도)?\s*(?:전혀\s*)?없",
+    r"(?:규정|규칙|요건|요구\s*사항|기준)\S*\s*(?:모두\s*)?(?:만족|충족|준수)(?:한다|합니다|함|하며|하고)",
+)]
+
+
+def compliance_claim(text: str) -> Optional[str]:
+    """The phrase of ``text`` that claims the drawing complies / has no failures, or None.
+
+    Conservative on purpose (a scoped "no failures for the fire pumps" or a negated "does not
+    comply with" is no claim); used only to reject summaries that contradict deterministic FAILs."""
+    for pat in _CLAIMS_EN:
+        for m in pat.finditer(text):
+            if not _NEGATION.search(text[max(0, m.start() - 25): m.start()]):
+                return m.group(0)
+    for pat in _CLAIMS_KO:
+        m = pat.search(text)
+        if m:
+            return m.group(0)
+    return None
+
+
+def _extractor_hints(o: PIDObject) -> dict[str, Any]:
+    """What the extractor stored for the reviewer: the drawing-legend row an unknown symbol is drawn
+    like (``attributes["legend"]``), why its confidence was lowered (``attributes["calibration"]``)
+    and the legend entry a match came from (``attributes["template"]``)."""
+    out: dict[str, Any] = {}
+    leg = o.attributes.get("legend")
+    if isinstance(leg, dict) and leg.get("description"):
+        hint: dict[str, Any] = {"description": str(leg["description"])[:100]}
+        if isinstance(leg.get("score"), (int, float)):
+            hint["score"] = round(float(leg["score"]), 3)
+        out["legend_hint"] = hint
+    elif isinstance(leg, str) and leg.strip():
+        out["legend_hint"] = {"description": leg.strip()[:100]}
+    cal = o.attributes.get("calibration")
+    if isinstance(cal, str):
+        cal = [cal]
+    if isinstance(cal, (list, tuple)) and cal:
+        notes = [str(x)[:140] for x in cal if str(x).strip()]
+        out["calibration"] = notes[:4] + ([f"…(+{len(notes) - 4} more)"] if len(notes) > 4 else [])
+    tpl = o.attributes.get("template")
+    if isinstance(tpl, str) and tpl.strip():
+        out["template"] = tpl.strip()[:100]
+    return out
+
+
+def drawing_legend_digest(doc: PIDDocument, max_rows: int = 40) -> Optional[dict[str, Any]]:
+    """The drawing's own legend (``doc.meta["legend"]`` from the extractor) for the symbol prompt:
+    rows ``{description, class?, actuator?, status, page}`` and the unmapped descriptions; None if
+    the drawing has no legend."""
+    meta = doc.meta.get("legend") if isinstance(doc.meta, dict) else None
+    if not isinstance(meta, dict):
+        return None
+    rows: list[dict[str, Any]] = []
+    for lg in meta.get("legends") or []:
+        if not isinstance(lg, dict):
+            continue
+        for r in lg.get("rows") or []:
+            if not isinstance(r, dict) or not str(r.get("description") or "").strip():
+                continue
+            row: dict[str, Any] = {"description": str(r["description"])[:100]}
+            if r.get("cls") and r.get("cls") != SymbolClass.UNKNOWN.value:
+                row["class"] = r["cls"]
+            if r.get("actuator") and r.get("actuator") != ActuatorType.NONE.value:
+                row["actuator"] = r["actuator"]
+            if r.get("status"):
+                row["status"] = str(r["status"])[:60]
+            if isinstance(r.get("page"), int):
+                row["page"] = r["page"]
+            rows.append(row)
+    unmapped = [str(u.get("description"))[:100] for u in meta.get("unmapped") or []
+                if isinstance(u, dict) and u.get("description")]
+    if not rows and not unmapped:
+        return None
+    out: dict[str, Any] = {"rows": rows[:max_rows]}
+    if len(rows) > max_rows:
+        out["rows"].append(f"…(+{len(rows) - max_rows} more rows)")
+    if unmapped:
+        out["unmapped"] = list(dict.fromkeys(unmapped))[:max_rows]
+    return out
+
+
 def _step_status(batches: int, failed: int) -> str:
     """ok | partial | error | skipped for a step made of ``batches`` LLM requests."""
     if batches == 0:
@@ -1343,6 +1793,11 @@ def _pymupdf_rect(b: BBox):
     return pymupdf.Rect(b.x0, b.y0, b.x1, b.y1)
 
 
+def _n_pages(doc: PIDDocument) -> int:
+    """Pages of a document (as ``analyze()`` counts them)."""
+    return len({p.index for p in doc.pages} | {o.page for o in doc.objects})
+
+
 def _page_size(doc: PIDDocument, page_no: int) -> tuple[float, float]:
     for p in doc.pages:
         if p.index == page_no:
@@ -1351,7 +1806,10 @@ def _page_size(doc: PIDDocument, page_no: int) -> tuple[float, float]:
 
 
 def _adjacency(doc: PIDDocument) -> dict[str, list[str]]:
-    """Object -> objects reachable through pipes, passing through junctions (signal lines excluded)."""
+    """Object -> objects reachable through pipes, passing through junctions (signal lines excluded);
+    paired off-page connectors (``doc.meta["sheet_links"]``) are adjacent to each other."""
+    from .graph import sheet_link_pairs
+
     objects = {o.id for o in doc.objects}
     graph: dict[str, set[str]] = defaultdict(set)
     for p in doc.pipes:
@@ -1361,6 +1819,9 @@ def _adjacency(doc: PIDDocument) -> dict[str, list[str]]:
         if a and b and a != b:
             graph[a].add(b)
             graph[b].add(a)
+    for a, b, _ in sheet_link_pairs(doc):
+        graph[a].add(b)
+        graph[b].add(a)
     adj: dict[str, list[str]] = {}
     for oid in sorted(objects, key=_id_key):
         seen, stack, found = {oid}, list(graph.get(oid, ())), set()

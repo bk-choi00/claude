@@ -64,8 +64,18 @@ from .legend import (
     prepare_page,
 )
 from .legend import rerank as legend_rerank
+from .lettering import Lettering, mark_stroke_lettering
 from .pipes import MLine, Separation, separate
-from .primitives import PrimSet, bbox_dist, bbox_inside, bbox_union, estimate_unit, point_prim_dist, point_seg_dist
+from .primitives import (
+    BoxGrid,
+    PrimSet,
+    bbox_dist,
+    bbox_inside,
+    bbox_union,
+    estimate_unit,
+    point_prim_dist,
+    point_seg_dist,
+)
 from .regions import Regions, detect_regions
 from .symbols_match import (
     CandidateShape,
@@ -503,23 +513,48 @@ def _decompose(m: _Matcher, whole: Detection) -> Optional[list[Detection]]:
     return parts if len(parts) > 1 else None
 
 
+ABSORB_NEIGHBOURS = 6  # union attempts per unmatched fragment: its nearest neighbours within reach
+
+
 def _absorb_fragments(m: _Matcher, dets: list[Detection]) -> list[Detection]:
     """Merge an unmatched small fragment into a neighbour when the union matches
-    better (e.g. an actuator drawn with a gap to its valve body)."""
+    better (e.g. an actuator drawn with a gap to its valve body).
+
+    Linear in the number of fragments: the neighbours within 0.4 unit come from a grid index
+    over the detections, at most :data:`ABSORB_NEIGHBOURS` nearest ones are tried, and two
+    unmatched fragments are only joined when one of them touches a pipe (a field of loose
+    strokes -- hatching, tick marks, lettering exported as geometry -- is not tried pairwise)."""
     unit, accept = m.unit, m.accept
-    out = list(dets)
+    reach = 0.4 * unit
+    live: dict[int, Detection] = {id(d): d for d in dets}  # identity-keyed, in order
+    piped: dict[tuple[int, ...], bool] = {}
+
+    def is_piped(d: Detection) -> bool:
+        k = tuple(d.prim_ids)
+        if k not in piped:
+            piped[k] = m.piped(d.prim_ids)
+        return piped[k]
+
     changed = True
     rounds = 0
     while changed and rounds < 3:
         changed = False
         rounds += 1
-        unknown = [d for d in out if d.cls == SymbolClass.UNKNOWN and d.size <= 1.5 * unit]
+        grid = BoxGrid(max(unit, 1.0))
+        for d in live.values():
+            grid.add(d, d.shape.bbox)
+        unknown = [d for d in live.values() if d.cls == SymbolClass.UNKNOWN and d.size <= 1.5 * unit]
         for d in unknown:
-            if d not in out:
+            if id(d) not in live:
                 continue
+            near = [o for o in grid.near(d.shape.bbox, reach) if o is not d and id(o) in live]
+            if len(near) > ABSORB_NEIGHBOURS:
+                ranked = sorted(near, key=lambda o: bbox_dist(o.shape.bbox, d.shape.bbox))[:ABSORB_NEIGHBOURS]
+                keep = {id(o) for o in ranked}
+                near = [o for o in near if id(o) in keep]
             best = None
-            for o in out:
-                if o is d or bbox_dist(o.shape.bbox, d.shape.bbox) > 0.4 * unit:
+            for o in near:
+                if o.cls == SymbolClass.UNKNOWN and not (is_piped(d) or is_piped(o)):
                     continue
                 mm = m.detect(o.prim_ids + d.prim_ids)
                 _finalise(mm, accept)
@@ -529,11 +564,11 @@ def _absorb_fragments(m: _Matcher, dets: list[Detection]) -> list[Detection]:
                     best = (mm, o)
             if best is not None:
                 mm, o = best
-                out.remove(o)
-                out.remove(d)
-                out.append(mm)
+                del live[id(o)], live[id(d)]
+                live[id(mm)] = mm
+                grid.add(mm, mm.shape.bbox)
                 changed = True
-    return out
+    return list(live.values())
 
 
 def _size_prior(dets: list[Detection], accept: float) -> None:
@@ -705,6 +740,7 @@ class _Stage:
     unit: float
     anchored: bool  # the unit comes from matched valve-like symbols (not from the stroke-cluster median)
     stats: dict = field(default_factory=dict)
+    lettering: Optional[Lettering] = None  # stroke lettering without a text carrier (marked 'text')
 
 
 def _analyse(pc: PageContent, lines: list[TextLine], cfg: Config, opts: ExtractOptions, lib: TemplateLibrary,
@@ -717,11 +753,10 @@ def _analyse(pc: PageContent, lines: list[TextLine], cfg: Config, opts: ExtractO
     tol = cfg.snap_tol
     t = time.perf_counter()
     if geometry is not None and unit is None and geometry.lines is lines and geometry.tol == tol:
-        ps, unit0, regions = geometry.ps, geometry.unit, geometry.regions
+        ps, unit0, regions, lettering = geometry.ps, geometry.unit, geometry.regions, geometry.lettering
     else:
         ps = PrimSet.from_page(pc)
-        _mark_text_strokes(ps, lines)
-        unit0 = unit or estimate_unit(ps.prims, [p.id for p in ps.prims if p.role != "text"], max(0.6, 0.5 * tol))
+        unit0, lettering = page_text_strokes(ps, lines, tol, unit, (pc.width, pc.height))
         regions = detect_regions(ps, lines, pc.width, pc.height, tol, unit0)
     for box in legend_boxes:
         if not any(bbox_inside(box, b, tol) for b in regions.legends):
@@ -744,7 +779,24 @@ def _analyse(pc: PageContent, lines: list[TextLine], cfg: Config, opts: ExtractO
     t = time.perf_counter()
     cands = group_candidates(ps, sep.symbol_ids, unit, tol, opts.group_units, opts.contain_units)
     timing["symbols"] = timing.get("symbols", 0.0) + time.perf_counter() - t
-    return _classify_stage(_Stage(ps, regions, sep, cands, [], [], unit, anchored), cfg, opts, lib, cache, timing)
+    return _classify_stage(_Stage(ps, regions, sep, cands, [], [], unit, anchored, lettering=lettering), cfg, opts, lib,
+                           cache, timing)
+
+
+def page_text_strokes(ps: PrimSet, lines: Sequence[TextLine], tol: float, unit: Optional[float] = None,
+                      page_size: Optional[tuple[float, float]] = None) -> tuple[float, Lettering]:
+    """Mark the strokes that are lettering -- SHX glyphs of a text carrier (:func:`_mark_text_strokes`)
+    and stroke lettering without any carrier (:mod:`shippid.extract.lettering`) -- and return the
+    symbol-unit estimate (``unit`` when given) with the lettering found. The first steps of every
+    page analysis (also :func:`shippid.extract.legend.prepare_page`)."""
+    touch = max(0.6, 0.5 * tol)
+    _mark_text_strokes(ps, lines)
+    est = unit or estimate_unit(ps.prims, [p.id for p in ps.prims if p.role != "text"], touch, page_size=page_size)
+    lettering = mark_stroke_lettering(ps, tol, est)
+    if unit is None and (lettering.text_ids or lettering.hatch_ids):
+        est = estimate_unit(ps.prims, [p.id for p in ps.prims if p.role not in ("text", "hatch")], touch,
+                            page_size=page_size)
+    return est, lettering
 
 
 def _mark_text_strokes(ps: PrimSet, lines: Sequence[TextLine]) -> int:
@@ -808,7 +860,7 @@ def _classify_stage(st: _Stage, cfg: Config, opts: ExtractOptions, lib: Template
         dets = [d for d in dets if st.regions.kind_at(d.bbox, tol) is None]
     dets.sort(key=lambda d: (round(d.bbox[1], 1), round(d.bbox[0], 1)))
     timing["symbols"] = timing.get("symbols", 0.0) + time.perf_counter() - t
-    return _Stage(st.ps, st.regions, st.sep, st.cands, dets, diag_lines, st.unit, st.anchored, stats)
+    return _Stage(st.ps, st.regions, st.sep, st.cands, dets, diag_lines, st.unit, st.anchored, stats, st.lettering)
 
 
 def _probe_unit(ps: PrimSet, ids: Sequence[int], unit: float, tol: float, lib: TemplateLibrary,

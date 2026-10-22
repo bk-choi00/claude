@@ -418,8 +418,10 @@ def test_review_repair_and_failure(pid):
     analyzer, _ = make(lambda m, s, n: "not json", max_attempts=1)
     report = _report(doc)
     failed = analyzer.review(report)
-    assert failed.meta["review"] == {"source": "mock", "status": "error", "digest_chars": failed.meta["review"]["digest_chars"],
-                                     "calls": 1}
+    review_meta = failed.meta["review"]
+    assert {k: review_meta[k] for k in ("source", "status", "calls")} == {"source": "mock", "status": "error", "calls": 1}
+    assert review_meta["digest_chars"] > 0 and review_meta["context_tokens"] == 32768
+    assert review_meta["max_tokens"] == 8192 and 0 < review_meta["prompt_tokens_est"] < 32768
     assert failed.findings == report.findings and failed.summary_en == "Deterministic summary."
     assert failed.summary_ko == "" and failed.llm.errors[-1].startswith("review:") and failed.llm.calls == 1
     assert failed.meta["llm_errors"][0].startswith("review:") and "summary_source" not in failed.meta

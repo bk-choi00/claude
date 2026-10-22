@@ -11,6 +11,7 @@ Environment variables::
     SHIPPID_LLM_API_KEY    API key (Gemini API key, or the token your gateway expects)
     SHIPPID_LLM_TIMEOUT    request timeout in seconds
     SHIPPID_LLM_CACHE_DIR  directory for the request/response cache (replay)
+    SHIPPID_LLM_CONTEXT_TOKENS  server context in tokens (vLLM --max-model-len), default 32768
 """
 
 from __future__ import annotations
@@ -42,6 +43,9 @@ class LLMConfig:
     concurrency: int = 4
     cache_dir: Optional[str] = None
     extra_body: dict[str, Any] = field(default_factory=dict)  # passed through to the server
+    # server context window (prompt + max_tokens), e.g. vLLM --max-model-len; review and 3D planner
+    # prompts and max_tokens are sized to fit it
+    context_tokens: int = 32768
 
     @property
     def enabled(self) -> bool:
@@ -70,6 +74,7 @@ _ENV_MAP = {
     "SHIPPID_LLM_CACHE_DIR": ("cache_dir", str),
     "SHIPPID_LLM_CONCURRENCY": ("concurrency", int),
     "SHIPPID_LLM_JSON_MODE": ("json_mode", str),
+    "SHIPPID_LLM_CONTEXT_TOKENS": ("context_tokens", int),
 }
 
 

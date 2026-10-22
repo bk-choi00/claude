@@ -6,7 +6,8 @@ the text. Features whose support for Gemma on the Gemini API is unverified are
 tried first and dropped (and remembered) when the API answers HTTP 400 about
 them: ``systemInstruction`` (fallback: prepend to the first user turn),
 ``responseJsonSchema`` (fallback: ``responseMimeType`` only, then prompt only)
-and ``thinkingConfig``.
+and ``thinkingConfig``. The API key is sent in the ``x-goog-api-key`` header only and never shown
+in error texts or logs (see :func:`shippid.llm.openai_compat.redact`).
 """
 
 from __future__ import annotations
@@ -21,7 +22,8 @@ from typing import Any, Callable, Optional, Sequence
 import httpx
 
 from .base import LLMBackend, LLMError, LLMResponse, Message
-from .openai_compat import LLMHTTPError, ensure_schema_in_prompt, image_captions, post_json
+from .openai_compat import (LLMHTTPError, clean_api_key, collect_secrets, ensure_schema_in_prompt, image_captions,
+                            join_url, post_json, redact, redact_url, url_secrets)
 
 log = logging.getLogger(__name__)
 
@@ -53,13 +55,16 @@ class GeminiBackend(LLMBackend):
     ):
         model = model[len("models/"):] if model.startswith("models/") else model
         super().__init__(model)
-        api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        raw_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        self._secrets = collect_secrets(raw_key, *url_secrets(base_url))
+        api_key = clean_api_key(raw_key, "Gemini API key")
         if not api_key:
             raise LLMError("Gemini API key missing: set SHIPPID_LLM_API_KEY (or GEMINI_API_KEY)")
         if json_mode not in JSON_LEVELS:
             json_mode = {"json_object": "json_mime"}.get(json_mode, "json_schema")
         self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
+        self.configured_json_mode = json_mode
+        self.base_url = base_url.strip().rstrip("/")
         self.timeout = float(timeout)
         self.max_retries = int(max_retries)
         self.thinking_default = thinking_default
@@ -78,7 +83,21 @@ class GeminiBackend(LLMBackend):
 
     @property
     def url(self) -> str:
-        return f"{self.base_url}/models/{self.model}:generateContent"
+        return join_url(self.base_url, f"/models/{self.model}:generateContent")
+
+    @property
+    def display_url(self) -> str:
+        """The endpoint without credentials (for reports and logs)."""
+        return redact_url(self.url)
+
+    def redact(self, text: Any) -> str:
+        """``text`` with the API key and URL credentials replaced by ``***``."""
+        return redact(text, self._secrets)
+
+    def cache_fingerprint(self) -> dict[str, Any]:
+        """Request settings beyond the client's that change the answer (replay-cache key); the
+        configured JSON mode, not the downgraded one."""
+        return {"base_url": redact_url(self.base_url), "json_mode": self.configured_json_mode}
 
     @property
     def structured_output(self) -> str:
@@ -144,12 +163,12 @@ class GeminiBackend(LLMBackend):
     def parse_response(self, data: dict[str, Any], seconds: float = 0.0) -> LLMResponse:
         if data.get("error"):
             err = data["error"]
-            raise LLMError(f"gemini: {err.get('message', err) if isinstance(err, dict) else err}")
+            raise LLMError(self.redact(f"gemini: {err.get('message', err) if isinstance(err, dict) else err}"))
         candidates = data.get("candidates") or []
         if not candidates:
             feedback = data.get("promptFeedback") or {}
-            raise LLMError(f"gemini[{self.model}]: no candidates (blockReason={feedback.get('blockReason')}): "
-                           f"{json.dumps(data, ensure_ascii=False)[:500]}")
+            raise LLMError(self.redact(f"gemini[{self.model}]: no candidates (blockReason={feedback.get('blockReason')}): "
+                                       f"{json.dumps(data, ensure_ascii=False)[:500]}"))
         cand = candidates[0]
         parts = (cand.get("content") or {}).get("parts") or []
         text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
@@ -209,7 +228,7 @@ class GeminiBackend(LLMBackend):
             t0 = time.time()
             try:
                 data = post_json(self._http, self.url, body, max_retries=self.max_retries, backoff=self.backoff,
-                                 sleep=self._sleep, what=f"gemini[{self.model}]")
+                                 sleep=self._sleep, what=f"gemini[{self.model}]", secrets=self._secrets)
             except LLMHTTPError as exc:
                 if self._fallback(exc, json_requested=json_schema is not None,
                                   system_used="systemInstruction" in body and has_system,

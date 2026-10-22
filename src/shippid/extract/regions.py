@@ -35,9 +35,18 @@ class Regions:
     notes: list[BBox4] = field(default_factory=list)
     legends: list[BBox4] = field(default_factory=list)
     grid: list[tuple[str, float, float, float]] = field(default_factory=list)  # (axis, coord, lo, hi) table lines
+    # narrowest gap between the outer frame line and the inner (drawing-area) frame line of a side, None
+    # without a double frame. The zone-marker ticks in that band are only as long as the gap: on a reduced
+    # copy (A1 printed to A4: a 14 pt band becomes 4.9 pt) an absolute tolerance would take them inside.
+    frame_gap: Optional[float] = None
+
+    def margin_tol(self, tol: float) -> float:
+        """Tolerance of the drawing-area (margin) test: ``tol``, but at most a quarter of the frame band."""
+        return tol if self.frame_gap is None else min(tol, 0.25 * self.frame_gap)
 
     def kind_at(self, bbox: Sequence[float], tol: float = 1.0) -> Optional[str]:
-        """'title_block' | 'notes' | 'legend' | 'table' | 'margin' | None for a box."""
+        """'title_block' | 'notes' | 'legend' | 'table' | 'margin' | None for a box. 'margin': the box
+        centre is outside the drawing area (by more than :meth:`margin_tol`), e.g. in the frame band."""
         for b in self.legends:
             if bbox_inside(bbox, b, tol):
                 return "legend"
@@ -52,7 +61,8 @@ class Regions:
                 return "table"
         cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
         da = self.drawing_area
-        if not (da[0] - tol <= cx <= da[2] + tol and da[1] - tol <= cy <= da[3] + tol):
+        mt = self.margin_tol(tol)
+        if not (da[0] - mt <= cx <= da[2] + mt and da[1] - mt <= cy <= da[3] + mt):
             return "margin"
         return None
 
@@ -116,7 +126,8 @@ def detect_regions(ps: PrimSet, lines: Sequence[TextLine], width: float, height:
     if lefts or tops or rights or bottoms:
         outer = (min(lefts) if lefts else 0.0, min(tops) if tops else 0.0,
                  max(rights) if rights else width, max(bottoms) if bottoms else height)
-    regions = Regions(page_bbox=page, drawing_area=inner, outer_frame=outer)
+    gaps = [max(v) - min(v) for v in (lefts, tops, rights, bottoms) if len(v) >= 2 and max(v) - min(v) > 0.5 * tol]
+    regions = Regions(page_bbox=page, drawing_area=inner, outer_frame=outer, frame_gap=min(gaps) if gaps else None)
     for p in prims:
         if p.id in frame_ids:
             p.role = "frame"

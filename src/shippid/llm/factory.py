@@ -15,7 +15,7 @@ from ..config import DEFAULT_MODEL, LLMConfig
 from .base import ImagePart, LLMClient, LLMError, Message, MockBackend, schema_for
 from .gemini import GEMINI_BASE_URL, GEMINI_GEMMA_MODEL, GeminiBackend
 from .jsonutil import extract_json
-from .openai_compat import OpenAICompatBackend
+from .openai_compat import OpenAICompatBackend, redact_url
 
 log = logging.getLogger(__name__)
 
@@ -112,11 +112,13 @@ def make_client(cfg: LLMConfig, responder: Optional[Responder] = None, *,
     if name != "mock":
         backend.base_url_source = "configured" if explicit else "backend default"  # type: ignore[attr-defined]
         if not explicit:
-            log.info("no base_url configured; using the %s default endpoint %s", name, base_url)
+            log.info("no base_url configured; using the %s default endpoint %s", name, redact_url(base_url))
     # json_object is realised by the backend's response format; the client keeps passing the schema
     client_mode = "prompt" if json_mode == "prompt" else "json_schema"
+    context = getattr(cfg, "context_tokens", None)
     return LLMClient(backend, temperature=cfg.temperature, top_p=cfg.top_p, max_tokens=cfg.max_tokens,
-                     json_mode=client_mode, cache_dir=cfg.cache_dir)
+                     json_mode=client_mode, cache_dir=cfg.cache_dir,
+                     context_tokens=int(context) if isinstance(context, (int, float)) and context > 0 else None)
 
 
 # --------------------------------------------------------------------------- connection check
@@ -145,6 +147,15 @@ def probe_image() -> bytes:
     return png
 
 
+def _display_url(backend: Any) -> Optional[str]:
+    """The backend's endpoint without credentials (user info / query), or None."""
+    shown = getattr(backend, "display_url", None)
+    if isinstance(shown, str):
+        return shown
+    url = getattr(backend, "url", None)
+    return redact_url(url) if url else None
+
+
 def check_connection(client: LLMClient, *, max_tokens: int = 256) -> dict[str, Any]:
     """Send one tiny text + image JSON request straight to the backend (bypassing the cache).
 
@@ -155,7 +166,7 @@ def check_connection(client: LLMClient, *, max_tokens: int = 256) -> dict[str, A
     backend = client.backend
     report: dict[str, Any] = {
         "ok": False, "backend": backend.name, "model": backend.model, "server_model": None,
-        "url": getattr(backend, "url", None), "base_url_source": getattr(backend, "base_url_source", None),
+        "url": _display_url(backend), "base_url_source": getattr(backend, "base_url_source", None),
         "latency_s": None, "json_valid": False,
         "json_schema": False, "structured_output": None, "images": False, "reasoning": False,
         "prompt_tokens": 0, "completion_tokens": 0, "answer": None, "error": None,
@@ -173,7 +184,7 @@ def check_connection(client: LLMClient, *, max_tokens: int = 256) -> dict[str, A
                                 max_tokens=max_tokens, thinking=False)
     except LLMError as exc:
         report["latency_s"] = round(time.time() - t0, 3)
-        report["error"] = str(exc)
+        report["error"] = backend.redact(str(exc))
         return report
     report.update(
         ok=True, latency_s=round(resp.seconds or (time.time() - t0), 3), server_model=resp.model or None,
@@ -185,7 +196,7 @@ def check_connection(client: LLMClient, *, max_tokens: int = 256) -> dict[str, A
     try:
         probe = _Probe.model_validate(extract_json(resp.text))
     except (ValueError, ValidationError) as exc:
-        report["error"] = f"answer is not the requested JSON: {str(exc)[:200]} (raw: {resp.text[:200]!r})"
+        report["error"] = backend.redact(f"answer is not the requested JSON: {str(exc)[:200]} (raw: {resp.text[:200]!r})")
         report["answer"] = resp.text[:500]
         return report
     report["json_valid"] = True

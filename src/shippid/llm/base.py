@@ -10,7 +10,14 @@ pydantic-validated JSON object. The client adds:
   can repair its own output;
 * an on-disk request/response cache (replay), so long analyses can be resumed
   and repeated runs are reproducible;
-* token / latency accounting surfaced in reports (:class:`shippid.model.LLMUsage`).
+* token / latency accounting surfaced in reports (:class:`shippid.model.LLMUsage`);
+* an answer cut off by ``max_tokens`` (``finish_reason`` "length" / "MAX_TOKENS") is repaired
+  without echoing the fragment: the feedback says it was cut off, thinking is switched off for
+  the retry and ``max_tokens`` is raised within ``context_tokens`` when that is known.
+
+The replay-cache key covers the effective request: messages, schema, temperature, top_p,
+max_tokens, the thinking switch resolved against the backend default, and the backend's
+:meth:`LLMBackend.cache_fingerprint` (server URL, top_k / extra_body, structured-output mode).
 """
 
 from __future__ import annotations
@@ -29,6 +36,7 @@ from typing import Any, Callable, Optional, Sequence, Type, TypeVar, Union
 from pydantic import BaseModel, ValidationError
 
 from ..model import LLMUsage
+from .budget import messages_tokens
 from .jsonutil import extract_json, strip_thinking
 
 log = logging.getLogger(__name__)
@@ -121,6 +129,15 @@ class LLMBackend(ABC):
         image parts before the text of the same message (Gemma training convention).
         """
 
+    def cache_fingerprint(self) -> dict[str, Any]:
+        """Backend settings that change the answer beyond the client's own (part of the replay-cache
+        key): e.g. server URL, top_k / extra_body, structured-output mode. Empty by default."""
+        return {}
+
+    def redact(self, text: Any) -> str:
+        """``text`` with this backend's credentials masked (backends holding an API key override this)."""
+        return str(text)
+
 
 def schema_for(model: Type[BaseModel]) -> dict[str, Any]:
     """JSON schema of a pydantic model, inlined (no $ref) for picky servers."""
@@ -155,6 +172,7 @@ class LLMClient:
         cache_dir: Optional[str | Path] = None,
         max_attempts: int = 3,
         schema_in_prompt: bool = True,
+        context_tokens: Optional[int] = None,
     ):
         self.backend = backend
         self.temperature = temperature
@@ -168,6 +186,9 @@ class LLMClient:
         # Guided decoding constrains the output but the model never sees the schema
         # (vLLM recipe note for Gemma 4), so field semantics also go into the prompt.
         self.schema_in_prompt = schema_in_prompt
+        # server context (prompt + max_tokens), e.g. vLLM --max-model-len; None = unknown. Used to
+        # raise max_tokens for the retry of a cut-off answer and by callers that size prompts.
+        self.context_tokens = int(context_tokens) if context_tokens else None
         self.usage = LLMUsage(backend=backend.name, model=backend.model)
         self._lock = threading.Lock()
 
@@ -200,9 +221,12 @@ class LLMClient:
         describe = self.schema_in_prompt or self.json_mode != "json_schema"
         msgs = _with_schema_instructions(list(messages), schema) if describe else list(messages)
         last_err = ""
+        call_tokens = max_tokens or self.max_tokens
+        call_thinking = thinking
         for attempt in range(1, self.max_attempts + 1):
             resp = self._call(msgs, schema if self.json_mode == "json_schema" else None,
-                              output_model.__name__, temperature, max_tokens, thinking)
+                              output_model.__name__, temperature, call_tokens, call_thinking)
+            truncated = (resp.finish_reason or "").lower() in TRUNCATED_FINISH
             try:
                 data = extract_json(resp.text)
                 obj = output_model.model_validate(data)
@@ -212,24 +236,45 @@ class LLMClient:
                 last_err = problem
             except (ValueError, ValidationError) as exc:
                 last_err = str(exc)[:2000]
+            if truncated:
+                last_err = (f"the answer was cut off at the max_tokens limit ({call_tokens} tokens, finish_reason="
+                            f"{resp.finish_reason}) before the JSON object was complete ({last_err[:160]})")
             log.warning("LLM output invalid (attempt %d/%d): %s", attempt, self.max_attempts, last_err[:300])
             with self._lock:
                 self.usage.errors.append(f"{output_model.__name__}: {last_err[:200]}")
-            msgs = list(messages) + [
-                Message("assistant", resp.text[-6000:]),
-                Message("user", "Your previous answer was not valid. Problem:\n" + last_err +
-                        "\nReturn ONLY the corrected JSON object that satisfies the schema."),
-            ]
+            if truncated:
+                # never echo the cut-off fragment; give the retry more room instead of the same budget
+                msgs = _with_note(list(messages), TRUNCATED_NOTE.format(tokens=call_tokens))
+                if call_thinking is True or (call_thinking is None and getattr(self.backend, "thinking_default", None)):
+                    call_thinking = False  # thinking shares max_tokens with the answer
+                call_tokens = self._retry_tokens(msgs, call_tokens, schema if describe else None)
+            else:
+                msgs = list(messages) + [
+                    Message("assistant", resp.text[-6000:]),
+                    Message("user", "Your previous answer was not valid. Problem:\n" + last_err +
+                            "\nReturn ONLY the corrected JSON object that satisfies the schema."),
+                ]
             if describe:
                 msgs = _with_schema_instructions(msgs, schema)
         raise LLMError(f"{output_model.__name__}: no valid output after {self.max_attempts} attempts: {last_err}")
 
+    def _retry_tokens(self, msgs: Sequence[Message], used: int, schema: Optional[dict]) -> int:
+        """``max_tokens`` for the retry of a cut-off answer: doubled, within the server context when known."""
+        if not self.context_tokens:
+            return used
+        room = self.context_tokens - messages_tokens(msgs, schema) - 256
+        return max(used, min(2 * used, room))
+
     # -- internals ---------------------------------------------------------------
     def _cache_key(self, messages: Sequence[Message], schema: Optional[dict], temperature: float,
                    max_tokens: int, thinking: Optional[bool]) -> str:
+        """Hash of the effective request (see the module docstring)."""
         h = hashlib.sha256()
-        h.update(json.dumps([self.backend.name, self.backend.model, temperature, max_tokens, schema, thinking],
-                            sort_keys=True, default=str).encode())
+        effective = thinking if thinking is not None else getattr(self.backend, "thinking_default", None)
+        fingerprint = getattr(self.backend, "cache_fingerprint", None)
+        fp = fingerprint() if callable(fingerprint) else {}
+        h.update(json.dumps([self.backend.name, self.backend.model, temperature, max_tokens, schema, effective,
+                             self.top_p, fp], sort_keys=True, default=str).encode())
         for m in messages:
             h.update(m.role.encode())
             for p in m.parts():
@@ -247,7 +292,7 @@ class LLMClient:
             if f.is_file():
                 d = json.loads(f.read_text(encoding="utf-8"))
                 return LLMResponse(text=d["text"], reasoning=d.get("reasoning", ""), model=d.get("model", ""),
-                                   cached=True)
+                                   finish_reason=d.get("finish_reason"), cached=True)
         t0 = time.time()
         resp = self.backend.complete(messages, json_schema=schema, schema_name=schema_name,
                                      temperature=temperature, top_p=self.top_p, max_tokens=max_tokens,
@@ -260,9 +305,26 @@ class LLMClient:
             self.usage.seconds += resp.seconds
         if key:
             (self.cache_dir / f"{key}.json").write_text(
-                json.dumps({"text": resp.text, "reasoning": resp.reasoning, "model": resp.model}, ensure_ascii=False),
+                json.dumps({"text": resp.text, "reasoning": resp.reasoning, "model": resp.model,
+                            "finish_reason": resp.finish_reason}, ensure_ascii=False),
                 encoding="utf-8")
         return resp
+
+
+TRUNCATED_FINISH = frozenset({"length", "max_tokens"})  # OpenAI-compatible servers / Gemini API
+TRUNCATED_NOTE = ("\n\nNOTE: a previous answer to this request was cut off at the max_tokens limit ({tokens} tokens) "
+                  "before the JSON object was complete. Return the complete JSON object only; keep every free-text "
+                  "field (reason, description, rationale, notes) short.")
+
+
+def _with_note(messages: list[Message], note: str) -> list[Message]:
+    """Append ``note`` to the last user turn (roles keep alternating for Gemma's chat template)."""
+    out = list(messages)
+    for i in range(len(out) - 1, -1, -1):
+        if out[i].role == "user":
+            out[i] = Message("user", out[i].parts() + [note])
+            return out
+    return out + [Message("user", note.strip())]
 
 
 def _with_schema_instructions(messages: list[Message], schema: dict[str, Any]) -> list[Message]:

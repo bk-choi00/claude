@@ -15,7 +15,11 @@ Works with vLLM, SGLang, llama.cpp ``llama-server``, LM Studio and Ollama's
   ``reasoning_effort`` (``"none"`` = off, a level such as ``"high"`` = on; Ollama
   ignores ``chat_template_kwargs``); thoughts come back in ``message.reasoning``
   (vLLM, Ollama) or ``message.reasoning_content`` (SGLang, llama.cpp);
-* retries with exponential backoff on 408/429/5xx, timeouts and connection errors.
+* retries with exponential backoff on 408/429/5xx, timeouts and connection errors;
+* credentials never reach error texts or logs: the API key (stripped of stray whitespace when the
+  backend is built; keys with control characters inside are rejected) and any user info / query
+  of the URL are replaced by ``***`` (:func:`redact`, :func:`redact_url`), and raw ``repr``s of
+  httpx protocol errors (which quote header values) are never interpolated.
 """
 
 from __future__ import annotations
@@ -25,8 +29,8 @@ import logging
 import re
 import threading
 import time
-from typing import Any, Callable, Optional, Sequence
-from urllib.parse import urlparse
+from typing import Any, Callable, Iterable, Optional, Sequence
+from urllib.parse import parse_qsl, urlparse, urlsplit, urlunsplit
 
 import httpx
 
@@ -47,6 +51,89 @@ OLLAMA_DEFAULT_PORT = 11434
 _RF_HINTS = ("response_format", "json_schema", "json_object", "guided", "grammar", "structured",
              "xgrammar", "outlines", "schema")
 _THOUGHT = re.compile(r"<\|channel\|?>thought(.*?)<channel\|>", re.S)
+REDACTED = "***"
+_URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/@\s?#]+@")
+_MIN_SECRET = 4  # shorter values are not redacted (they would mangle ordinary words)
+
+
+# --------------------------------------------------------------------------- credentials
+
+
+def redact_url(url: Any) -> str:
+    """``url`` without user info, query and fragment (where gateways put credentials)."""
+    text = str(url)
+    try:
+        parts = urlsplit(text)
+    except ValueError:  # malformed (e.g. a bad IPv6 host): strip what looks like credentials
+        return _URL_USERINFO.sub(r"\1", text).split("?", 1)[0].split("#", 1)[0]
+    netloc = parts.netloc.rsplit("@", 1)[-1]
+    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+
+
+def url_secrets(url: Any) -> list[str]:
+    """Credential-like values inside a URL: the password (or a lone user name used as a token) and
+    every query value."""
+    out: list[str] = []
+    try:
+        parts = urlsplit(str(url))
+        user, password = parts.username, parts.password
+        query = parse_qsl(parts.query, keep_blank_values=False)
+    except ValueError:
+        return out
+    if password:
+        out.append(password)
+    elif user:
+        out.append(user)
+    out.extend(v for _, v in query)
+    return [v for v in out if len(v) >= _MIN_SECRET]
+
+
+def collect_secrets(*values: Optional[str]) -> tuple[str, ...]:
+    """Distinct secret strings (raw and stripped), longest first (so a key is replaced before its parts)."""
+    seen: set[str] = set()
+    for v in values:
+        if not v:
+            continue
+        for form in (v, v.strip()):
+            if len(form) >= _MIN_SECRET:
+                seen.add(form)
+    return tuple(sorted(seen, key=len, reverse=True))
+
+
+def redact(text: Any, secrets: Iterable[str] = ()) -> str:
+    """``text`` with every secret and every ``scheme://user:pass@`` credential replaced by ``***``."""
+    out = str(text)
+    for secret in sorted({s for s in secrets if s and len(s) >= _MIN_SECRET}, key=len, reverse=True):
+        out = out.replace(secret, REDACTED)
+        esc = secret.encode("unicode_escape").decode("ascii")  # as quoted inside a repr
+        if esc != secret:
+            out = out.replace(esc, REDACTED)
+    return _URL_USERINFO.sub(r"\1" + REDACTED + "@", out)
+
+
+def clean_api_key(api_key: Optional[str], what: str = "api_key") -> Optional[str]:
+    """The API key without surrounding whitespace (a YAML block scalar or a CRLF env file adds a
+    line break); ``None`` when empty. A key with control or non-ASCII characters inside cannot be
+    sent as an HTTP header and is rejected with an error that does not quote it."""
+    if api_key is None:
+        return None
+    key = str(api_key).strip()
+    if not key:
+        return None
+    bad = [c for c in key if ord(c) < 32 or ord(c) == 127 or ord(c) > 126]
+    if bad:
+        kinds = sorted({"control character" if ord(c) < 32 or ord(c) == 127 else "non-ASCII character" for c in bad})
+        raise LLMError(f"{what} contains {len(bad)} {' / '.join(kinds)}(s) inside the key (length {len(key)}); "
+                       "it cannot be sent as an HTTP header - check the configured value (not shown)")
+    return key
+
+
+def join_url(base: str, suffix: str) -> str:
+    """``base`` + ``suffix`` with any query string of ``base`` kept at the end."""
+    if "?" not in base:
+        return base + suffix
+    head, query = base.split("?", 1)
+    return f"{head.rstrip('/')}{suffix}?{query}"
 
 
 class LLMHTTPError(LLMError):
@@ -95,35 +182,50 @@ def post_json(
     backoff: float = 1.0,
     sleep: Callable[[float], None] = time.sleep,
     what: str = "LLM",
+    secrets: Sequence[str] = (),
 ) -> dict[str, Any]:
     """POST ``body`` as JSON and return the decoded response.
 
     Retries ``max_retries`` times with exponential backoff (honouring
     ``Retry-After``) on 408/429/5xx, timeouts and connection errors; raises
     :class:`LLMHTTPError` / :class:`LLMError` with the server's message otherwise.
+    Error texts show the URL without credentials and with ``secrets`` (API keys) and URL
+    credentials replaced by ``***``.
     """
+    secrets = tuple(secrets) + tuple(url_secrets(url))
+    shown = redact_url(url)
+
+    def clean(text: Any) -> str:
+        return redact(text, secrets)
+
     attempt = 0
     while True:
         delay: Optional[float] = None
         try:
             resp = http.post(url, json=body, headers=headers)
         except httpx.TimeoutException as exc:
-            err: LLMError = LLMError(f"{what}: request to {url} timed out ({type(exc).__name__}); "
+            err: LLMError = LLMError(f"{what}: request to {shown} timed out ({type(exc).__name__}); "
                                      "increase the timeout for long multimodal prompts")
+        except httpx.LocalProtocolError as exc:  # its text quotes the offending header value (the API key)
+            raise LLMError(f"{what}: the request to {shown} could not be sent ({type(exc).__name__}: illegal "
+                           "header value or URL); check api_key and base_url for stray characters") from None
         except httpx.TransportError as exc:
-            err = LLMError(f"{what}: cannot reach {url}: {exc!r}")
+            err = LLMError(f"{what}: cannot reach {shown}: {type(exc).__name__}: {clean(exc)[:300]}")
+        except (httpx.InvalidURL, UnicodeError) as exc:
+            raise LLMError(f"{what}: invalid request to {shown} ({type(exc).__name__}); check base_url and "
+                           "api_key") from None
         else:
             if resp.status_code < 400:
                 try:
                     data = resp.json()
                 except ValueError:
-                    raise LLMError(f"{what}: non-JSON response from {url} (HTTP {resp.status_code}): "
-                                   f"{resp.text[:500]!r}") from None
+                    raise LLMError(f"{what}: non-JSON response from {shown} (HTTP {resp.status_code}): "
+                                   f"{clean(repr(resp.text[:500]))}") from None
                 if not isinstance(data, dict):
-                    raise LLMError(f"{what}: unexpected response from {url}: {str(data)[:500]}")
+                    raise LLMError(f"{what}: unexpected response from {shown}: {clean(str(data)[:500])}")
                 return data
-            text = error_text(resp)
-            err = LLMHTTPError(f"{what}: HTTP {resp.status_code} from {url}: {text}", resp.status_code, text)
+            text = clean(error_text(resp))
+            err = LLMHTTPError(f"{what}: HTTP {resp.status_code} from {shown}: {text}", resp.status_code, text)
             if resp.status_code not in RETRY_STATUS:
                 raise err
             delay = _retry_after(resp)
@@ -136,13 +238,18 @@ def post_json(
 
 
 def normalize_base_url(base_url: str) -> str:
-    """Strip a trailing ``/chat/completions`` and add ``/v1`` to a bare ``host:port``."""
-    url = base_url.strip().rstrip("/")
+    """Strip a trailing ``/chat/completions`` and add ``/v1`` to a bare ``host:port`` (a query
+    string, e.g. a gateway's ``?api-version=...``, is kept at the end)."""
+    url = base_url.strip()
+    query = ""
+    if "?" in url:
+        url, query = url.split("?", 1)
+    url = url.rstrip("/")
     if url.endswith("/chat/completions"):
         url = url[: -len("/chat/completions")]
     if not urlparse(url).path:
         url += "/v1"
-    return url
+    return f"{url}?{query}" if query else url
 
 
 def is_local_url(url: str) -> bool:
@@ -221,6 +328,8 @@ class OpenAICompatBackend(LLMBackend):
             raise ValueError("reasoning_effort is the level used when thinking is ON; 'none' switches it off")
         self.thinking_param = thinking_param
         self.reasoning_effort = reasoning_effort
+        self._secrets = collect_secrets(api_key, *url_secrets(self.base_url))
+        api_key = clean_api_key(api_key)
         self.api_key = api_key
         self.timeout = float(timeout)
         self.max_retries = int(max_retries)
@@ -229,6 +338,7 @@ class OpenAICompatBackend(LLMBackend):
         self.thinking_default = thinking_default
         self.backoff = backoff
         self.response_format_mode = response_format  # downgraded on HTTP 400/422 about response_format
+        self.configured_response_format = response_format
         self._sleep: Callable[[float], None] = time.sleep
         self._lock = threading.Lock()
         headers = {"Accept": "application/json"}
@@ -253,12 +363,29 @@ class OpenAICompatBackend(LLMBackend):
 
     @property
     def url(self) -> str:
-        return f"{self.base_url}/chat/completions"
+        return join_url(self.base_url, "/chat/completions")
+
+    @property
+    def display_url(self) -> str:
+        """The endpoint without credentials (for reports and logs)."""
+        return redact_url(self.url)
 
     @property
     def structured_output(self) -> str:
         """Current structured-output mode: json_schema | json_object | prompt."""
         return self.response_format_mode
+
+    def redact(self, text: Any) -> str:
+        """``text`` with this backend's API key and URL credentials replaced by ``***``."""
+        return redact(text, self._secrets)
+
+    def cache_fingerprint(self) -> dict[str, Any]:
+        """Request settings beyond the client's that change the answer (replay-cache key). The
+        configured structured-output mode is used, not the downgraded one, so a replay computes
+        the same keys as the run that filled the cache."""
+        return {"base_url": redact_url(self.base_url), "top_k": self.top_k, "extra_body": self.extra_body,
+                "response_format": self.configured_response_format, "thinking_param": self.thinking_param,
+                "reasoning_effort": self.reasoning_effort if self.thinking_param == "reasoning_effort" else None}
 
     # -- request / response ----------------------------------------------------------
     @staticmethod
@@ -328,10 +455,12 @@ class OpenAICompatBackend(LLMBackend):
     def parse_response(self, data: dict[str, Any], seconds: float = 0.0) -> LLMResponse:
         if data.get("error"):
             err = data["error"]
-            raise LLMError(f"{self.name}: server error: {err.get('message', err) if isinstance(err, dict) else err}")
+            msg = err.get("message", err) if isinstance(err, dict) else err
+            raise LLMError(self.redact(f"{self.name}: server error: {msg}"))
         choices = data.get("choices") or []
         if not choices:
-            raise LLMError(f"{self.name}: response without choices: {json.dumps(data, ensure_ascii=False)[:800]}")
+            raise LLMError(self.redact(f"{self.name}: response without choices: "
+                                       f"{json.dumps(data, ensure_ascii=False)[:800]}"))
         choice = choices[0]
         msg = choice.get("message") or {}
         content = msg.get("content")
@@ -364,7 +493,7 @@ class OpenAICompatBackend(LLMBackend):
             if self.response_format_mode == failed_mode:
                 self.response_format_mode = nxt
         log.warning("%s rejected response_format=%s (HTTP %d: %s); falling back to %s for this and later calls",
-                    self.base_url, failed_mode, exc.status_code, exc.body[:200], nxt)
+                    redact_url(self.base_url), failed_mode, exc.status_code, exc.body[:200], nxt)
 
     def complete(
         self,
@@ -385,7 +514,7 @@ class OpenAICompatBackend(LLMBackend):
             t0 = time.time()
             try:
                 data = post_json(self._http, self.url, body, max_retries=self.max_retries, backoff=self.backoff,
-                                 sleep=self._sleep, what=f"{self.name}[{self.model}]")
+                                 sleep=self._sleep, what=f"{self.name}[{self.model}]", secrets=self._secrets)
             except LLMHTTPError as exc:
                 rejected_format = (json_schema is not None and mode != "prompt" and exc.status_code in (400, 422)
                                    and any(h in exc.body.lower() for h in _RF_HINTS))
