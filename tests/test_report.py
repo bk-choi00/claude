@@ -276,3 +276,72 @@ def test_valve_tooltip_mentions_actuator(tmp_path, actuator):
     _, c = _parse(out)
     tip = c.find("rect", **{"data-id": "^o1$"})[0]["data-tip"]
     assert f"actuator: {actuator.value}" in tip and "FO-V001" in tip
+
+
+# --------------------------------------------------------------------------- pages not analysed / cross-sheet paths
+
+
+def test_report_warns_about_pages_not_analysed(tmp_path):
+    from shippid.model import PageInfo, PIDDocument
+
+    scanned = PIDDocument(source="scanned.pdf", pages=[PageInfo(index=0, width=600, height=400)],
+                          meta={"unreadable_pages": [0]})
+    src, c = _parse(write_html_report(analyze(scanned), tmp_path / "scan.html"))
+    assert len(c.find("div", id="pages-not-analysed")) == 2  # summary and drawing sections
+    assert "scanned / raster-only (unreadable): 페이지 page 1" in src
+    assert "scanned / raster-only page, not analysed" in src  # page heading badge
+    assert "No objects were extracted" in src and "적합 PASS" in src
+    # a partly readable set lists both kinds; the analysed page keeps its overlay
+    b, _ = pump_station(SystemType.BALLAST)
+    doc = b.build()
+    doc.pages += [PageInfo(index=1, width=600, height=400), PageInfo(index=2, width=600, height=400)]
+    doc.meta.update({"unreadable_pages": [1], "empty_pages": [2]})
+    src, c = _parse(write_html_report(analyze(doc), tmp_path / "part.html"))
+    assert "page 2</li>" in src and "empty: 페이지 page 3" in src and "empty page, not analysed" in src
+    assert c.find("rect", **{"class": r"\bobj\b"})
+    # nothing skipped: no warning
+    src, c = _parse(write_html_report(_report(), tmp_path / "ok.html"))
+    assert not c.find("div", id="pages-not-analysed")
+
+
+def _two_sheet_report() -> tuple[AnalysisReport, str, str]:
+    from shippid.model import PageInfo
+
+    b = DocBuilder(SystemType.BALLAST)
+    t1 = b.obj(S.TANK, 60, 300, name="NO.1 W.B.TK (P)")
+    p = b.obj(S.PUMP_CENTRIFUGAL, 300, 300, name="NO.1 BALLAST PUMP")
+    c1 = b.obj(S.OFF_PAGE_CONNECTOR, 560, 300)
+    b.chain(t1, p, c1, flow=1)
+    c2 = b.obj(S.OFF_PAGE_CONNECTOR, 60, 300, rotation=180, page=1)
+    t2 = b.obj(S.TANK, 400, 300, name="NO.2 W.B.TK (P)", page=1)
+    b.chain(c2, t2, flow=1, page=1)
+    doc = b.build()
+    doc.pages.append(PageInfo(index=1, width=1200, height=800))
+    doc.meta["sheet_links"] = [{"a": c1, "b": c2, "directed": True, "source": "manual"}]
+    return analyze(doc), c1, c2
+
+
+def test_flow_path_rows_reference_drawn_elements_and_export_sheet_links(tmp_path):
+    rep, c1, c2 = _two_sheet_report()
+    assert len(rep.flow_paths) == 1 and rep.meta["flow_path_sheet_links"] == [{"path": 0, "links": [[c1, c2]]}]
+    fp = rep.flow_paths[0]
+    assert set(fp.pipe_ids) <= {p.id for p in rep.document.pipes}
+    src, c = _parse(write_html_report(rep, tmp_path / "r.html"))
+    drawn = {a["data-id"] for _, a in c.tags if "data-id" in a}
+    flows = src.split('id="flows"')[1].split("</section>")[0]
+    row_ids = [i for ids in re.findall(r'<tr data-ids="([^"]*)"', flows) for i in ids.split()]
+    assert row_ids and set(row_ids) <= drawn  # every id highlights something on the drawing
+    assert "도면 간 연결 Sheet links" in flows and "(p.1) -&gt; " in flows and "(p.2)" in flows
+    paths = export_tables(rep, tmp_path / "t")
+    with paths["flow_paths"].open(encoding="utf-8-sig", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    assert rows[0]["sheet_links"] == f"{c1}>{c2}" and "sheet_link:" not in rows[0]["pipe_ids"]
+    assert rows[0]["pipe_ids"] == "; ".join(fp.pipe_ids)
+    # a report written before the fix (pseudo pipe id) is rendered / exported without it
+    old = rep.model_copy(deep=True)
+    old.flow_paths[0].pipe_ids.insert(2, f"sheet_link:{c1}:{c2}")
+    src, _ = _parse(write_html_report(old, tmp_path / "old.html"))
+    assert f"sheet_link:{c1}:{c2}" not in src.split('id="flows"')[1].split("</section>")[0]
+    paths = export_tables(old, tmp_path / "old")
+    with paths["flow_paths"].open(encoding="utf-8-sig", newline="") as fh:
+        assert "sheet_link:" not in list(csv.DictReader(fh))[0]["pipe_ids"]
