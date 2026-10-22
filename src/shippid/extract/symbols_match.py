@@ -21,6 +21,18 @@ a plausibility rather than a pure shape fit:
   score is cut by ``STRUCT_PENALTY`` (a box without the strainer's diagonal, hatching);
 * size: stretchable equipment (tanks, engines ...) drawn smaller than a minimum size in
   symbol units is penalised (a small box between two valves is not a main engine).
+
+Calibration on unseen symbol styles: the soft chamfer forgives a little extra ink (F1 of
+precision 0.88 and recall 1.0 is 0.94), so a yard check valve drawn as a bow-tie plus an
+outlet bar would match the gate template "confidently". Every fine match therefore also
+measures the share of the candidate's ink (outline and filled regions) farther than
+:data:`INK_DELTA` from the template -- ink on the through-axis between two opposite ports
+excepted, where a pipe may be drawn through an inline symbol -- and the share of the
+template's ink the candidate does not draw. Library drawings measure 0 for both; above a
+small tolerance the score falls steeply (:func:`ink_penalty`), and a match that was
+confident lands in :data:`REVIEW_BAND`: still the best guess, below the review threshold of
+:class:`shippid.analysis.gemma.GemmaAnalyzer`. The same measure separates look-alike
+library classes (gate vs ball valve, check vs SDNR valve) by clear margins.
 """
 
 from __future__ import annotations
@@ -88,6 +100,7 @@ class Variant:
     tree: Optional[cKDTree] = None
     fill_tree: Optional[cKDTree] = None
     n_circles: int = 0
+    axes: tuple[tuple[float, float, float, float], ...] = ()  # through-axes between opposite ports (x0, y0, x1, y1)
 
     @property
     def cls(self) -> SymbolClass:
@@ -113,9 +126,17 @@ class MatchResult:
     precision: float = 0.0
     recall: float = 0.0
     fill: float = 1.0
+    unexplained: float = 0.0  # share of the candidate's ink that the template does not explain
+    missing: float = 0.0  # share of the template's ink that the candidate does not draw
+    raw: Optional[float] = None  # score before the ink penalty (None: no penalty applied)
 
     def to_page(self, x: float, y: float) -> tuple[float, float]:
         return (self.cx + self.sx * x, self.cy + self.sy * y)
+
+    @property
+    def shape_score(self) -> float:
+        """Shape fit without the unexplained / missing ink penalty (for scale estimation)."""
+        return self.raw if self.raw is not None else self.score
 
     @property
     def scale(self) -> float:
@@ -267,8 +288,15 @@ class TemplateLibrary:
         ports = [(n, px - cx, py - cy, dx, dy) for n, (px, py), (dx, dy) in placed_ports(orig, pl)]
         n_circ = sum(1 for p in prims if isinstance(p, Circle))
         fx0, fy0, fx1, fy1 = placed_bbox(orig, pl, act)
+        axes = []
+        for i, (_, ax, ay, adx, ady) in enumerate(ports):
+            for _, bx, by, bdx, bdy in ports[i + 1:]:
+                # opposite ports facing away from each other on one line: a pipe may be drawn through
+                if abs(adx + bdx) < 1e-6 and abs(ady + bdy) < 1e-6 and abs((bx - ax) * ady - (by - ay) * adx) < 1e-6 \
+                        and (bx - ax) * bdx + (by - ay) * bdy > 0:
+                    axes.append((ax, ay, bx, by))
         v = Variant(-1, orig, rot, mir, act, pts, fill_pts, w, h, (cx, cy), (bx0 - cx, by0 - cy, bx1 - cx, by1 - cy),
-                    ports, stripped, (fx0 - cx, fy0 - cy, fx1 - cx, fy1 - cy), n_circles=n_circ)
+                    ports, stripped, (fx0 - cx, fy0 - cy, fx1 - cx, fy1 - cy), n_circles=n_circ, axes=tuple(axes))
         v.tree = cKDTree(pts)
         v.fill_tree = cKDTree(fill_pts) if len(fill_pts) else None
         return v
@@ -565,6 +593,7 @@ def fine_match(v: Variant, cs: CandidateShape, sx: float, sy: float, iters: int 
     loc = np.column_stack(((cs.pts[:, 0] - cx) / sx, (cs.pts[:, 1] - cy) / sy))
     d2, _ = v.tree.query(loc)
     precision = float(_soft(d2 / D, TAU).mean())
+    unexplained, missing = _ink_shares(v, loc, d2, d1 / s_mean)
     f1 = 2 * precision * recall / max(precision + recall, 1e-9)
     # filled regions
     if v.fill_tree is None and cs.fill_tree is None:
@@ -579,12 +608,70 @@ def fine_match(v: Variant, cs: CandidateShape, sx: float, sy: float, iters: int 
         fr = float(_soft(fd1 / (s_mean * D), TAU_FILL).mean())
         fp = float(_soft(fd2 / D, TAU_FILL).mean())
         fill = 2 * fr * fp / max(fr + fp, 1e-9)
+        # filled ink (a centre dot, a hatched triangle) counts like outline ink
+        lim = INK_DELTA * D
+        unexplained = max(unexplained, float((fd2 > lim).mean()))
+        missing = max(missing, float((fd1 / s_mean > lim).mean()))
     score = f1 * (0.45 + 0.55 * fill)
     if uniform:
         score *= _aniso_factor(sx / sy)
     if min(precision, recall) < MIN_PR:
         score *= STRUCT_PENALTY
-    return MatchResult(v, float(score), sx, sy, cx, cy, precision, recall, fill)
+    penalised = ink_penalty(score, unexplained, missing)
+    return MatchResult(v, float(penalised), sx, sy, cx, cy, precision, recall, fill, unexplained, missing,
+                       float(score) if penalised < score else None)
+
+
+INK_DELTA = 0.06  # a sample farther than this (relative to the template size) from the other drawing is not matched
+INK_TOL = 0.015  # unexplained / missing ink share tolerated without penalty (library drawings measure 0)
+INK_K = 10.0  # score factor 1 - INK_K * (excess share): 4.5 % unexplained ink costs a third of the score
+REVIEW_BAND = (0.63, 0.73)  # a confident match with unexplained / missing ink keeps its rank inside this band
+
+
+def ink_penalty(score: float, unexplained: float, missing: float) -> float:
+    """Calibration on unseen symbol styles: a template that leaves part of the candidate's ink
+    unexplained (a yard check valve = gate bow-tie + an outlet bar; a ball valve with a large
+    filled ball) or that the candidate does not draw completely is not a confident match,
+    however well the rest fits. The score falls by ``INK_K`` per unit of excess share; a
+    match that was confident is mapped no lower than into :data:`REVIEW_BAND` (order kept,
+    class kept, below the review threshold), so the class stays the best guess and the
+    object goes to review."""
+    excess = max(0.0, unexplained - INK_TOL) + max(0.0, missing - INK_TOL)
+    if excess <= 0.0:
+        return score
+    out = score * max(0.0, 1.0 - INK_K * excess)
+    if score >= REVIEW_BAND[0]:
+        out = max(out, review_band(score))
+    return min(out, score)
+
+
+def review_band(score: float) -> float:
+    """``score`` mapped linearly from [REVIEW_BAND[0], 1] into :data:`REVIEW_BAND`: the
+    confidence of a match that has to be reviewed (order of the alternatives preserved)."""
+    lo, hi = REVIEW_BAND
+    if score <= lo:
+        return score
+    return lo + (hi - lo) * (min(score, 1.0) - lo) / (1.0 - lo)
+
+
+def _seg_dist(p: np.ndarray, a: tuple[float, float], b: tuple[float, float]) -> np.ndarray:
+    ab = np.array((b[0] - a[0], b[1] - a[1]))
+    L2 = float(ab @ ab)
+    t = np.clip(((p - a) @ ab) / max(L2, 1e-12), 0.0, 1.0)
+    return np.hypot(*(p - (np.asarray(a) + t[:, None] * ab)).T)
+
+
+def _ink_shares(v: Variant, loc: np.ndarray, d_ct: np.ndarray, d_tc: np.ndarray) -> tuple[float, float]:
+    """(unexplained, missing): the share of the candidate's outline samples farther than
+    :data:`INK_DELTA` from the template -- not counting ink on a through-axis between two
+    opposite ports, where a pipe may be drawn through an inline symbol -- and the share of
+    the template's samples farther than that from the candidate (template units)."""
+    lim = INK_DELTA * v.D
+    far = d_ct > lim
+    if v.axes and far.any():
+        for x0, y0, x1, y1 in v.axes:
+            far &= _seg_dist(loc, (x0, y0), (x1, y1)) > lim
+    return float(far.mean()) if len(far) else 0.0, float((d_tc > lim).mean()) if len(d_tc) else 0.0
 
 
 def _aniso_factor(ratio: float) -> float:
@@ -636,7 +723,7 @@ class MatchCache:
         nx, ny = _norm_axes(cs.w, cs.h, cs.D)
         c = cs.center
         out = []
-        for n, (vi, sc, rsx, rsy, rcx, rcy, p, r, f, ratio0) in enumerate(rows):
+        for n, (vi, sc, rsx, rsy, rcx, rcy, p, r, f, ratio0, ue, mi, raw) in enumerate(rows):
             v = lib.variants[vi]
             sx, sy = rsx * nx, rsy * ny
             if not v.stretchable:
@@ -646,8 +733,10 @@ class MatchCache:
                         self.misses += 1
                         return None
                     continue
-                sc = sc * _aniso_factor(ratio) / _aniso_factor(ratio0)
-            out.append(MatchResult(v, sc, sx, sy, c[0] + rcx * nx, c[1] + rcy * ny, p, r, f))
+                k = _aniso_factor(ratio) / _aniso_factor(ratio0)
+                sc *= k
+                raw = raw * k if raw is not None else None
+            out.append(MatchResult(v, sc, sx, sy, c[0] + rcx * nx, c[1] + rcy * ny, p, r, f, ue, mi, raw))
         self.hits += 1
         return out
 
@@ -657,7 +746,8 @@ class MatchCache:
         nx, ny = _norm_axes(cs.w, cs.h, cs.D)
         c = cs.center
         self._store[k] = [(m.variant.idx, m.score, m.sx / nx, m.sy / ny, (m.cx - c[0]) / nx, (m.cy - c[1]) / ny,
-                           m.precision, m.recall, m.fill, m.sx / m.sy if m.sy else 1.0)
+                           m.precision, m.recall, m.fill, m.sx / m.sy if m.sy else 1.0, m.unexplained, m.missing,
+                           m.raw)
                           for m in sorted(results, key=lambda m: -m.score)]
 
 
@@ -706,7 +796,10 @@ def match_candidate(cs: CandidateShape, lib: Optional[TemplateLibrary] = None, u
             cache.put(key, cs, results)  # size-independent scores; the size prior is applied below
     if prior:
         for r in results:
-            r.score *= size_factor(r.variant, cs.D, unit)
+            f = size_factor(r.variant, cs.D, unit)
+            r.score *= f
+            if r.raw is not None:
+                r.raw *= f
     results.sort(key=lambda r: (-round(r.score, 4), r.variant.idx))
     if results:
         # among near-equal variants of the winning class prefer the canonical one (rotation 0, not mirrored):

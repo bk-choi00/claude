@@ -142,11 +142,16 @@ class Ring:
         return (min(xs), min(ys), max(xs), max(ys))
 
     @property
-    def polygon(self) -> Polygon:
+    def polygon(self):
+        """Area enclosed by the outline (a Polygon; a MultiPolygon for a self-intersecting outline
+        such as a bow-tie drawn as one closed 4-point polyline: both lobes, where ``buffer(0)``
+        would keep only one)."""
         if self._poly is None:
             poly = Polygon(self.pts) if len(self.pts) >= 3 else box(*self.bbox)
             if not poly.is_valid:
-                poly = poly.buffer(0)
+                fixed = shapely.make_valid(poly)
+                parts = [g for g in getattr(fixed, "geoms", [fixed]) if g.geom_type in ("Polygon", "MultiPolygon")]
+                poly = shapely.unary_union(parts) if parts else poly.buffer(0)
                 if poly.is_empty:
                     poly = box(*self.bbox)
             self._poly = poly

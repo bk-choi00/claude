@@ -20,6 +20,7 @@ from ..model import AnalysisReport, Category, Finding, FlowPath, PIDDocument, Pi
 from .graph import FlowNet, build_graph, components, flow_paths, node_name, sources_and_sinks
 from .lists import equipment_list, instrument_list, line_list, valve_list
 from .rules import RULES, RuleContext, run_rules
+from .sheets import link_sheets
 
 log = logging.getLogger(__name__)
 
@@ -35,7 +36,13 @@ class ReportReviewer(Protocol):
 
 
 def analyze(doc: PIDDocument, reviewer: Optional[ReportReviewer] = None, *, max_paths: int = 200) -> AnalysisReport:
-    """Graph + flow paths + lists + rule findings + template summaries, then optional review."""
+    """Graph + flow paths + lists + rule findings + template summaries, then optional review.
+
+    A document with several pages and no ``meta["sheet_links"]`` yet gets its off-page connectors
+    paired first (:func:`shippid.analysis.sheets.link_sheets`, stored in ``doc.meta``), so the
+    graph, flow paths and rules see one system across the sheets."""
+    if _pages(doc) > 1 and "sheet_links" not in doc.meta:
+        link_sheets(doc)
     G = build_graph(doc)
     net = FlowNet(doc, G)
     ctx = RuleContext(doc, G, net)
@@ -66,6 +73,9 @@ def analyze(doc: PIDDocument, reviewer: Optional[ReportReviewer] = None, *, max_
         "rules": list(RULES),
         "components": len(comps),
     })
+    if _pages(doc) > 1 or doc.meta.get("sheet_links"):
+        report.meta["sheet_links"] = sum(1 for *_, linked in G.edges(data="sheet_link") if linked)
+        report.meta["sheet_links_ambiguous"] = len(doc.meta.get("sheet_links_ambiguous") or [])
     report.summary_en = summary_en(report, ctx)
     report.summary_ko = summary_ko(report, ctx)
 
@@ -88,6 +98,10 @@ def analyze(doc: PIDDocument, reviewer: Optional[ReportReviewer] = None, *, max_
     reviewed.meta["review_status"] = review_status(reviewed, n_errors)
     reviewed.meta["reviewer"] = name
     return reviewed
+
+
+def _pages(doc: PIDDocument) -> int:
+    return len({p.index for p in doc.pages} | {o.page for o in doc.objects})
 
 
 def review_status(reviewed: AnalysisReport, n_errors_before: int = 0) -> str:
@@ -178,6 +192,9 @@ def summary_en(report: AnalysisReport, ctx: RuleContext) -> str:
         f"{c['signal_lines']} signal lines), {c['line_numbers']} line numbers, {c['junctions']} junctions, "
         f"{c['components']} connected groups.",
     ]
+    if "sheet_links" in report.meta:
+        lines.append(f"Sheets: {_pages(report.document)} pages joined by {report.meta['sheet_links']} cross-sheet "
+                     f"connector links ({report.meta.get('sheet_links_ambiguous', 0)} connectors left ambiguous).")
     total = report.meta.get("flow_paths_total", c["flow_paths"])
     fp = f"Flow paths: {total} driven paths from {c['sources']} sources to {c['sinks']} sinks"
     if report.flow_paths:
@@ -210,6 +227,9 @@ def summary_ko(report: AnalysisReport, ctx: RuleContext) -> str:
         f"신호선 {c['signal_lines']}), 라인 번호 {c['line_numbers']}개, 분기점 {c['junctions']}개, "
         f"연결 그룹 {c['components']}개.",
     ]
+    if "sheet_links" in report.meta:
+        lines.append(f"도면 {_pages(report.document)}매, 도면 간 연결 표시 쌍 {report.meta['sheet_links']}개 "
+                     f"(미결 연결 표시 {report.meta.get('sheet_links_ambiguous', 0)}개).")
     total = report.meta.get("flow_paths_total", c["flow_paths"])
     fp = f"유동 경로: 출발점 {c['sources']}곳에서 도착점 {c['sinks']}곳까지 펌프 구동 경로 {total}개"
     if report.flow_paths:

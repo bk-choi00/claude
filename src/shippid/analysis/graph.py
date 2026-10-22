@@ -25,6 +25,15 @@ Flow semantics (used by :func:`flow_paths` and the rules):
   overboards, engines, ``TO ...`` connectors; single-connection equipment is both;
 * a flow path goes source -> at least one driver (pump / compressor) -> sink. Drawings without
   any driver fall back to undriven source -> sink paths.
+
+Multi-sheet sets: every pair of off-page connectors in ``doc.meta["sheet_links"]`` (see
+:mod:`shippid.analysis.sheets`) becomes one more edge, ``kind="sheet_link"`` (key / ``pipe_id``
+``sheet_link:<a>:<b>``, zero length, ``flow_direction`` +1 from ``a`` to ``b`` when the link is
+``directed``). The edge kind is part of ``PROCESS_KINDS`` / ``CONNECT_KINDS`` / ``ALL_KINDS``, and
+paired connectors (node attribute ``sheet_link=True``, ``linked_to``) are passed through like
+junctions: they are neither sources nor sinks, flow paths, isolation searches, adjacency and
+components continue on the partner's sheet. ``build_graph(doc, with_sheet_links=False)`` gives
+the per-sheet graph.
 """
 
 from __future__ import annotations
@@ -40,6 +49,7 @@ import networkx as nx
 from ..model import (
     Category,
     FlowPath,
+    Medium,
     PIDDocument,
     PIDObject,
     PipeKind,
@@ -51,9 +61,12 @@ from ..symbols import ACTUATOR_PRIMS, Circle, Line, Poly, Rect, SymbolSpec, cate
 
 S = SymbolClass
 
-PROCESS_KINDS = frozenset({PipeKind.PROCESS})
-CONNECT_KINDS = frozenset({PipeKind.PROCESS, PipeKind.INSTRUMENT_TAP})
-ALL_KINDS = frozenset(PipeKind)
+#: edge kind of a cross-sheet continuation between two paired off-page connectors (not a PipeKind:
+#: no pipe of the document carries it)
+SHEET_LINK = "sheet_link"
+PROCESS_KINDS = frozenset({PipeKind.PROCESS, SHEET_LINK})
+CONNECT_KINDS = frozenset({PipeKind.PROCESS, PipeKind.INSTRUMENT_TAP, SHEET_LINK})
+ALL_KINDS = frozenset(PipeKind) | {SHEET_LINK}
 
 PUMP_CLASSES = frozenset({S.PUMP_CENTRIFUGAL, S.PUMP_SCREW})
 DRIVER_CLASSES = PUMP_CLASSES | {S.COMPRESSOR}
@@ -250,8 +263,31 @@ def resolve_port(obj: PIDObject, port: Optional[str], point: Optional[Point]) ->
 # --------------------------------------------------------------------------- graph
 
 
-def build_graph(doc: PIDDocument) -> nx.MultiGraph:
-    """Objects + junctions as nodes, one edge per pipe run (see module docstring)."""
+def sheet_link_pairs(doc: PIDDocument) -> list[tuple[str, str, dict]]:
+    """Valid entries of ``doc.meta["sheet_links"]``: ``(a, b, link)`` for two distinct objects of the
+    document, each connector in at most one link (first entry wins), in stored order."""
+    raw = doc.meta.get("sheet_links") if isinstance(doc.meta, dict) else None
+    if not raw:
+        return []
+    ids = {o.id for o in doc.objects}
+    used: set[str] = set()
+    out = []
+    for lk in raw:
+        if not isinstance(lk, dict):
+            continue
+        a, b = lk.get("a"), lk.get("b")
+        if not isinstance(a, str) or not isinstance(b, str) or a == b or a not in ids or b not in ids:
+            continue
+        if a in used or b in used:
+            continue
+        used.update((a, b))
+        out.append((a, b, lk))
+    return out
+
+
+def build_graph(doc: PIDDocument, *, with_sheet_links: bool = True) -> nx.MultiGraph:
+    """Objects + junctions as nodes, one edge per pipe run, plus one ``sheet_link`` edge per paired
+    off-page connectors unless ``with_sheet_links`` is False (see module docstring)."""
     G = nx.MultiGraph(source=doc.source)
     labels = object_labels(doc)
     objs = doc.object_by_id()
@@ -287,7 +323,37 @@ def build_graph(doc: PIDDocument) -> nx.MultiGraph:
         G.add_edge(u, v, key=p.id, pipe_id=p.id, kind=p.kind, medium=p.medium, line_number=p.line_number,
                    size=p.size, length=p.length, flow_direction=fd, start_node=u, end_node=v,
                    start_port=up, end_port=vp, raw_start_port=uraw, raw_end_port=vraw, order=i)
+    if with_sheet_links:
+        _add_sheet_links(G, doc)
     return G
+
+
+def _add_sheet_links(G: nx.MultiGraph, doc: PIDDocument) -> None:
+    pairs = sheet_link_pairs(doc)
+    if not pairs:
+        return
+    media: dict[str, Medium] = {}
+    for p in doc.pipes:
+        if p.kind == PipeKind.PROCESS and p.medium != Medium.UNKNOWN:
+            for ep in (p.start, p.end):
+                if ep.object_id:
+                    media.setdefault(ep.object_id, p.medium)
+    base = len(doc.pipes)
+    for k, (a, b, lk) in enumerate(pairs):
+        key = f"sheet_link:{a}:{b}"
+        G.add_edge(a, b, key=key, pipe_id=key, kind=SHEET_LINK, medium=media.get(a) or media.get(b) or Medium.UNKNOWN,
+                   line_number=None, size=None, length=0.0, flow_direction=1 if lk.get("directed") else None,
+                   start_node=a, end_node=b, start_port=None, end_port=None, raw_start_port=None, raw_end_port=None,
+                   order=base + k, sheet_link=True, link_key=lk.get("key"), confidence=lk.get("confidence"),
+                   link_source=lk.get("source"))
+        for n, m in ((a, b), (b, a)):
+            G.nodes[n]["sheet_link"] = True
+            G.nodes[n].setdefault("linked_to", []).append(m)
+
+
+def is_linked(G: nx.MultiGraph, n: str) -> bool:
+    """True for an off-page connector paired with another one (a continuation, not a terminal)."""
+    return bool(G.nodes[n].get("sheet_link")) if n in G else False
 
 
 @dataclass(frozen=True)
@@ -425,7 +491,7 @@ class FlowNet:
 
     def passable(self, n: str) -> bool:
         d = self.G.nodes[n]
-        if d.get("kind") == "junction":
+        if d.get("kind") == "junction" or d.get("sheet_link"):
             return True
         if d.get("kind") != "object":
             return False
@@ -494,7 +560,7 @@ class FlowNet:
 def terminal_role(G: nx.MultiGraph, n: str) -> tuple[bool, bool]:
     """(is_source, is_sink) of an object node."""
     d = G.nodes[n]
-    if d.get("kind") != "object":
+    if d.get("kind") != "object" or d.get("sheet_link"):
         return (False, False)
     cls = d["eff_cls"]
     label = (d.get("label") or "").upper()
@@ -623,7 +689,7 @@ def _isolating(G: nx.MultiGraph, n: str) -> bool:
 
 def _isolation_passable(G: nx.MultiGraph, n: str) -> bool:
     d = G.nodes[n]
-    if d.get("kind") == "junction":
+    if d.get("kind") == "junction" or d.get("sheet_link"):
         return True
     if d.get("kind") != "object":
         return False

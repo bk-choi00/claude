@@ -75,3 +75,37 @@ def test_generated_drawings(seed, overrides, tmp_path):
               "line_number_acc": 0.85, "process_pipe_recall": 0.97}
     low = {k: v for k, v in m.items() if v is not None and v < floors[k]}
     assert not low, (low, m)
+
+
+# export variants (shippid.datasets.variants): seed 3 / 5 give PDFSHX=1 (annotations), seed 1 / 2 PDFSHX=2
+VARIANT_CASES = [("shx_text", 1), ("shx_text", 3), ("fragmented_text", 1), ("polyline_curves", 2), ("yard_symbols", 2)]
+
+
+@pytest.mark.parametrize("variant,seed", VARIANT_CASES, ids=[f"{v}-{s}" for v, s in VARIANT_CASES])
+def test_export_variants(variant, seed, tmp_path):
+    variants = pytest.importorskip("shippid.datasets.variants")
+    from shippid.analysis.gemma import GemmaAnalyzer
+    from shippid.evaluate import evaluate_document, match_boxes
+    from shippid.extract.pipeline import extract_pdf
+    from shippid.llm.base import LLMClient, MockBackend
+
+    gt, pdf = variants.make_variant(seed, variant)
+    path = tmp_path / f"{variant}_{seed}.pdf"
+    path.write_bytes(pdf)
+    doc = extract_pdf(path)
+    r = evaluate_document(doc, gt)
+    assert r["detection"]["f1"] >= 0.99, r["detection"]
+    assert r["connections"]["f1"] >= 0.99, r["connections"]
+    assert r["texts"]["f1"] >= 0.99 and r["texts"]["content"]["accuracy"] >= 0.99, r["texts"]
+    if variant == "shx_text":
+        sources = doc.meta["pages"]["0"]["text_sources"]
+        carrier = "annotation" if gt.meta["variant"]["params"]["shx_text"]["pdfshx"] == 1 else "hidden"
+        assert sources[carrier] == len(gt.texts) and sources["text"] == 0
+    if variant != "yard_symbols":
+        assert r["detection_class_aware"]["f1"] >= 0.99
+        return
+    # unseen symbol styles: every misclassified object goes to review (Gemma), none with high confidence
+    an = GemmaAnalyzer(LLMClient(MockBackend(lambda *a: {})))
+    wrong = [doc.objects[i] for i, j, _ in match_boxes([o.bbox for o in doc.objects], [o.bbox for o in gt.objects], 0.5)
+             if doc.objects[i].cls != gt.objects[j].cls]
+    assert wrong and all(an.needs_review(o) and o.confidence < an.min_confidence for o in wrong)

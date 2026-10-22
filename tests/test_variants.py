@@ -15,6 +15,7 @@ from shippid.datasets.variants import (
     A0,
     BOWTIE_CLASSES,
     COMBINABLE,
+    SHX_FONT,
     THROUGH_CLASSES,
     VARIANTS,
     YARD_DESIGNS,
@@ -22,11 +23,12 @@ from shippid.datasets.variants import (
     build_variant_suite,
     korean_label,
     make_variant,
+    shx_strokes,
 )
 from shippid.model import BBox, Category, PIDDocument, PipeKind, SymbolClass, TextRole
 
 REQUIRED = ("rotated_page", "qu_bowties", "pipes_through", "polyline_curves", "styled_lines", "fragmented_text",
-            "layers_off", "scaled", "yard_symbols", "combined")
+            "layers_off", "scaled", "yard_symbols", "shx_text", "combined")
 # seed 1: A0 / layer colours / notes OFF / /Rotate 270; seed 3: thick symbols / 1.5x / /Rotate 270;
 # seed 9: wipeouts / superseded valves / /Rotate 90
 SEEDS = [(1, ALL_SYSTEMS[1]), (3, ALL_SYSTEMS[3]), (9, ALL_SYSTEMS[9])]
@@ -117,7 +119,7 @@ def test_plain_is_byte_identical_to_the_base_writer():
 
 
 def test_determinism():
-    for v in ("combined", "fragmented_text", "layers_off", "yard_symbols", "pipes_through"):
+    for v in ("combined", "fragmented_text", "layers_off", "yard_symbols", "pipes_through", "shx_text"):
         a_gt, a_pdf = make_variant(5, v)
         b_gt, b_pdf = make_variant(5, v)
         assert a_pdf == b_pdf, v
@@ -150,6 +152,9 @@ def test_visible_text_matches_ground_truth(made):
     n = 0
     for (v, seed), (gt, pdf) in made.items():
         chars = _chars(_page(pdf))
+        if "shx_text" in gt.meta["variant"]["components"]:  # lettering is stroke geometry (test_shx_text)
+            assert not [c for c in chars if not c[2]], (v, seed)
+            continue
         for t in gt.texts:
             got, rects = _text_of(chars, t)
             assert got == t.text.replace(" ", ""), (v, seed, t.id, t.text, got)
@@ -353,6 +358,76 @@ def test_fragmented_text(made):
     assert hangul >= 3
 
 
+def _annots(page: pymupdf.Page) -> list[tuple[str, pymupdf.Rect, dict, "pymupdf.Annot"]]:
+    """(contents, /Rect in displayed coordinates, info, annot) of every annotation."""
+    out = []
+    for a in page.annots():
+        nums = [float(x) for x in re.findall(r"[-+]?[0-9]*\.?[0-9]+", page.parent.xref_get_key(a.xref, "Rect")[1])]
+        r = pymupdf.Rect(nums) * page.transformation_matrix * page.rotation_matrix
+        r.normalize()
+        out.append((a.info["content"], r, a.info, a))
+    return out
+
+
+def test_shx_text(made):
+    modes, kinds = set(), Counter()
+    cases = [(seed, made[("shx_text", seed)]) for seed, _ in SEEDS]
+    cases += [(seed, made[("combined", seed)]) for seed, _ in SEEDS
+              if "shx_text" in made[("combined", seed)][0].meta["variant"]["components"]]
+    cases.append((4, make_variant(4, "shx_text", ALL_SYSTEMS[4])))
+    assert len(cases) >= 4
+    for seed, (gt, pdf) in cases:
+        p = gt.meta["variant"]["params"]["shx_text"]
+        modes.add(p["pdfshx"])
+        page = _page(pdf)
+        # no font glyph is visible: all lettering is line geometry inside the text boxes
+        chars = _chars(page)
+        assert not [c for c in chars if not c[2]]
+        items = _items(page)
+        for t in gt.texts:
+            strokes = [pts for k, pts, _ in items if k == "l" and _inside(pts, t.bbox, 0.6)]
+            assert len(strokes) >= len(t.text.replace(" ", "")), (seed, t.text)
+        if p["pdfshx"] == 2:  # the strings as invisible text exactly over the strokes
+            assert not list(page.annots())
+            for t in gt.texts:
+                sel = {}
+                for c, r, hidden in chars:
+                    if hidden and t.bbox.contains_point((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2, tol=1.0):
+                        sel[(c, round(r.x0, 1), round(r.y0, 1))] = r
+                keys = sorted(sel, key=(lambda k: k[1]) if t.rotation == 0 else (lambda k: -sel[k].y1))
+                assert "".join(k[0] for k in keys) == t.text.replace(" ", ""), (seed, t.text)
+        else:  # one hidden 'AutoCAD SHX Text' annotation per text, its /Rect = the text box
+            assert not [c for c in chars if c[2]]
+            ann = _annots(page)
+            assert len(ann) >= p["texts"] >= len(gt.texts)  # + duplicated entities (styled_lines), OFF-layer texts
+            for content, r, info, a in ann:
+                assert info["subject"] == "AutoCAD SHX Text"
+                assert a.flags & pymupdf.PDF_ANNOT_IS_HIDDEN
+                kinds[a.type[1]] += 1
+                rb = BBox(x0=r.x0, y0=r.y0, x1=r.x1, y1=r.y1)
+                assert a.get_oc() or any(t.text == content and rb.iou(t.bbox) >= 0.98 for t in gt.texts)
+            for t in gt.texts:
+                best = max(ann, key=lambda x: BBox(x0=x[1].x0, y0=x[1].y0, x1=x[1].x1, y1=x[1].y1).iou(t.bbox))
+                assert best[0] == t.text
+                assert BBox(x0=best[1].x0, y0=best[1].y0, x1=best[1].x1, y1=best[1].y1).iou(t.bbox) >= 0.98
+        # ground truth: the logical texts of the base drawing
+        assert all(t.text and t.bbox.width > 0 for t in gt.texts)
+    assert modes == {1, 2}
+    assert kinds["FreeText"] and kinds["Text"]
+
+
+def test_shx_stroke_font():
+    assert len(SHX_FONT) >= 40
+    for ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-/()&,:'\"#+":
+        assert ch in SHX_FONT, ch
+    lines = shx_strokes("FO-101V", "helv", 10.0)
+    xs = [u for ln in lines for u, _ in ln]
+    vs = [v for ln in lines for _, v in ln]
+    assert min(xs) > 0 and max(xs) < pymupdf.get_text_length("FO-101V", fontname="helv", fontsize=10.0)
+    assert min(vs) >= 0.0 and max(vs) <= 7.0 + 1e-9  # baseline .. cap height
+    assert len(shx_strokes("A B", "cour", 8.0)) == 4  # spaces draw nothing
+
+
 def test_korean_labels():
     assert korean_label("NO.1 BALLAST PUMP") == "1번 평형수 펌프"
     assert korean_label("NO.2 W.B.TK (P)") == "2번 평형수 탱크 (좌현)"
@@ -396,7 +471,9 @@ def test_layers_off(made):
                 assert all(x in ids for p in gt.pipes for x in p.text_ids)
             # the OFF content is really in the file: switching every layer on reveals it
             d.set_layer(-1, on=list(d.get_ocgs()), off=[])
-            words = {w[4] for w in pymupdf.open("pdf", d.tobytes())[0].get_text("words")}
+            reopened = pymupdf.open("pdf", d.tobytes())[0]
+            words = {w[4] for w in reopened.get_text("words")}
+            words |= {w for a in reopened.annots() for w in a.info["content"].split()}
             single = [t["text"] for t in offs if " " not in t["text"]]
             assert single and all(s in words for s in single)
             if vm["off_layer_objects"]:

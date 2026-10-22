@@ -90,12 +90,15 @@ VARIANTS: dict[str, str] = {
     "scaled": "whole sheet scaled 0.6x or 1.5x (an A1 sheet becomes A0), symbol and text sizes far from the defaults",
     "yard_symbols": "yard symbol convention for gate / check / SDNR / ball valves, centrifugal pumps and local "
                     "instruments, drawn consistently and explained in a LEGEND block; classes stay canonical",
+    "shx_text": "AutoCAD SHX text: every text drawn as single-stroke line geometry (no font glyphs); the strings "
+                "travel as invisible render-mode-3 text over the strokes (PDFSHX=2) or as hidden 'AutoCAD SHX Text' "
+                "FreeText / Text annotations (PDFSHX=1)",
     "combined": "a random mix of 2-4 of the variants above per drawing",
 }
 
 # variants that ``combined`` mixes, in the order their transformations are applied
-COMBINABLE: tuple[str, ...] = ("yard_symbols", "fragmented_text", "pipes_through", "layers_off", "styled_lines",
-                               "qu_bowties", "polyline_curves", "scaled", "rotated_page")
+COMBINABLE: tuple[str, ...] = ("yard_symbols", "fragmented_text", "pipes_through", "layers_off", "shx_text",
+                               "styled_lines", "qu_bowties", "polyline_curves", "scaled", "rotated_page")
 
 A0: tuple[float, float] = (3370.0, 2384.0)  # landscape, points
 KOREA_FONT = "korea"
@@ -303,6 +306,9 @@ class _Text:
     gt: Optional[int] = None  # ground-truth text index
     mode: str = "whole"  # whole | word | char
     hidden_font: Optional[str] = None  # invisible (render mode 3) duplicate in this font
+    shx: Optional[str] = None  # SHX stroke text carrying its string as 'hidden' text (PDFSHX=2) or an 'annotation'
+    shx_width: float = 0.25  # stroke width of the SHX glyphs
+    shx_annot: str = "FreeText"  # annotation subtype for shx == 'annotation': FreeText | Text
 
 
 @dataclass
@@ -1070,10 +1076,132 @@ def _apply_curves(ctx: _Ctx, rng: random.Random) -> None:
     ctx.params["polyline_curves"] = {"segments_per_circle": ctx.opts.curve_n}
 
 
+# --------------------------------------------------------------------------- SHX stroke font
+
+Glyph = tuple[tuple[tuple[float, float], ...], ...]
+
+
+def _ell(cx: float, cy: float, rx: float, ry: float, a0: float, a1: float, n: int) -> tuple[tuple[float, float], ...]:
+    """Points on an elliptic arc from ``a0`` to ``a1`` degrees (counter-clockwise, y up)."""
+    return tuple((round(cx + rx * math.cos(math.radians(a0 + (a1 - a0) * k / n)), 4),
+                  round(cy + ry * math.sin(math.radians(a0 + (a1 - a0) * k / n)), 4)) for k in range(n + 1))
+
+
+# Single-stroke glyphs in a unit cell (x 0..1 across the glyph, y 0 = baseline .. 1 = cap height),
+# one tuple of polylines per character, in the manner of AutoCAD's txt / simplex SHX fonts.
+_P_BOWL = ((0.0, 0.0), (0.0, 1.0), (0.75, 1.0), (1.0, 0.86), (1.0, 0.64), (0.75, 0.5), (0.0, 0.5))
+SHX_FONT: dict[str, Glyph] = {
+    "A": (((0.0, 0.0), (0.5, 1.0), (1.0, 0.0)), ((0.2, 0.4), (0.8, 0.4))),
+    "B": (((0.0, 0.0), (0.0, 1.0), (0.7, 1.0), (0.92, 0.88), (0.92, 0.62), (0.7, 0.5), (0.0, 0.5)),
+          ((0.7, 0.5), (1.0, 0.38), (1.0, 0.12), (0.78, 0.0), (0.0, 0.0))),
+    "C": (_ell(0.5, 0.5, 0.5, 0.5, 45, 315, 10),),
+    "D": (((0.0, 0.0), (0.0, 1.0), (0.6, 1.0), (0.9, 0.82), (1.0, 0.5), (0.9, 0.18), (0.6, 0.0), (0.0, 0.0)),),
+    "E": (((1.0, 1.0), (0.0, 1.0), (0.0, 0.0), (1.0, 0.0)), ((0.0, 0.52), (0.72, 0.52))),
+    "F": (((1.0, 1.0), (0.0, 1.0), (0.0, 0.0)), ((0.0, 0.52), (0.72, 0.52))),
+    "G": (_ell(0.5, 0.5, 0.5, 0.5, 45, 320, 10) + ((1.0, 0.42), (0.55, 0.42)),),
+    "H": (((0.0, 0.0), (0.0, 1.0)), ((1.0, 0.0), (1.0, 1.0)), ((0.0, 0.52), (1.0, 0.52))),
+    "I": (((0.5, 0.0), (0.5, 1.0)),),
+    "J": (((1.0, 1.0), (1.0, 0.25), (0.8, 0.0), (0.2, 0.0), (0.0, 0.25)),),
+    "K": (((0.0, 0.0), (0.0, 1.0)), ((1.0, 1.0), (0.0, 0.35)), ((0.3, 0.6), (1.0, 0.0))),
+    "L": (((0.0, 1.0), (0.0, 0.0), (1.0, 0.0)),),
+    "M": (((0.0, 0.0), (0.0, 1.0), (0.5, 0.35), (1.0, 1.0), (1.0, 0.0)),),
+    "N": (((0.0, 0.0), (0.0, 1.0), (1.0, 0.0), (1.0, 1.0)),),
+    "O": (_ell(0.5, 0.5, 0.5, 0.5, 90, 450, 16),),
+    "P": (_P_BOWL,),
+    "Q": (_ell(0.5, 0.5, 0.5, 0.5, 90, 450, 16), ((0.6, 0.28), (1.0, -0.06))),
+    "R": (_P_BOWL, ((0.5, 0.5), (1.0, 0.0))),
+    "S": (((1.0, 0.85), (0.8, 1.0), (0.2, 1.0), (0.0, 0.85), (0.0, 0.62), (0.2, 0.52), (0.8, 0.48), (1.0, 0.38),
+           (1.0, 0.15), (0.8, 0.0), (0.2, 0.0), (0.0, 0.15)),),
+    "T": (((0.0, 1.0), (1.0, 1.0)), ((0.5, 1.0), (0.5, 0.0))),
+    "U": (((0.0, 1.0), (0.0, 0.25), (0.25, 0.0), (0.75, 0.0), (1.0, 0.25), (1.0, 1.0)),),
+    "V": (((0.0, 1.0), (0.5, 0.0), (1.0, 1.0)),),
+    "W": (((0.0, 1.0), (0.25, 0.0), (0.5, 0.6), (0.75, 0.0), (1.0, 1.0)),),
+    "X": (((0.0, 0.0), (1.0, 1.0)), ((0.0, 1.0), (1.0, 0.0))),
+    "Y": (((0.0, 1.0), (0.5, 0.5), (1.0, 1.0)), ((0.5, 0.5), (0.5, 0.0))),
+    "Z": (((0.0, 1.0), (1.0, 1.0), (0.0, 0.0), (1.0, 0.0)),),
+    "0": (_ell(0.5, 0.5, 0.42, 0.5, 90, 450, 14),),
+    "1": (((0.2, 0.78), (0.55, 1.0), (0.55, 0.0)),),
+    "2": (((0.0, 0.8), (0.2, 1.0), (0.8, 1.0), (1.0, 0.8), (1.0, 0.6), (0.0, 0.0), (1.0, 0.0)),),
+    "3": (((0.0, 0.88), (0.2, 1.0), (0.8, 1.0), (1.0, 0.85), (1.0, 0.66), (0.75, 0.53), (0.3, 0.53)),
+          ((0.75, 0.53), (1.0, 0.38), (1.0, 0.15), (0.8, 0.0), (0.2, 0.0), (0.0, 0.12))),
+    "4": (((0.75, 0.0), (0.75, 1.0), (0.0, 0.3), (1.0, 0.3)),),
+    "5": (((1.0, 1.0), (0.05, 1.0), (0.0, 0.55), (0.7, 0.6), (1.0, 0.4), (1.0, 0.15), (0.8, 0.0), (0.2, 0.0),
+           (0.0, 0.1)),),
+    "6": (((0.9, 1.0), (0.4, 1.0), (0.1, 0.7), (0.0, 0.3), (0.2, 0.0), (0.8, 0.0), (1.0, 0.2), (1.0, 0.4),
+           (0.8, 0.55), (0.2, 0.55), (0.02, 0.4)),),
+    "7": (((0.0, 1.0), (1.0, 1.0), (0.35, 0.0)),),
+    "8": (((0.5, 0.53), (0.15, 0.66), (0.15, 0.9), (0.35, 1.0), (0.65, 1.0), (0.85, 0.9), (0.85, 0.66), (0.5, 0.53),
+           (0.05, 0.36), (0.05, 0.12), (0.3, 0.0), (0.7, 0.0), (0.95, 0.12), (0.95, 0.36), (0.5, 0.53)),),
+    "9": (((0.1, 0.0), (0.6, 0.0), (0.9, 0.3), (1.0, 0.7), (0.8, 1.0), (0.2, 1.0), (0.0, 0.8), (0.0, 0.6),
+           (0.2, 0.45), (0.8, 0.45), (0.98, 0.6)),),
+    ".": (((0.4, 0.0), (0.6, 0.0), (0.6, 0.1), (0.4, 0.1), (0.4, 0.0)),),
+    ",": (((0.55, 0.1), (0.4, -0.18)),),
+    ":": (((0.4, 0.0), (0.6, 0.0), (0.6, 0.1), (0.4, 0.1), (0.4, 0.0)),
+          ((0.4, 0.6), (0.6, 0.6), (0.6, 0.7), (0.4, 0.7), (0.4, 0.6))),
+    "-": (((0.1, 0.5), (0.9, 0.5)),),
+    "/": (((0.0, -0.05), (1.0, 1.05)),),
+    "(": (((0.85, 1.08), (0.45, 0.82), (0.3, 0.5), (0.45, 0.18), (0.85, -0.08)),),
+    ")": (((0.15, 1.08), (0.55, 0.82), (0.7, 0.5), (0.55, 0.18), (0.15, -0.08)),),
+    "&": (((1.0, 0.0), (0.25, 0.7), (0.25, 0.9), (0.4, 1.0), (0.6, 1.0), (0.7, 0.85), (0.6, 0.7), (0.0, 0.3),
+           (0.0, 0.1), (0.2, 0.0), (0.6, 0.0), (1.0, 0.4)),),
+    "'": (((0.5, 1.0), (0.5, 0.72)),),
+    '"': (((0.3, 1.0), (0.3, 0.72)), ((0.7, 1.0), (0.7, 0.72))),
+    "#": (((0.3, 0.0), (0.42, 1.0)), ((0.6, 0.0), (0.72, 1.0)), ((0.0, 0.35), (1.0, 0.35)), ((0.05, 0.68), (1.0, 0.68))),
+    "+": (((0.5, 0.15), (0.5, 0.85)), ((0.15, 0.5), (0.85, 0.5))),
+}
+# characters without a glyph (e.g. Hangul, drawn by an SHX big font): a crossed box
+SHX_FALLBACK: Glyph = (((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)), ((0.0, 0.0), (1.0, 1.0)))
+SHX_CAP = 0.7  # cap height / font size
+SHX_LOWER = 0.72  # lower-case glyphs: the upper-case glyph at this share of the cap height
+
+
+def shx_strokes(text: str, font: str, size: float) -> list[list[tuple[float, float]]]:
+    """Polylines of ``text`` in the SHX stroke font, in text space: u along the reading
+    direction from the origin, v up from the baseline (points). Each glyph fills its
+    character's advance cell of ``font`` (minus side bearings), so the strokes cover the
+    same box as the font text they replace."""
+    out: list[list[tuple[float, float]]] = []
+    for i, ch in enumerate(text):
+        if ch.isspace():
+            continue
+        u0 = _tw(text[:i], font, size)
+        adv = _tw(ch, font, size)
+        glyph = SHX_FONT.get(ch.upper(), SHX_FALLBACK)
+        h = SHX_CAP * size * (SHX_LOWER if ch.islower() else 1.0)
+        bear = 0.14 * adv
+        w = adv - 2 * bear
+        for line in glyph:
+            out.append([(u0 + bear + x * w, y * h) for x, y in line])
+    return out
+
+
+def _apply_shx(ctx: _Ctx, rng: random.Random) -> None:
+    pdfshx = rng.choice((1, 2))  # 1: strings in annotations, 2: strings as invisible text
+    width = rng.uniform(0.12, 0.35)
+    p_note = rng.uniform(0.15, 0.4) if pdfshx == 1 else 0.0  # share of 'Text' (sticky note) annotations
+    kinds: Counter = Counter()
+    n = 0
+    for op in ctx.ops:
+        if not isinstance(op, _Text):
+            continue
+        op.shx = "annotation" if pdfshx == 1 else "hidden"
+        op.shx_width = width
+        op.hidden_font = None  # an invisible copy of the string is now the PDFSHX carrier itself
+        op.shx_annot = "Text" if rng.random() < p_note else "FreeText"
+        if pdfshx == 1:
+            kinds[op.shx_annot] += 1
+        n += 1
+    if "fragmented_text" in ctx.params:
+        ctx.params["fragmented_text"]["superseded_by_shx_text"] = True
+        ctx.params["fragmented_text"]["hidden_duplicates"] = 0
+    ctx.params["shx_text"] = {"pdfshx": pdfshx, "carrier": "annotation" if pdfshx == 1 else "invisible_text",
+                              "stroke_width": round(width, 3), "texts": n, "annotation_types": dict(sorted(kinds.items()))}
+
+
 _APPLY = {
     "yard_symbols": _apply_yard, "fragmented_text": _apply_text, "pipes_through": _apply_through,
     "layers_off": _apply_layers_off, "styled_lines": _apply_styled, "qu_bowties": _apply_qu,
-    "polyline_curves": _apply_curves, "scaled": _apply_scaled, "rotated_page": _apply_rotated,
+    "polyline_curves": _apply_curves, "scaled": _apply_scaled, "rotated_page": _apply_rotated, "shx_text": _apply_shx,
 }
 
 # --------------------------------------------------------------------------- rendering
@@ -1207,9 +1335,26 @@ def _render(ctx: _Ctx) -> bytes:
         sh.finish(width=c.width * s, color=c.color, fill=c.fill, closePath=True, lineCap=cap, lineJoin=join,
                   oc=oc(c.layer))
 
+    annots: list[tuple[_Text, pymupdf.Rect, int]] = []
+
     def text(t: _Text) -> None:
         d = (1.0, 0.0) if t.rotate == 0 else (0.0, -1.0)
         prot = (t.rotate + rot) % 360
+        if t.shx:
+            up = (0.0, -1.0) if t.rotate == 0 else (-1.0, 0.0)
+            for line in shx_strokes(t.text, t.font, t.size):
+                sh.draw_polyline([P(t.x + u * d[0] + v * up[0], t.y + u * d[1] + v * up[1]) for u, v in line])
+            sh.finish(width=t.shx_width * s, color=t.color, fill=None, closePath=False, lineCap=1, lineJoin=1,
+                      oc=oc(t.layer))
+            if t.shx == "hidden":  # PDFSHX=2: the string as invisible text over the strokes
+                sh.insert_text(P(t.x, t.y), t.text, fontsize=t.size * s, fontname=t.font, rotate=prot, color=t.color,
+                               render_mode=3, oc=oc(t.layer))
+            else:  # PDFSHX=1: an annotation over the text box (added after the page content)
+                b = _tbbox(t.text, t.x, t.y, t.size, t.font, t.rotate)
+                c0, c1 = P(b[0], b[1]), P(b[2], b[3])
+                annots.append((t, pymupdf.Rect(min(c0.x, c1.x), min(c0.y, c1.y), max(c0.x, c1.x), max(c0.y, c1.y)),
+                               prot))
+            return
         for piece, off in _pieces(t.text, t.mode, t.font, t.size):
             sh.insert_text(P(t.x + d[0] * off, t.y + d[1] * off), piece, fontsize=t.size * s, fontname=t.font,
                            rotate=prot, color=t.color, oc=oc(t.layer))
@@ -1227,6 +1372,8 @@ def _render(ctx: _Ctx) -> bytes:
         else:
             text(op)
     sh.commit()
+    for k, (t, r, prot) in enumerate(annots):
+        _shx_annotation(pdf, page, t, r, prot, ocg.get(t.layer) if t.layer else None, s, k)
     if rot:
         page.set_rotation(rot)
     meta = {k: "" for k in ("title", "author", "subject", "keywords", "creator", "producer")}
@@ -1237,6 +1384,24 @@ def _render(ctx: _Ctx) -> bytes:
         return pdf.tobytes(garbage=3, deflate=True, no_new_id=True)
     finally:
         pdf.close()
+
+
+def _shx_annotation(pdf: "pymupdf.Document", page: "pymupdf.Page", t: _Text, r: "pymupdf.Rect", prot: int,
+                    ocg: Optional[int], s: float, k: int) -> None:
+    """One AutoCAD PDFSHX=1 comment: hidden (not rendered, so the strokes stay the only visible
+    text), the string as contents, subject / author "AutoCAD SHX Text", the text box as /Rect."""
+    if t.shx_annot == "Text":
+        a = page.add_text_annot(r.tl, t.text)
+    else:
+        a = page.add_freetext_annot(r, t.text, fontsize=t.size * s, fontname="helv", rotate=prot)
+    a.set_info(content=t.text, subject="AutoCAD SHX Text", title="AutoCAD SHX Text" if k % 2 else "")
+    a.set_flags(pymupdf.PDF_ANNOT_IS_HIDDEN | pymupdf.PDF_ANNOT_IS_PRINT)
+    if ocg:
+        a.set_oc(ocg)
+    a.update()
+    if t.shx_annot == "Text":  # MuPDF gives notes an icon-sized /Rect: store the text box like AutoCAD
+        q = r * ~page.transformation_matrix
+        pdf.xref_set_key(a.xref, "Rect", f"[{q.x0:.3f} {q.y0:.3f} {q.x1:.3f} {q.y1:.3f}]")
 
 
 # --------------------------------------------------------------------------- ground truth

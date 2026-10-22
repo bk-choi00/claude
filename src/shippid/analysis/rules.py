@@ -334,11 +334,14 @@ def _value(x: object) -> str:
 
 
 def _p_inline(ctx: RuleContext, n: str) -> bool:
-    """Junctions, fittings, strainers / filters / flow meters and unknown symbols."""
+    """Junctions, fittings, strainers / filters / flow meters, unknown symbols and off-page
+    connectors paired across sheets (``sheet_link``: the line continues on the partner's sheet)."""
     if ctx.is_junction(n):
         return True
     if not ctx.is_obj(n):
         return False
+    if ctx.node(n).get("sheet_link"):
+        return True
     return ctx.cat(n) == Category.FITTING or ctx.eff(n) in INLINE_EQUIPMENT or ctx.eff(n) == S.UNKNOWN
 
 
@@ -893,7 +896,7 @@ def _r_sea_chests(ctx: RuleContext, r: Rule) -> list[Finding]:
     if not applicable:
         return [r.na("Not a sea water cooling drawing.")]
     inlets = chests + [c for c in ctx.ids(S.OFF_PAGE_CONNECTOR) if _SEA_INLET_RE.search(ctx.label(c))
-                       and "FROM" in ctx.label(c)]
+                       and "FROM" in ctx.label(c) and not ctx.node(c).get("sheet_link")]  # not a continuation
     if not inlets:
         return [_none_shown(ctx, r, ST.SEA_WATER_COOLING, "sea chest / sea inlet")]
     if len(inlets) >= 2:

@@ -10,8 +10,16 @@ rendering of the page.
 Only what is visible is read: vector content is clipped to the CropBox and to
 the active clip paths (CAD viewports, cropped plots; approximated by the clip's
 bounding rectangle), and text hidden by clip paths is dropped. Invisible text
-(render mode 3, e.g. an OCR layer) is kept but flagged, and does not count as
-readable content.
+(render mode 3 / zero alpha / neither filled nor stroked, e.g. an OCR layer or
+AutoCAD ``PDFSHX=2`` text over SHX stroke glyphs) is kept but flagged, and does
+not count as readable content. AutoCAD ``PDFSHX=1`` exports carry the strings of
+SHX text (drawn as stroke geometry) in "AutoCAD SHX Text" annotations; these are
+read as words flagged ``annotation``.
+
+Curves tessellated into straight pieces (CAD exports of circles, arcs and hop
+bridges) are recognised: closed regular n-gons (n >= 12) become circles, runs of
+equal-turn pieces on a circular arc inside an open polyline are flagged as curve
+pieces like flattened Beziers.
 
 The reader does no P&ID interpretation; :mod:`shippid.extract` builds on it.
 """
@@ -23,11 +31,21 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+import numpy as np
 import pymupdf
 
 Color = Optional[tuple[float, float, float]]
 
 _NO_DASH_RE = re.compile(r"^\[\s*\]")
+try:  # stext character flags: a glyph that is neither filled nor stroked is invisible (render mode 3)
+    from pymupdf import mupdf as _mupdf
+
+    _STEXT_FILLED = int(getattr(_mupdf, "FZ_STEXT_FILLED", 16))
+    _STEXT_STROKED = int(getattr(_mupdf, "FZ_STEXT_STROKED", 32))
+except Exception:  # pragma: no cover - PyMuPDF builds without the low-level bindings
+    _STEXT_FILLED, _STEXT_STROKED = 16, 32
+_SHX_ANNOT_RE = re.compile(r"\bSHX\b", re.I)  # "AutoCAD SHX Text" (subject / author of PDFSHX=1 comments)
+_DA_SIZE_RE = re.compile(r"([0-9]*\.?[0-9]+)\s+Tf\b")
 
 
 @dataclass
@@ -119,7 +137,8 @@ class TextWord:
     color: Color = None
     line: int = 0  # index of the PDF text line the word came from
     origin: tuple[float, float] = (0.0, 0.0)
-    hidden: bool = False  # invisible text (render mode 3 / zero alpha), e.g. an OCR layer
+    hidden: bool = False  # invisible text (render mode 3 / zero alpha), e.g. an OCR layer or PDFSHX=2 text
+    annotation: bool = False  # string of an "AutoCAD SHX Text" annotation (PDFSHX=1); bbox = annotation rect
 
 
 @dataclass
@@ -134,6 +153,7 @@ class TextSpan:
     line: int = 0
     origin: tuple[float, float] = (0.0, 0.0)
     hidden: bool = False
+    annotation: bool = False
 
 
 SCAN_MAX_PATHS = 40  # a page mostly covered by images with fewer visible vector paths is a scan
@@ -153,13 +173,16 @@ class PageContent:
     image_coverage: float = 0.0  # fraction of the page area covered by raster images
     n_paths: int = 0  # visible vector paths (stroked or filled, not clipped away)
     n_chars: int = 0  # visible characters
-    n_hidden_chars: int = 0  # invisible characters (OCR layers)
+    n_hidden_chars: int = 0  # invisible characters (OCR layers, PDFSHX=2 text)
+    n_annot_chars: int = 0  # characters of "AutoCAD SHX Text" annotations (PDFSHX=1)
     n_clipped_paths: int = 0  # paths dropped entirely by the CropBox / clip paths
+    n_arcs: int = 0  # tessellated arcs (runs of straight pieces) flagged as curves
 
     @property
     def empty(self) -> bool:
         """Nothing visible or searchable on the page."""
-        return self.n_paths == 0 and self.n_chars == 0 and self.n_hidden_chars == 0 and self.image_coverage < 0.01
+        return (self.n_paths == 0 and self.n_chars == 0 and self.n_hidden_chars == 0 and self.n_annot_chars == 0
+                and self.image_coverage < 0.01)
 
     @property
     def scanned(self) -> bool:
@@ -223,6 +246,93 @@ def _fit_circle(pts: list[tuple[float, float]]) -> Optional[tuple[float, float, 
 def _n_flatten(p0, p1, p2, p3) -> int:
     approx_len = math.dist(p0, p1) + math.dist(p1, p2) + math.dist(p2, p3)
     return max(2, min(16, int(math.ceil(approx_len / 1.5))))
+
+
+ARC_MIN_PIECES = 4  # a tessellated arc has at least this many straight pieces
+ARC_MAX_TURN = 40.0  # degrees between consecutive pieces (a 9-gon or finer)
+ARC_MIN_SWEEP = 40.0  # total turning of an arc run (degrees)
+
+
+def _fit_arc(pts: list[tuple[float, float]]) -> Optional[tuple[float, float, float]]:
+    """Least-squares circle (Kasa) through the points if they all lie on it (3 % of r)."""
+    a = np.asarray(pts, dtype=float)
+    A = np.column_stack((a[:, 0], a[:, 1], np.ones(len(a))))
+    b = -(a[:, 0] ** 2 + a[:, 1] ** 2)
+    try:
+        (D, E, F), *_ = np.linalg.lstsq(A, b, rcond=None)
+    except np.linalg.LinAlgError:  # pragma: no cover - degenerate input
+        return None
+    cx, cy = -D / 2, -E / 2
+    r2 = cx * cx + cy * cy - F
+    if r2 <= 1e-12:
+        return None
+    r = math.sqrt(r2)
+    d = np.hypot(a[:, 0] - cx, a[:, 1] - cy)
+    if float(np.max(np.abs(d - r))) > 0.03 * r + 0.02:
+        return None
+    return (float(cx), float(cy), r)
+
+
+def _arc_runs(sp: list) -> list[tuple[int, int, float]]:
+    """Runs ``[i, j)`` of consecutive straight items of a subpath that tessellate one circular
+    arc (CAD exports flatten arcs, hop bridges and circles into polylines), with their sweep
+    in degrees: at least :data:`ARC_MIN_PIECES` pieces of near-equal length turning by a
+    near-equal angle in one sense, all vertices on a circle. Zigzags (alternating turns),
+    sine waves (unequal turns) and polygons with few sides do not qualify."""
+    n = len(sp)
+    if n < ARC_MIN_PIECES:
+        return []
+    lens: list[float] = []
+    angs: list[Optional[float]] = []
+    for k, pts, _ in sp:
+        if k != "l":
+            lens.append(0.0)
+            angs.append(None)
+            continue
+        (x0, y0), (x1, y1) = pts
+        L = math.hypot(x1 - x0, y1 - y0)
+        lens.append(L)
+        angs.append(math.degrees(math.atan2(y1 - y0, x1 - x0)) if L > 1e-6 else None)
+
+    def turn(i: int) -> Optional[float]:  # turning from piece i to piece i + 1
+        a, b = angs[i], angs[i + 1]
+        if a is None or b is None:
+            return None
+        return (b - a + 180.0) % 360.0 - 180.0
+
+    runs: list[tuple[int, int, float]] = []
+    i = 0
+    while i <= n - ARC_MIN_PIECES:
+        if angs[i] is None:
+            i += 1
+            continue
+        lo = hi = lens[i]
+        tmin = tmax = None
+        sign = 0
+        j = i + 1
+        while j < n and angs[j] is not None:
+            t = turn(j - 1)
+            if t is None or not (1.0 <= abs(t) <= ARC_MAX_TURN):
+                break
+            s = 1 if t > 0 else -1
+            if sign and s != sign:
+                break
+            nlo, nhi = min(lo, lens[j]), max(hi, lens[j])
+            ntmin = abs(t) if tmin is None else min(tmin, abs(t))
+            ntmax = abs(t) if tmax is None else max(tmax, abs(t))
+            if nhi > 1.35 * nlo or ntmax > 1.6 * ntmin:
+                break
+            sign, lo, hi, tmin, tmax = s, nlo, nhi, ntmin, ntmax
+            j += 1
+        if j - i >= ARC_MIN_PIECES:
+            sweep = sum(abs(turn(k)) for k in range(i, j - 1)) + (tmin + tmax) / 2  # + one piece's share
+            pts = [sp[i][1][0]] + [sp[k][1][1] for k in range(i, j)]
+            if sweep >= ARC_MIN_SWEEP and _fit_arc(pts) is not None:
+                runs.append((i, j, sweep))
+                i = j
+                continue
+        i += 1
+    return runs
 
 
 Box = tuple[float, float, float, float]
@@ -425,6 +535,26 @@ def read_page(page: "pymupdf.Page") -> PageContent:
                 if math.dist(start, end) > 1e-2:
                     sp = sp + [("l", [end, start], -1)]
 
+            # ---- tessellated arcs in open polylines: flag the pieces as one curve (like a flattened Bezier)
+            if not closed and len(sp) >= ARC_MIN_PIECES:
+                runs = _arc_runs(sp)
+                if len(runs) == 1 and runs[0][:2] == (0, len(sp)) and runs[0][2] >= 345.0:
+                    chord = sum(math.dist(*pts) for _, pts, _ in sp) / len(sp)
+                    circ = _fit_arc([sp[0][1][0]] + [pts[1] for _, pts, _ in sp])
+                    if circ is not None and math.dist(start, end) <= 2.0 * chord:  # an unclosed polygon circle
+                        content.circles.append(
+                            CircleShape(circ[0], circ[1], circ[2], filled=False, stroked=stroked, width=width,
+                                        color=color, dashed=dashed, path=pidx, sub=sidx, layer=layer))
+                        content.n_arcs += 1
+                        continue
+                if runs:
+                    sp = list(sp)
+                    for i0, j0, _ in runs:
+                        for k in range(i0, j0):
+                            sp[k] = ("l", sp[k][1], curve_id)
+                        curve_id += 1
+                    content.n_arcs += len(runs)
+
             # ---- circle recognition (Bezier loops or dense regular polygons)
             if closed:
                 n_curves = sum(1 for k, _, _ in sp if k == "c")
@@ -469,7 +599,8 @@ def read_page(page: "pymupdf.Page") -> PageContent:
                     a, b = pts
                     if math.dist(a, b) < 1e-6:
                         continue
-                    content.segments.append(Segment(a[0], a[1], b[0], b[1], width, color, dashed, pidx, sidx, closed, filled, -1, k, layer))
+                    content.segments.append(Segment(a[0], a[1], b[0], b[1], width, color, dashed, pidx, sidx, closed, filled,
+                                                    cid, "c" if cid >= 0 else k, layer))
 
     # ---- text
     # TEXT_CLIP (== TEXT_MEDIABOX_CLIP in older releases): drop glyphs outside the page and clip paths
@@ -478,6 +609,11 @@ def read_page(page: "pymupdf.Page") -> PageContent:
     page_box = (-0.5, -0.5, content.width + 0.5, content.height + 0.5)
     line_no = 0
     n_chars = n_hidden = 0
+    try:
+        off_layers = {str(v.get("name", "")) for v in page.parent.get_ocgs().values() if not v.get("on", True)}
+    except Exception:  # pragma: no cover - damaged OCG dictionaries
+        off_layers = set()
+    off_trace: Optional[list[tuple[str, Box]]] = None
     for block in td.get("blocks", []):
         if block.get("type", 0) != 0:
             continue
@@ -501,7 +637,14 @@ def read_page(page: "pymupdf.Page") -> PageContent:
                 sb = _tbox(span["bbox"], tp)
                 if _disjoint(sb, page_box, 0.0):
                     continue
-                hidden = span.get("alpha", 255) == 0
+                cflags = span.get("char_flags")
+                hidden = span.get("alpha", 255) == 0 or (
+                    cflags is not None and not int(cflags) & (_STEXT_FILLED | _STEXT_STROKED))
+                if hidden and off_layers:
+                    if off_trace is None:
+                        off_trace = _off_layer_invisible_text(page, tp, off_layers)
+                    if _in_off_trace(text, sb, off_trace):
+                        continue  # invisible text on a layer that is switched off (MuPDF still extracts it)
                 if hidden:
                     n_hidden += len(text.strip())
                 else:
@@ -532,6 +675,11 @@ def read_page(page: "pymupdf.Page") -> PageContent:
             line_no += 1
     content.n_chars = n_chars
     content.n_hidden_chars = n_hidden
+    for w in _shx_annotations(page, tp, mat, page_box, line_no):
+        content.words.append(w)
+        content.spans.append(TextSpan(w.text, w.bbox, w.size, w.font, 0, w.rotation, w.color, w.line, w.origin,
+                                      annotation=True))
+        content.n_annot_chars += len(w.text.replace(" ", ""))
     content.words = _dedupe_words(content.words)
 
     # ---- raster images
@@ -554,12 +702,115 @@ def read_page(page: "pymupdf.Page") -> PageContent:
     return content
 
 
+def _off_layer_invisible_text(page: "pymupdf.Page", tp, off_layers: set[str]) -> list[tuple[str, Box]]:
+    """(text, bbox) of invisible text spans inside optional content that is OFF. MuPDF drops
+    visible OFF-layer text from ``get_text`` but still reports invisible (render mode 3)
+    text there; the text trace knows each span's layer."""
+    out: list[tuple[str, Box]] = []
+    try:
+        trace = page.get_texttrace()
+    except Exception:  # pragma: no cover - very old PyMuPDF
+        return out
+    for t in trace:
+        if t.get("layer") in off_layers:
+            text = "".join(chr(c[0]) for c in t.get("chars", ()) if c[0] > 0)
+            out.append((re.sub(r"\s+", "", text), _tbox(t["bbox"], tp)))
+    return out
+
+
+def _in_off_trace(text: str, bbox: Box, trace: list[tuple[str, Box]]) -> bool:
+    t = re.sub(r"\s+", "", text)
+    cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
+    pad = 0.5 * max(bbox[2] - bbox[0], bbox[3] - bbox[1], 1.0)
+    for s, b in trace:
+        if t and t in s and b[0] - pad <= cx <= b[2] + pad and b[1] - pad <= cy <= b[3] + pad:
+            return True
+    return False
+
+
+def _shx_annotations(page: "pymupdf.Page", tp, mat, page_box, line0: int) -> list[TextWord]:
+    """Strings of AutoCAD ``PDFSHX=1`` exports: SHX text is drawn as stroke geometry and each
+    text entity is stored as an annotation (subject / author "AutoCAD SHX Text") whose
+    contents are the string and whose rectangle covers it. One :class:`TextWord` per line of
+    the contents (``annotation=True``), in displayed page coordinates. The rectangle is read
+    from the annotation dictionary (MuPDF reports a fixed icon box for 'Text' notes); the
+    reading direction is the FreeText ``/Rotate`` (else: vertical when the box is tall)."""
+    out: list[TextWord] = []
+    try:
+        annots = list(page.annots())
+    except Exception:  # pragma: no cover - damaged annotation arrays
+        return out
+    doc = page.parent
+    try:
+        layer_on = {int(x): bool(v.get("on", True)) for x, v in doc.get_ocgs().items()}
+    except Exception:  # pragma: no cover - damaged OCG dictionaries
+        layer_on = {}
+    for a in annots:
+        try:
+            info = a.info or {}
+            tag = " ".join(str(info.get(k) or "") for k in ("subject", "title", "name"))
+            if not _SHX_ANNOT_RE.search(tag):
+                continue
+            oc = a.get_oc()
+            if oc and not layer_on.get(int(oc), True):
+                continue  # on a layer that is switched off, like the strokes it describes
+            content = str(info.get("content") or "").replace("\r", "\n").strip()
+            if not content:
+                continue
+            rect = a.rect
+            kind, val = doc.xref_get_key(a.xref, "Rect")
+            if kind == "array":
+                nums = [float(v) for v in re.findall(r"[-+]?[0-9]*\.?[0-9]+", val)]
+                if len(nums) == 4:
+                    rect = pymupdf.Rect(nums) * page.transformation_matrix
+            rect.normalize()
+            size = None
+            dk, dv = doc.xref_get_key(a.xref, "DA")
+            if dk == "string":
+                m = _DA_SIZE_RE.search(dv)
+                if m and float(m.group(1)) > 0:
+                    size = float(m.group(1))
+            rot_u = int(a.rotation) if a.type[1] == "FreeText" and (a.rotation or 0) > 0 else None
+        except Exception:  # pragma: no cover - malformed annotation
+            continue
+        bb = _tbox((rect.x0, rect.y0, rect.x1, rect.y1), tp)
+        if bb[2] - bb[0] <= 0 or bb[3] - bb[1] <= 0 or _disjoint(bb, page_box, 0.0):
+            continue
+        texts = [t.strip() for t in content.split("\n") if t.strip()]
+        w, h = bb[2] - bb[0], bb[3] - bb[1]
+        if rot_u is not None:
+            dx, dy = math.cos(math.radians(rot_u)), -math.sin(math.radians(rot_u))
+            if mat is not None:
+                v = pymupdf.Point(dx, dy) * pymupdf.Matrix(mat.a, mat.b, mat.c, mat.d, 0, 0)
+                dx, dy = v.x, v.y
+            rotation = int(round(math.degrees(math.atan2(-dy, dx)))) % 360
+        else:
+            longest = max(len(t) for t in texts)
+            rotation = 90 if h > 1.5 * w and (longest >= 2 or len(texts) >= 2) else 0
+        vertical = rotation % 180 == 90
+        across = (w if vertical else h) / len(texts)  # line pitch across the reading direction
+        if size is None:
+            size = across / 1.3
+        size = min(size, across)
+        for k, t in enumerate(texts):
+            if vertical:  # successive lines run against the glyphs' up direction: rightwards for 90
+                x0 = bb[0] + k * across if rotation == 90 else bb[2] - (k + 1) * across
+                box = (x0, bb[1], x0 + across, bb[3])
+                origin = (box[2] if rotation == 90 else box[0], box[3] if rotation == 90 else box[1])
+            else:
+                box = (bb[0], bb[1] + k * across, bb[2], bb[1] + (k + 1) * across)
+                origin = (box[0], box[3])
+            out.append(TextWord(re.sub(r"\s+", " ", t), box, size, "SHX", rotation, None, line0 + len(out), origin,
+                                hidden=False, annotation=True))
+    return out
+
+
 def _dedupe_words(words: list[TextWord]) -> list[TextWord]:
     """Drop a word drawn twice at the same place (duplicated CAD text entities)."""
     seen: set[tuple] = set()
     out = []
     for w in words:
-        key = (w.text, w.rotation, w.hidden) + tuple(int(round(v * 10)) for v in w.bbox)
+        key = (w.text, w.rotation, w.hidden, w.annotation) + tuple(int(round(v * 10)) for v in w.bbox)
         if key in seen:
             continue
         seen.add(key)

@@ -5,6 +5,13 @@ furniture (frame, title block, notes, legend), separate pipe lines from symbol
 strokes, group and classify symbol candidates by template matching, build the
 pipe network and finally assign texts. Every object and pipe carries
 ``source="vector"``; per-candidate class alternatives are kept for Gemma.
+
+Text whose visible glyphs are vector strokes (AutoCAD SHX text exported with PDFSHX=1 / 2,
+see :mod:`shippid.extract.textlines`) takes its strokes out of symbol and pipe search.
+Confidence is calibrated so that drawings the library does not explain go to review
+(``confidence`` below 0.75, reasons in ``attributes["calibration"]``): unexplained or missing
+ink (:func:`shippid.extract.symbols_match.ink_penalty`), pipes meeting an instrument circle
+off its radius, a second circle drawn inside a bubble.
 """
 
 from __future__ import annotations
@@ -56,6 +63,7 @@ from .symbols_match import (
     coarse_scores,
     get_library,
     match_candidate,
+    review_band,
 )
 from .text import ObjRef, PipeRef, assign_texts, drawing_info, medium_of_line, line_number_info
 from .textlines import TextLine, build_lines
@@ -104,6 +112,7 @@ class Detection:
     body: BBox4 = (0.0, 0.0, 0.0, 0.0)
     internals: list[int] = field(default_factory=list)  # unmatched strokes drawn inside (tank heating coil ...)
     n_internal: int = 0  # number of absorbed inner stroke groups
+    notes: list[str] = field(default_factory=list)  # why the confidence was lowered (calibration)
 
     @property
     def best(self) -> Optional[MatchResult]:
@@ -233,10 +242,42 @@ def classify_candidates(ps: PrimSet, cands: Sequence[Candidate], unit: float, op
         _finalise(d, accept)
     dets = _absorb_fragments(m, dets)
     _size_prior(dets, accept)
+    dets = _concentric_bubbles(m.ps, dets)
     if stats is not None:
         stats["decompose_budget_exhausted"] = m.budget <= 0
         stats["decompose_budget_used"] = round(budget - m.budget, 1)
     return _resolve_containers(m, dets, opts)
+
+
+def _concentric_bubbles(ps: PrimSet, dets: list[Detection]) -> list[Detection]:
+    """A circle drawn concentrically inside an instrument bubble (a double-circle bubble of a
+    yard convention) is part of that bubble, not a second instrument: it becomes the bubble's
+    internals, and the bubble -- ink the template does not explain -- goes to review."""
+    def circle_of(d: Detection):
+        cs = [ps.prims[i] for i in d.prim_ids if ps.prims[i].kind == "circle" and not ps.prims[i].filled]
+        return max(cs, key=lambda p: p.r) if cs else None
+
+    hosts = [(d, circle_of(d)) for d in dets if d.cls != SymbolClass.UNKNOWN and category_of(d.cls) == Category.INSTRUMENT]
+    hosts = [(d, c) for d, c in hosts if c is not None]
+    if not hosts:
+        return dets
+    drop: set[int] = set()
+    for d, c in sorted(hosts, key=lambda dc: -dc[1].r):
+        if id(d) in drop:
+            continue
+        for o in dets:
+            if o is d or id(o) in drop:
+                continue
+            prims = [ps.prims[i] for i in o.prim_ids]
+            if not prims or any(p.kind != "circle" or p.filled for p in prims):
+                continue
+            if all(math.hypot(p.cx - c.cx, p.cy - c.cy) <= 0.08 * c.r and p.r < 0.97 * c.r for p in prims):
+                drop.add(id(o))
+                d.internals.extend(o.prim_ids)
+                d.n_internal += 1
+                d.score = min(d.score, review_band(d.score))
+                d.notes.append("concentric inner circle (double-circle bubble) not in the template")
+    return [d for d in dets if id(d) not in drop]
 
 
 def _is_hatching(prims: Sequence, unit: float) -> bool:
@@ -652,7 +693,8 @@ def _analyse(pc: PageContent, lines: list[TextLine], cfg: Config, opts: ExtractO
     tol = cfg.snap_tol
     t = time.perf_counter()
     ps = PrimSet.from_page(pc)
-    unit0 = unit or estimate_unit(ps.prims, range(len(ps.prims)), max(0.6, 0.5 * tol))
+    _mark_text_strokes(ps, lines)
+    unit0 = unit or estimate_unit(ps.prims, [p.id for p in ps.prims if p.role != "text"], max(0.6, 0.5 * tol))
     regions = detect_regions(ps, lines, pc.width, pc.height, tol, unit0)
     if unit is None:
         free_ids = [p.id for p in ps.prims if p.role == ""]
@@ -670,6 +712,54 @@ def _analyse(pc: PageContent, lines: list[TextLine], cfg: Config, opts: ExtractO
     cands = group_candidates(ps, sep.symbol_ids, unit, tol, opts.group_units, opts.contain_units)
     timing["symbols"] = timing.get("symbols", 0.0) + time.perf_counter() - t
     return _classify_stage(_Stage(ps, regions, sep, cands, [], [], unit, anchored), cfg, opts, lib, cache, timing)
+
+
+def _mark_text_strokes(ps: PrimSet, lines: Sequence[TextLine]) -> int:
+    """Stroke glyphs of SHX text: primitives lying inside a text whose string comes from
+    invisible text or an "AutoCAD SHX Text" annotation (:attr:`TextLine.geometric`) are
+    lettering, never symbols or pipes (an 'O' would pass for an instrument bubble, an 'I'
+    for a pipe stub). Returns the number of primitives marked ``text``."""
+    geo = [t for t in lines if t.geometric]
+    if not geo or not ps.prims:
+        return 0
+    bb = ps.bbox_array(range(len(ps.prims)))
+    width = np.array([p.width for p in ps.prims])
+    free = np.array([p.role == "" for p in ps.prims])
+    n = 0
+    for t in geo:
+        pad = 0.15 * max(t.size, 1.0) + 0.5 * width
+        x0, y0, x1, y1 = t.bbox
+        sel = free & (bb[:, 0] >= x0 - pad) & (bb[:, 1] >= y0 - pad) & (bb[:, 2] <= x1 + pad) & (bb[:, 3] <= y1 + pad)
+        for i in np.nonzero(sel)[0].tolist():
+            ps.prims[i].role = "text"
+            n += 1
+        free &= ~sel
+    return n
+
+
+OFF_RADIUS_DEG = 35.0  # a pipe arriving at a bubble more than this off the radial direction is not a tap
+
+
+def _off_radius_attachments(ps: PrimSet, d: Detection, ports) -> int:
+    """Pipes that meet an instrument circle off its radius. Instrument connections and signal
+    lines run to a bubble's centre; a line touching the circle tangentially or at a slant is
+    drawing structure the bubble template does not explain (a centrifugal pump drawn as a
+    circle with a tangential discharge stub, which merges into the discharge pipe)."""
+    circ = [ps.prims[i] for i in d.prim_ids if ps.prims[i].kind == "circle"]
+    if not circ:
+        return 0
+    c = max(circ, key=lambda p: p.r)
+    lim = math.cos(math.radians(OFF_RADIUS_DEG))
+    n = 0
+    for _, (x, y), (dx, dy) in ports:
+        rx, ry = x - c.cx, y - c.cy
+        dist = math.hypot(rx, ry)
+        dn = math.hypot(dx, dy)
+        if dist < 1e-6 or dn < 1e-9 or abs(dist - c.r) > max(0.15 * c.r, 1.0):
+            continue  # not on the circle (e.g. on the square of a shared-display symbol)
+        if abs(rx * dx + ry * dy) / (dist * dn) < lim:
+            n += 1
+    return n
 
 
 def _classify_stage(st: _Stage, cfg: Config, opts: ExtractOptions, lib: TemplateLibrary, cache: MatchCache,
@@ -720,7 +810,7 @@ def _probe_unit(ps: PrimSet, ids: Sequence[int], unit: float, tol: float, lib: T
     n_sig = 0
     for key, n in counts.most_common(top):
         res = match_candidate(_shape_for(ps, groups[key][0]), lib, None, cache=cache)
-        if res and res[0].score >= 0.7 and res[0].variant.spec.category == Category.VALVE:
+        if res and res[0].shape_score >= 0.7 and res[0].variant.spec.category == Category.VALVE:
             scales.extend([res[0].scale] * n)
             n_sig += 1
             if n_sig >= 3 and len(scales) >= 8:
@@ -732,12 +822,14 @@ def _probe_unit(ps: PrimSet, ids: Sequence[int], unit: float, tol: float, lib: T
 
 def _valve_unit(dets: Sequence[Detection], min_n: int = 3) -> Optional[float]:
     """Median matched scale of confidently classified valves (else other rigid symbols)."""
-    valves = [d.best.scale for d in dets if d.best is not None and d.cls != SymbolClass.UNKNOWN and d.score >= 0.85
-              and d.best.variant.spec.category == Category.VALVE]
+    # the shape fit (before the unexplained-ink penalty): a yard-style valve still gives the drawing's scale
+    valves = [d.best.scale for d in dets if d.best is not None and d.cls != SymbolClass.UNKNOWN
+              and d.best.shape_score >= 0.85 and d.best.variant.spec.category == Category.VALVE]
     if len(valves) >= min_n:
         return float(np.median(valves))
-    rigid = [d.best.scale for d in dets if d.best is not None and d.cls != SymbolClass.UNKNOWN and d.score >= 0.85
-             and not d.best.variant.stretchable and d.best.variant.spec.category != Category.EQUIPMENT]
+    rigid = [d.best.scale for d in dets if d.best is not None and d.cls != SymbolClass.UNKNOWN
+             and d.best.shape_score >= 0.85 and not d.best.variant.stretchable
+             and d.best.variant.spec.category != Category.EQUIPMENT]
     if len(rigid) >= min_n:
         return float(np.median(rigid))
     return None
@@ -775,7 +867,11 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
 
     tol = cfg.snap_tol
     lib = get_library()
-    lines = build_lines(pc.words)
+    rules = [(s.x0, s.y0, s.x1, s.y1) for s in pc.segments if s.curve < 0 and s.length >= 2.0]
+    lines = build_lines(pc.words, separators=rules)
+    page_meta["annotation_chars"] = pc.n_annot_chars
+    page_meta["tessellated_arcs"] = pc.n_arcs
+    page_meta["text_sources"] = {s: sum(1 for t in lines if t.source == s) for s in ("text", "hidden", "annotation")}
     st = _analyse(pc, lines, cfg, opts, lib, cache, None, timing)
     ref = _valve_unit(st.dets)
     if ref is not None and abs(ref / st.unit - 1.0) > 0.15:
@@ -804,6 +900,17 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
                            is_valve=spec is not None and spec.category == Category.VALVE))
     pipe_lines = sep.pipe_lines + diag_lines
     net = build_network(pipe_lines, bodies, sep.dots, unit, tol)
+    review: dict[int, list[str]] = defaultdict(list)  # calibration notes per detection (confidence lowered)
+    for k, d in enumerate(dets):
+        b = d.best
+        if b is not None and d.cls != SymbolClass.UNKNOWN and b.raw is not None:
+            review[k].append(f"unexplained ink {b.unexplained:.2f}, missing template ink {b.missing:.2f}")
+        review[k].extend(d.notes)
+        if d.cls != SymbolClass.UNKNOWN and category_of(d.cls) == Category.INSTRUMENT:
+            n_off = _off_radius_attachments(ps, d, net.ports.get(k, []))
+            if n_off:
+                d.score = min(d.score, review_band(d.score))
+                review[k].append(f"{n_off} pipe(s) meet the circle off its radius (not an instrument connection)")
     timing["network"] = time.perf_counter() - t
 
     # ---- objects
@@ -818,7 +925,9 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
             if r.variant.cls in seen:
                 continue
             seen.add(r.variant.cls)
-            alt.append({"cls": r.variant.cls.value, "score": round(r.score, 3)})
+            alt.append({"cls": r.variant.cls.value, "score": round(r.score, 3), "precision": round(r.precision, 3),
+                        "recall": round(r.recall, 3), "unexplained": round(r.unexplained, 3),
+                        "missing": round(r.missing, 3)})
             if len(alt) == 3:
                 break
         accepted = d.cls != SymbolClass.UNKNOWN
@@ -840,6 +949,8 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
             attrs["internals"] = d.n_internal  # unmatched stroke groups drawn inside (heating coil, baffles ...)
         if accepted and best is not None and best.variant.stretchable:
             attrs["stretch"] = [round(best.sx / best.scale, 3), round(best.sy / best.scale, 3)]
+        if review.get(k):
+            attrs["calibration"] = review[k]  # why the confidence is below the review threshold
         obj = PIDObject(
             id=obj_ids[k],
             cls=d.cls,
@@ -960,7 +1071,8 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
             "notes": [[round(v, 2) for v in b] for b in regions.notes],
             "legends": [[round(v, 2) for v in b] for b in regions.legends],
         },
-        "counts": {"primitives": len(ps.prims), "candidates": len(cands), "objects": len(objects),
+        "counts": {"primitives": len(ps.prims), "text_strokes": sum(1 for p in ps.prims if p.role == "text"),
+                   "candidates": len(cands), "objects": len(objects),
                    "unknown": sum(1 for o in objects if o.cls == SymbolClass.UNKNOWN), "pipes": len(pipes),
                    "junctions": len(junctions), "texts": len(texts), "dots": len(sep.dots), "arrows": len(sep.arrows)},
         "timing": {k: round(v, 4) for k, v in timing.items()},

@@ -200,14 +200,14 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2, cont
             if shapely.distance(g, shapely.Point(p.x0, p.y0)) <= touch and shapely.distance(g, shapely.Point(p.x1, p.y1)) <= touch:
                 p.role = "inner"
     if big_geoms and open_axis:
-        tree = shapely.STRtree([g.exterior for g in big_geoms])
+        tree = shapely.STRtree([g.boundary for g in big_geoms])
         for i in open_axis:
             p = prims[i]
             if p.role != "":
                 continue
             a, b = shapely.Point(p.x0, p.y0), shapely.Point(p.x1, p.y1)
             for c in tree.query(shapely.box(*p.bbox).buffer(touch)).tolist():
-                ext = big_geoms[c].exterior
+                ext = big_geoms[c].boundary
                 if shapely.distance(ext, a) <= touch and shapely.distance(ext, b) <= touch and \
                         big_geoms[c].buffer(touch).contains(shapely.LineString([(p.x0, p.y0), (p.x1, p.y1)])):
                     p.role = "inner"

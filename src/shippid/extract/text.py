@@ -207,7 +207,7 @@ def assign_texts(lines: Sequence[TextLine], regions: Regions, objects: Sequence[
         elif kind is not None:
             results[k].role = TextRole.TAG
             tag_texts.append(k)
-        elif re.search(r"[A-Za-z]", t.text):
+        elif any(c.isalpha() for c in t.text):  # any script (Hangul labels too)
             results[k].role = TextRole.LABEL
             label_texts.append(k)
 
