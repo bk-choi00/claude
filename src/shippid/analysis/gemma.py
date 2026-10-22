@@ -5,6 +5,8 @@ pipeline; every step keeps the deterministic result and records provenance:
 
 * ``refine_symbols``  -- low-confidence / unknown / ambiguous symbols are shown to
   the model as a numbered contact sheet of crops + a JSON digest + the legend;
+  a refined instrument / valve / equipment without a tag gets one from its bubble
+  texts, from Gemma's tag (only if built from nearby texts) or a free tag text;
 * ``read_drawing_info`` -- title-block texts (exact PDF text) + a title-block render;
 * ``resolve_texts``   -- tags / line numbers / instrument texts with a missing or
   ambiguous owner, decided from candidate owners and distances;
@@ -13,9 +15,12 @@ pipeline; every step keeps the deterministic result and records provenance:
 
 Each method returns a new object. Model output is validated against the ids
 of the document (invalid output triggers a repair round inside
-:meth:`LLMClient.generate_json`); an :class:`LLMError` leaves the deterministic
-result in place and is logged in ``meta["llm_errors"]``. Results produced via
-the test ``MockBackend`` are labelled ``mock``, never ``gemma``.
+:meth:`LLMClient.generate_json`); an :class:`LLMError` in a refinement step
+leaves the deterministic result in place, is logged in ``meta["llm_errors"]``
+and sets the step's status (``refined_by`` only names steps that got a valid
+answer); a failed review sets ``meta["review"]["status"] = "error"``, which
+``analyze()`` reports. Results produced via the test ``MockBackend`` are
+labelled ``mock``, never ``gemma``.
 """
 
 from __future__ import annotations
@@ -30,7 +35,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, TypeVar
 
 from pydantic import BaseModel, ConfigDict
 
-from ..catalog import SYSTEM_BY_CODE, SYSTEMS, detect_system, parse_line_number
+from ..catalog import SYSTEM_BY_CODE, SYSTEMS, classify_tag, detect_system, parse_line_number
 from ..llm.base import ImagePart, LLMClient, LLMError, Message
 from ..model import (
     ActuatorType,
@@ -62,9 +67,17 @@ log = logging.getLogger(__name__)
 
 T = TypeVar("T")
 RUNNER_UP_MARGIN = 0.08  # top-2 vector classes closer than this are re-checked
+ADOPT_MIN_CONFIDENCE = 0.5  # Gemma classes below this are recorded, never adopted
 OWNER_TEXT_ROLES = (TextRole.TAG, TextRole.LINE_NUMBER, TextRole.INSTRUMENT)
+_FIXED_ROLES = (TextRole.TITLE_BLOCK, TextRole.NOTE, TextRole.LEGEND)  # texts that never get an owner
+_TAGGABLE = (Category.INSTRUMENT, Category.VALVE, Category.EQUIPMENT)
 _HANGUL = re.compile(r"[가-힣]")
 _PRIM_KEYS = ("primitives", "primitive_summary", "prims", "signature", "strokes")
+_TAG_SPLIT = re.compile(r"[-\s]+")
+_INSTR_LETTERS = re.compile(r"^[A-Z]{1,5}$")
+_INSTR_NUMBER = re.compile(r"^\d{1,5}[A-Z]?$")
+_INSTR_JOINED = re.compile(r"^([A-Z]{1,5})(\d{1,5}[A-Z]?)$")
+_TAG_KIND_FOR = {Category.VALVE: "valve", Category.EQUIPMENT: "equipment", Category.INSTRUMENT: "instrument"}
 
 
 # --------------------------------------------------------------------------- output schemas
@@ -81,6 +94,7 @@ class SymbolVerdict(_Out):
     cls: SymbolClass
     actuator: ActuatorType = ActuatorType.NONE
     confidence: float
+    tag: Optional[str] = None  # must be built from the candidate's nearby_text (checked on merge)
 
 
 class SymbolBatch(_Out):
@@ -143,35 +157,6 @@ def _rect_gap(a: BBox, b: BBox) -> float:
     dx = max(0.0, a.x0 - b.x1, b.x0 - a.x1)
     dy = max(0.0, a.y0 - b.y1, b.y0 - a.y1)
     return math.hypot(dx, dy)
-
-
-def _seg_point(px: float, py: float, ax: float, ay: float, bx: float, by: float) -> tuple[float, float]:
-    """Closest point to (px, py) on segment a-b."""
-    vx, vy = bx - ax, by - ay
-    n2 = vx * vx + vy * vy
-    t = 0.0 if n2 <= 0 else max(0.0, min(1.0, ((px - ax) * vx + (py - ay) * vy) / n2))
-    return ax + t * vx, ay + t * vy
-
-
-def _pipe_gap(box: BBox, pipe: PipeRun) -> tuple[float, tuple[float, float]]:
-    """Gap between a text box and a pipe polyline, and the closest pipe point."""
-    from shapely.geometry import LineString, Point, box as sbox
-
-    rect = sbox(box.x0, box.y0, box.x1, box.y1)
-    pts = [(p.x, p.y) for p in pipe.points]
-    if len(pts) == 1:
-        geom = Point(pts[0])
-    else:
-        geom = LineString(pts)
-    d = float(rect.distance(geom))
-    c = box.center
-    best, best_d = pts[0], math.inf
-    for a, b in zip(pts, pts[1:] or pts):
-        q = _seg_point(c.x, c.y, a[0], a[1], b[0], b[1])
-        dd = math.hypot(q[0] - c.x, q[1] - c.y)
-        if dd < best_d:
-            best, best_d = q, dd
-    return d, best
 
 
 def _direction(dx: float, dy: float, gap: float) -> str:
@@ -249,12 +234,158 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", "", s).upper()
 
 
+def normalize_text(s: str) -> str:
+    """Upper case with single spaces (the extractor's tag / line-number normalisation)."""
+    return re.sub(r"\s+", " ", s.strip().upper())
+
+
+def tag_tokens(s: str) -> list[str]:
+    """Tag tokens: upper case, split at hyphens and whitespace ('PI-101' -> ['PI', '101'])."""
+    return [tok for tok in _TAG_SPLIT.split(s.strip().upper()) if tok]
+
+
+def compose_instrument_tag(texts: Sequence[TextItem]) -> Optional[str]:
+    """Letters + loop number written inside a bubble -> 'PI-101' (same rule as the extractor)."""
+    tokens: list[str] = []
+    for t in sorted(texts, key=lambda t: (t.bbox.y0, t.bbox.x0)):
+        tokens.extend(tag_tokens(t.text))
+    letters = next((tok for tok in tokens if _INSTR_LETTERS.match(tok)), None)
+    number = next((tok for tok in tokens if _INSTR_NUMBER.match(tok)), None)
+    if letters is None and len(tokens) == 1 and (m := _INSTR_JOINED.match(tokens[0])):
+        letters, number = m.group(1), m.group(2)
+    if letters and number:
+        return f"{letters}-{number}"
+    return " ".join(tokens) or None
+
+
+def _is_instrument_tag(tag: Optional[str]) -> bool:
+    return bool(tag) and re.fullmatch(r"[A-Z]{1,5}-\d{1,5}[A-Z]?", tag or "") is not None
+
+
+def _covers(tag: str, text: str) -> bool:
+    """Every token of ``text`` occurs in ``tag`` (the text is (part of) that tag)."""
+    xs = tag_tokens(text)
+    return bool(xs) and set(xs) <= set(tag_tokens(tag))
+
+
+def _cover(want: set[str], texts: Sequence[TextItem]) -> list[TextItem]:
+    """Texts (in the given nearest-first order) whose tokens make up exactly ``want``; [] if impossible.
+
+    A single text carrying the whole tag wins; otherwise texts are added while
+    they contribute new tokens (a tag split over bubble letters and loop number).
+    """
+    exact = [t for t in texts if set(tag_tokens(t.text)) == want]
+    if exact:
+        return exact[:1]
+    picked: list[TextItem] = []
+    covered: set[str] = set()
+    for t in texts:
+        toks = set(tag_tokens(t.text))
+        if toks <= want and not toks <= covered:
+            picked.append(t)
+            covered |= toks
+    return picked if covered == want else []
+
+
+def _tag_like(text: str) -> bool:
+    """A self-contained tag has letters and digits ('BA-V001', 'CF015V'); '601' or 'PI' alone are fragments."""
+    t = normalize_text(text)
+    return bool(re.search(r"[A-Z]", t)) and bool(re.search(r"\d", t))
+
+
+def _tag_from_texts(o: PIDObject, texts: dict[str, TextItem]) -> Optional[str]:
+    """An object's tag rebuilt from the tag texts it owns, or None when only fragments remain.
+
+    Bubble texts are composed like the extractor ('TIC' + '601' -> 'TIC-601') and
+    count only when letters and loop number are both there; otherwise the
+    nearest self-contained TAG text is used.
+    """
+    owned = [texts[i] for i in o.text_ids if i in texts]
+    bubble = [t for t in owned if t.role == TextRole.INSTRUMENT]
+    composed = compose_instrument_tag(bubble) if bubble else None
+    if _is_instrument_tag(composed):
+        return composed
+    tags = [t for t in owned if t.role == TextRole.TAG and _tag_like(t.text)]
+    if tags:
+        return normalize_text(min(tags, key=lambda t: _rect_gap(t.bbox, o.bbox)).text)
+    return None
+
+
+class _SpatialIndex:
+    """STRtree over the objects and process pipes of each page (built once per document)."""
+
+    def __init__(self, doc: PIDDocument):
+        from shapely import STRtree
+        from shapely.geometry import LineString, Point, box as sbox
+
+        self._box = sbox
+        self.objects: dict[int, list[PIDObject]] = defaultdict(list)
+        self.pipes: dict[int, list[tuple[PipeRun, Any]]] = defaultdict(list)
+        for o in doc.objects:
+            self.objects[o.page].append(o)
+        for p in doc.pipes:
+            if p.kind == PipeKind.SIGNAL or not p.points:
+                continue
+            pts = [(q.x, q.y) for q in p.points]
+            self.pipes[p.page].append((p, Point(pts[0]) if len(pts) == 1 else LineString(pts)))
+        self._otree = {pg: STRtree([sbox(o.bbox.x0, o.bbox.y0, o.bbox.x1, o.bbox.y1) for o in objs])
+                       for pg, objs in self.objects.items()}
+        self._ptree = {pg: STRtree([g for _, g in items]) for pg, items in self.pipes.items()}
+
+    def _window(self, b: BBox, radius: float) -> Any:
+        return self._box(b.x0 - radius, b.y0 - radius, b.x1 + radius, b.y1 + radius)
+
+    def objects_near(self, page: int, b: BBox, radius: float) -> list[tuple[PIDObject, float]]:
+        tree = self._otree.get(page)
+        if tree is None:
+            return []
+        objs = self.objects[page]
+        found = []
+        for k in tree.query(self._window(b, radius)).tolist():
+            gap = _rect_gap(b, objs[k].bbox)
+            if gap <= radius:
+                found.append((objs[k], gap))
+        return found
+
+    def pipes_near(self, page: int, b: BBox, radius: float) -> list[tuple[PipeRun, float, tuple[float, float]]]:
+        """(pipe, gap between box and polyline, polyline point closest to the box centre)."""
+        from shapely.geometry import Point
+
+        tree = self._ptree.get(page)
+        if tree is None:
+            return []
+        items = self.pipes[page]
+        rect = self._box(b.x0, b.y0, b.x1, b.y1)
+        c = Point(b.center.x, b.center.y)
+        found = []
+        for k in tree.query(self._window(b, radius)).tolist():
+            p, geom = items[k]
+            gap = float(rect.distance(geom))
+            if gap <= radius:
+                q = geom if geom.geom_type == "Point" else geom.interpolate(geom.project(c))
+                found.append((p, gap, (q.x, q.y)))
+        return found
+
+
 # list-row keys that cost tokens without helping an engineering review
 _DIGEST_DROP = frozenset({"type_ko", "actuator_ko", "type_en", "page", "x", "y", "source", "bbox"})
+_JOIN_SEP = "; "  # analysis.lists joins neighbour / valve / line-number lists with this separator
 
 
-def _scalarize(row: dict[str, Any], max_len: int = 80, min_conf: float = 0.75) -> dict[str, Any]:
-    """Keep the short scalar (and short list) fields of a list row for the review digest."""
+def _cap_list(items: Sequence[Any], max_items: int) -> list[Any]:
+    items = list(items)
+    if len(items) <= max_items:
+        return items
+    return items[:max_items] + [f"…(+{len(items) - max_items} more)"]
+
+
+def _scalarize(row: dict[str, Any], max_len: int = 240, min_conf: float = 0.75, max_list: int = 40) -> dict[str, Any]:
+    """The scalar and list fields of a list row for the review digest.
+
+    Joined lists (``"a; b; c"`` and space-separated ``*_ids``) are split back into
+    lists; long lists and long free text are cut with an explicit ``…(+n …)``
+    marker, never silently (the digest-size guard limits the number of rows).
+    """
     out: dict[str, Any] = {}
     for k, v in row.items():
         if v is None or v == "" or v == [] or k in _DIGEST_DROP:
@@ -264,11 +395,18 @@ def _scalarize(row: dict[str, Any], max_len: int = 80, min_conf: float = 0.75) -
         if isinstance(v, (bool, int, float)):
             out[k] = round(v, 3) if isinstance(v, float) else v
         elif isinstance(v, str):
-            out[k] = v[:max_len]
+            if k.endswith("_ids"):
+                out[k] = _cap_list(v.split(), max_list)
+            elif _JOIN_SEP in v:
+                out[k] = _cap_list([x.strip() for x in v.split(_JOIN_SEP) if x.strip()], max_list)
+            elif len(v) > max_len:
+                out[k] = v[:max_len] + f"…(+{len(v) - max_len} chars)"
+            else:
+                out[k] = v
         elif hasattr(v, "value") and isinstance(getattr(v, "value"), str):
             out[k] = v.value
-        elif isinstance(v, (list, tuple)) and len(v) <= 12 and all(isinstance(x, (str, int, float)) for x in v):
-            out[k] = list(v)
+        elif isinstance(v, (list, tuple)) and all(isinstance(x, (str, int, float)) for x in v):
+            out[k] = _cap_list(v, max_list)
     return out
 
 
@@ -290,10 +428,12 @@ class GemmaAnalyzer:
         concurrency: int = 1,
         runner_up_margin: float = RUNNER_UP_MARGIN,
         review_max_chars: int = 60000,
+        adopt_min_confidence: float = ADOPT_MIN_CONFIDENCE,
     ):
         self.client = client
         self.symbol_batch = max(1, int(symbol_batch))
         self.min_confidence = min_confidence
+        self.adopt_min_confidence = adopt_min_confidence
         self.review_thinking = review_thinking
         self.crop_max_side = crop_max_side
         self.text_batch = max(1, int(text_batch))
@@ -358,7 +498,8 @@ class GemmaAnalyzer:
         return len(cands) >= 2 and cands[0][1] - cands[1][1] < self.runner_up_margin
 
     @staticmethod
-    def _nearby_texts(doc: PIDDocument, o: PIDObject, limit: int = 4) -> list[dict[str, Any]]:
+    def _nearby_texts(doc: PIDDocument, o: PIDObject, limit: int = 6) -> list[tuple[float, TextItem]]:
+        """(gap, text) of the texts owned by or near ``o``, nearest first (what the digest shows)."""
         reach = max(30.0, 1.5 * max(o.bbox.width, o.bbox.height))
         own = set(o.text_ids)
         found = []
@@ -368,10 +509,11 @@ class GemmaAnalyzer:
             gap = _rect_gap(t.bbox, o.bbox)
             if gap <= reach or t.id in own:
                 found.append((0.0 if t.id in own else gap, t))
-        found.sort(key=lambda x: x[0])
-        return [{"text": t.text[:40], "role": t.role.value, "dist_pt": _r(d)} for d, t in found[:limit]]
+        found.sort(key=lambda x: (x[0], x[1].id))
+        return found[:limit]
 
-    def _symbol_digest(self, doc: PIDDocument, o: PIDObject, n: int, pipe_ends: dict[str, int]) -> dict[str, Any]:
+    def _symbol_digest(self, doc: PIDDocument, o: PIDObject, n: int, pipe_ends: dict[str, int],
+                       nearby: list[tuple[float, TextItem]]) -> dict[str, Any]:
         entry: dict[str, Any] = {
             "n": n, "id": o.id, "size_pt": [_r(o.bbox.width), _r(o.bbox.height)], "rotation": o.rotation,
             "vector_class": o.cls.value, "vector_confidence": round(o.confidence, 3),
@@ -382,7 +524,9 @@ class GemmaAnalyzer:
         prim = _primitive_summary(o)
         if prim is not None:
             entry["primitives"] = prim
-        entry["nearby_text"] = self._nearby_texts(doc, o)
+        entry["nearby_text"] = [{"text": t.text[:40], "role": t.role.value, "dist_pt": _r(d),
+                                 **({"inside": True} if o.bbox.contains_point(t.bbox.center.x, t.bbox.center.y) else {})}
+                                for d, t in nearby]
         entry["connected_pipes"] = pipe_ends.get(o.id, 0)
         if o.tag:
             entry["tag"] = o.tag
@@ -406,7 +550,7 @@ class GemmaAnalyzer:
                 o.actuator = g_act
             o.confidence = max(vconf, gconf)
             o.source = "merged"
-        elif vcls == SymbolClass.UNKNOWN or gconf > vconf:
+        elif (vcls == SymbolClass.UNKNOWN or gconf > vconf) and gconf >= self.adopt_min_confidence:
             decision = "adopted"
             o.cls = v.cls
             o.category = category_of(v.cls)
@@ -415,9 +559,82 @@ class GemmaAnalyzer:
             o.source = self.label
         else:
             decision = "kept_vector"
+            if gconf < self.adopt_min_confidence:
+                attrs["refine_note"] = f"{self.label} confidence {gconf:.2f} < {self.adopt_min_confidence:.2f}: not adopted"
         attrs["refine_decision"] = decision
         o.attributes = attrs
         return decision
+
+    # -- tags of refined symbols -------------------------------------------------------------
+    def _claim_tag(self, doc: PIDDocument, o: PIDObject, v: SymbolVerdict, nearby: list[tuple[float, TextItem]],
+                   maps: tuple[dict[str, TextItem], dict[str, PIDObject], dict[str, PipeRun]]) -> Optional[dict[str, Any]]:
+        """Give a refined, untagged instrument / valve / equipment its tag.
+
+        In order: the texts inside an instrument bubble (composed like the
+        extractor: 'PI' + '601' -> 'PI-601'); Gemma's ``tag`` when it is built
+        from the candidate's nearby texts (otherwise recorded as rejected); the
+        nearest unowned tag text of the matching kind for which ``o`` is the
+        nearest object of its category. The texts used are moved to ``o``
+        (previous owners' tags are rebuilt). Returns a change record or None.
+        """
+        texts, objs, _ = maps
+        if v.tag:
+            o.attributes["gemma_tag"] = v.tag[:60]
+        if o.tag or o.category not in _TAGGABLE:
+            return None
+        pool = [t for _, t in nearby if t.role not in _FIXED_ROLES and t.role != TextRole.LINE_NUMBER]
+
+        def free(t: TextItem) -> bool:  # not the tag source of another object
+            other = objs.get(t.owner_id or "")
+            if other is None or other.id == o.id:
+                return True
+            if other.category == Category.INSTRUMENT and t.role == TextRole.INSTRUMENT:
+                return False
+            return not (other.tag and _covers(other.tag, t.text))
+
+        chosen: list[TextItem] = []
+        tag, source, role = None, None, TextRole.TAG
+        if o.category == Category.INSTRUMENT:
+            inside = [t for t in pool if o.bbox.contains_point(t.bbox.center.x, t.bbox.center.y)
+                      and t.role != TextRole.CONNECTOR and free(t)]
+            composed = compose_instrument_tag(inside) if inside else None
+            if _is_instrument_tag(composed):
+                tag, source, role, chosen = composed, "bubble_text", TextRole.INSTRUMENT, inside
+        want = set(tag_tokens(v.tag or ""))
+        if tag is None and want:
+            parts = [t for t in pool if tag_tokens(t.text) and set(tag_tokens(t.text)) <= want]
+            picked = _cover(want, [t for t in parts if free(t)])
+            if picked:
+                tag, source, chosen = normalize_text(v.tag or ""), self.label, picked
+                if o.category == Category.INSTRUMENT and all(
+                        o.bbox.contains_point(t.bbox.center.x, t.bbox.center.y) for t in picked):
+                    role = TextRole.INSTRUMENT
+                    composed = compose_instrument_tag(picked)
+                    tag = composed if _is_instrument_tag(composed) else tag
+            else:
+                o.attributes["gemma_tag_rejected"] = ("its texts already tag another object" if _cover(want, parts)
+                                                      else "not built from the symbol's nearby texts")
+        if tag is None:
+            kind = _TAG_KIND_FOR[o.category]
+            for t in pool:
+                if t.role != TextRole.TAG or t.owner_id in objs or classify_tag(normalize_text(t.text)) != kind:
+                    continue
+                rivals = [p for p in objs.values() if p.id != o.id and p.page == o.page and p.category == o.category
+                          and not p.tag and _rect_gap(t.bbox, p.bbox) < _rect_gap(t.bbox, o.bbox)]
+                if not rivals:
+                    tag, source, chosen = normalize_text(t.text), "nearby_text", [t]
+                    break
+        if tag is None:
+            return None
+        for t in chosen:
+            self._apply_assignment(doc, TextAssignment(text_id=t.id, owner_id=o.id, role=role,
+                                                       reason=f"tag of refined {o.cls.value}"), maps)
+        o.tag = tag
+        o.attributes["tag_source"] = source
+        name = o.attributes.get("name")
+        if isinstance(name, str) and role == TextRole.INSTRUMENT and set(tag_tokens(name)) <= set(tag_tokens(tag)):
+            o.attributes["vector_name"] = o.attributes.pop("name")  # bubble letters read as an equipment name
+        return {"object_id": o.id, "tag": tag, "source": source, "text_ids": [t.id for t in chosen]}
 
     def refine_symbols(self, doc: PIDDocument, pdf_path: Optional[str | Path] = None) -> PIDDocument:
         """Re-classify unknown / low-confidence / ambiguous symbols from crops + vector digest."""
@@ -426,9 +643,9 @@ class GemmaAnalyzer:
         out = doc.model_copy(deep=True)
         before = self.client.usage.model_copy(deep=True)
         targets = [o for o in out.objects if self.needs_review(o)]
-        stats: dict[str, Any] = {"source": self.label, "candidates": len(targets), "batches": 0,
+        stats: dict[str, Any] = {"source": self.label, "status": "skipped", "candidates": len(targets), "batches": 0,
                                  "failed_batches": 0, "adopted": 0, "confirmed": 0, "kept_vector": 0,
-                                 "images": False}
+                                 "images": False, "tags": []}
         self._gemma_meta(out)["symbols"] = stats
         if not targets:
             return out
@@ -448,13 +665,14 @@ class GemmaAnalyzer:
         sys_prompt = prompts.symbol_system_prompt()
         jobs: list[Callable[[], SymbolBatch]] = []
         batches: list[list[PIDObject]] = []
+        nearby = {o.id: self._nearby_texts(out, o) for o in targets}
         try:
             for page_no in sorted(by_page):
                 objs = by_page[page_no]
                 page = pdf[page_no] if pdf is not None and 0 <= page_no < pdf.page_count else None
                 for i in range(0, len(objs), self.symbol_batch):
                     batch = objs[i : i + self.symbol_batch]
-                    digest = [self._symbol_digest(out, o, n, pipe_ends) for n, o in enumerate(batch, 1)]
+                    digest = [self._symbol_digest(out, o, n, pipe_ends, nearby[o.id]) for n, o in enumerate(batch, 1)]
                     parts: list[Any] = []
                     if page is not None:
                         crops = []
@@ -478,6 +696,7 @@ class GemmaAnalyzer:
             if pdf is not None:
                 pdf.close()
         stats["batches"] = len(jobs)
+        maps = (out.text_by_id(), out.object_by_id(), {p.id: p for p in out.pipes})
         for batch, (result, err) in zip(batches, self._run_parallel(jobs)):
             if err is not None or result is None:
                 stats["failed_batches"] += 1
@@ -485,7 +704,13 @@ class GemmaAnalyzer:
                 continue
             verdicts = {v.id: v for v in result.items}
             for o in batch:
-                stats[self._merge_symbol(o, verdicts[o.id])] += 1
+                decision = self._merge_symbol(o, verdicts[o.id])
+                stats[decision] += 1
+                if decision in ("adopted", "confirmed"):
+                    change = self._claim_tag(out, o, verdicts[o.id], nearby[o.id], maps)
+                    if change:
+                        stats["tags"].append(change)
+        stats["status"] = _step_status(stats["batches"], stats["failed_batches"])
         self._record_usage(out, before)
         return out
 
@@ -516,7 +741,7 @@ class GemmaAnalyzer:
         out = doc.model_copy(deep=True)
         before = self.client.usage.model_copy(deep=True)
         det = out.info.model_copy(deep=True)
-        stats: dict[str, Any] = {"source": "vector"}
+        stats: dict[str, Any] = {"source": "vector", "status": "skipped"}
         self._gemma_meta(out)["drawing_info"] = stats
         tb_all = [t for t in out.texts if t.role == TextRole.TITLE_BLOCK]
         page_no = tb_all[0].page if tb_all else 0
@@ -565,28 +790,33 @@ class GemmaAnalyzer:
                      + "\nHints:\n" + prompts.to_json(hints))
         msgs = [Message("system", prompts.drawing_info_system_prompt()), Message("user", parts)]
         known_ids = {t.id for t in tb} | {t.id for t in notes}
-        corpus = "".join(_norm(t.text) for t in tb + notes)
+        printed = printed_values(tb + notes)
 
         def validate(res: DrawingInfoOut) -> Optional[str]:
             problems = []
             bad = [i for i in res.evidence_text_ids if i not in known_ids]
             if bad:
                 problems.append(f"evidence_text_ids {bad} are not among the given text ids")
-            if corpus:
+            if printed:
                 for field in ("drawing_no", "hull_no"):
                     value = getattr(res, field)
-                    if value and _norm(value) not in corpus:
-                        problems.append(f"{field} {value!r} does not appear in the texts; copy it exactly or use null")
+                    if value and _norm(value) not in printed:
+                        problems.append(f"{field} {value!r} is not printed as a text item (or as the value after a "
+                                        "field label); copy the complete value exactly or use null")
+            if res.drawing_no and res.hull_no and _norm(res.drawing_no) == _norm(res.hull_no):
+                problems.append(f"drawing_no and hull_no are both {res.drawing_no!r}; they are different fields")
             return "; ".join(problems) or None
 
         try:
             res = self.client.generate_json(msgs, DrawingInfoOut, validator=validate)
         except LLMError as exc:
             self._error(out.meta, "read_drawing_info", exc)
+            stats["status"] = "error"
             self._apply_keyword_system(out, keyword_system)
             self._record_usage(out, before)
             return out
         out.info = self._merge_info(det, res, keyword_system)
+        stats["status"] = "ok"
         stats["source"] = out.info.extra.get("source")
         self._record_usage(out, before)
         return out
@@ -633,48 +863,41 @@ class GemmaAnalyzer:
         return DrawingInfo(systems=systems, extra=extra, **values)
 
     # -- text ownership ----------------------------------------------------------------------
-    def _owner_candidates(self, doc: PIDDocument, t: TextItem, limit: int = 5) -> list[dict[str, Any]]:
+    def _owner_candidates(self, doc: PIDDocument, t: TextItem, limit: int = 5,
+                          index: Optional[_SpatialIndex] = None) -> list[dict[str, Any]]:
+        """Nearest pipes (line numbers) or objects (other texts) around ``t``, nearest first."""
+        index = index or _SpatialIndex(doc)
         height = t.size or min(t.bbox.width, t.bbox.height) or 3.0
         radius = max(40.0, 5.0 * height)
         c = t.bbox.center
         found: list[dict[str, Any]] = []
         if t.role == TextRole.LINE_NUMBER:
-            for p in doc.pipes:
-                if p.page != t.page or p.kind == PipeKind.SIGNAL or not p.points:
-                    continue
-                pb = BBox.from_points([(q.x, q.y) for q in p.points])
-                if _rect_gap(pb, t.bbox) > radius:
-                    continue
-                gap, near = _pipe_gap(t.bbox, p)
-                if gap <= radius:
-                    entry = {"id": p.id, "kind": "pipe", "dist_pt": _r(gap),
-                             "dir": _direction(near[0] - c.x, near[1] - c.y, gap)}
-                    if p.line_number:
-                        entry["line_number"] = p.line_number
-                    found.append(entry)
+            for p, gap, near in index.pipes_near(t.page, t.bbox, radius):
+                entry = {"id": p.id, "kind": "pipe", "dist_pt": _r(gap),
+                         "dir": _direction(near[0] - c.x, near[1] - c.y, gap)}
+                if p.line_number:
+                    entry["line_number"] = p.line_number
+                found.append(entry)
         else:
-            for o in doc.objects:
-                if o.page != t.page:
-                    continue
-                gap = _rect_gap(t.bbox, o.bbox)
-                if gap <= radius:
-                    oc = o.bbox.center
-                    entry = {"id": o.id, "kind": o.cls.value, "dist_pt": _r(gap),
-                             "dir": _direction(oc.x - c.x, oc.y - c.y, gap)}
-                    if o.tag:
-                        entry["tag"] = o.tag
-                    found.append(entry)
-        found.sort(key=lambda e: (e["dist_pt"], e["id"]))
+            for o, gap in index.objects_near(t.page, t.bbox, radius):
+                oc = o.bbox.center
+                entry = {"id": o.id, "kind": o.cls.value, "dist_pt": _r(gap),
+                         "dir": _direction(oc.x - c.x, oc.y - c.y, gap)}
+                if o.tag:
+                    entry["tag"] = o.tag
+                found.append(entry)
+        found.sort(key=lambda e: (e["dist_pt"], _id_key(e["id"])))
         return found[:limit]
 
     def ambiguous_texts(self, doc: PIDDocument) -> list[tuple[TextItem, list[dict[str, Any]]]]:
         """Owner-bearing texts with no valid owner, or several plausible owners."""
         valid = {o.id for o in doc.objects} | {p.id for p in doc.pipes}
+        index = _SpatialIndex(doc)
         out = []
         for t in doc.texts:
             if t.role not in OWNER_TEXT_ROLES:
                 continue
-            cands = self._owner_candidates(doc, t)
+            cands = self._owner_candidates(doc, t, index=index)
             if not cands:
                 continue
             if t.owner_id not in valid:
@@ -694,8 +917,8 @@ class GemmaAnalyzer:
         out = doc.model_copy(deep=True)
         before = self.client.usage.model_copy(deep=True)
         targets = self.ambiguous_texts(out)
-        stats: dict[str, Any] = {"source": self.label, "texts": len(targets), "batches": 0, "failed_batches": 0,
-                                 "changed": 0, "confirmed": 0}
+        stats: dict[str, Any] = {"source": self.label, "status": "skipped", "texts": len(targets), "batches": 0,
+                                 "failed_batches": 0, "changed": 0, "confirmed": 0}
         self._gemma_meta(out)["texts"] = stats
         if not targets:
             return out
@@ -713,16 +936,18 @@ class GemmaAnalyzer:
             batches.append(batch)
         stats["batches"] = len(jobs)
         records = out.meta.setdefault("text_resolution", [])
+        maps = (out.text_by_id(), out.object_by_id(), {p.id: p for p in out.pipes})
         for batch, (res, err) in zip(batches, self._run_parallel(jobs)):
             if err is not None or res is None:
                 stats["failed_batches"] += 1
                 self._error(out.meta, f"resolve_texts[{batch[0][0].id}..{batch[-1][0].id}]", err or LLMError("no result"))
                 continue
             for a in res.assignments:
-                changed = self._apply_assignment(out, a)
+                changed = self._apply_assignment(out, a, maps)
                 stats["changed" if changed else "confirmed"] += 1
                 records.append({"text_id": a.text_id, "owner_id": a.owner_id, "role": a.role.value,
                                 "changed": changed, "reason": a.reason[:200], "source": self.label})
+        stats["status"] = _step_status(stats["batches"], stats["failed_batches"])
         self._record_usage(out, before)
         return out
 
@@ -751,69 +976,99 @@ class GemmaAnalyzer:
         return lambda: self.client.generate_json(msgs, TextAssignments, validator=validate)
 
     @staticmethod
-    def _apply_assignment(doc: PIDDocument, a: TextAssignment) -> bool:
-        texts = doc.text_by_id()
-        objs = doc.object_by_id()
-        pipes = {p.id: p for p in doc.pipes}
+    def _apply_assignment(doc: PIDDocument, a: TextAssignment,
+                          maps: Optional[tuple[dict[str, TextItem], dict[str, PIDObject], dict[str, PipeRun]]] = None,
+                          ) -> bool:
+        """Move a text to its new owner / role and keep tags and line numbers consistent.
+
+        A text that leaves an object (or stops being a tag) takes its part of the
+        object's tag with it: the tag is rebuilt from the tag texts the object
+        still owns (bubble texts composed like the extractor, 'TIC' + '601' ->
+        'TIC-601'). A text that joins an object sets or completes its tag the
+        same way; tags and line numbers are normalised (upper case).
+        """
+        texts, objs, pipes = maps or (doc.text_by_id(), doc.object_by_id(), {p.id: p for p in doc.pipes})
         t = texts[a.text_id]
         old, new = t.owner_id, a.owner_id
         changed = old != new or t.role != a.role
+        if not changed:
+            return False
         t.role = a.role
-        if old == new:
-            return changed
         if old in objs:
             o = objs[old]
-            o.text_ids = [i for i in o.text_ids if i != t.id]
-            if o.tag == t.text:
-                o.tag = None
-        elif old in pipes:
+            if old != new:
+                o.text_ids = [i for i in o.text_ids if i != t.id]
+            if (old != new or a.role not in (TextRole.TAG, TextRole.INSTRUMENT)) and o.tag and _covers(o.tag, t.text):
+                o.tag = _tag_from_texts(o, texts)
+                o.attributes = {**o.attributes, "tag_source": "rebuilt"}
+        elif old in pipes and old != new:
             p = pipes[old]
             p.text_ids = [i for i in p.text_ids if i != t.id]
-            if p.line_number == t.text:
-                parsed = parse_line_number(t.text)
-                p.line_number = None
-                if parsed and p.size == parsed["size"]:
+            if p.line_number and _norm(p.line_number) == _norm(t.text):
+                parsed = parse_line_number(normalize_text(t.text))
+                rest = [texts[i] for i in p.text_ids if i in texts and texts[i].role == TextRole.LINE_NUMBER]
+                p.line_number = normalize_text(rest[0].text) if rest else None
+                if parsed and p.size == parsed["size"] and not rest:
                     p.size = None
         t.owner_id = new
         if new in objs:
             o = objs[new]
             if t.id not in o.text_ids:
                 o.text_ids.append(t.id)
-            if a.role in (TextRole.TAG, TextRole.INSTRUMENT) and not o.tag:
-                o.tag = t.text
+            if a.role == TextRole.INSTRUMENT:
+                composed = _tag_from_texts(o, texts)
+                if composed and (not o.tag or set(tag_tokens(o.tag)) <= set(tag_tokens(composed))):
+                    o.tag = composed
+            elif a.role == TextRole.TAG and not o.tag and _tag_like(t.text):
+                o.tag = normalize_text(t.text)
         elif new in pipes:
             p = pipes[new]
             if t.id not in p.text_ids:
                 p.text_ids.append(t.id)
             if a.role == TextRole.LINE_NUMBER and not p.line_number:
-                p.line_number = t.text
-                parsed = parse_line_number(t.text)
+                p.line_number = normalize_text(t.text)
+                parsed = parse_line_number(p.line_number)
                 if parsed:
                     p.size = p.size or parsed["size"]
                     system = SYSTEM_BY_CODE.get(parsed["system"])
                     if system and p.medium == Medium.UNKNOWN:
                         p.medium = SYSTEMS[system].medium
-        return True
+        return changed
 
     # -- whole document --------------------------------------------------------------------
     def refine_document(self, doc: PIDDocument, pdf_path: Optional[str | Path] = None) -> PIDDocument:
-        """read_drawing_info + refine_symbols + resolve_texts; an LLMError in a step keeps its input."""
+        """read_drawing_info + refine_symbols + resolve_texts; an LLMError in a step keeps its input.
+
+        ``meta["refine"]`` records every step's status (ok / partial / error /
+        skipped); ``meta["refined_by"]`` is written only when at least one step got
+        a valid model answer, and lists the steps that did and did not.
+        """
         out = doc
-        steps: list[tuple[str, Callable[[PIDDocument], PIDDocument]]] = [
-            ("read_drawing_info", lambda d: self.read_drawing_info(d, pdf_path)),
-            ("refine_symbols", lambda d: self.refine_symbols(d, pdf_path)),
-            ("resolve_texts", self.resolve_texts),
+        steps: list[tuple[str, str, Callable[[PIDDocument], PIDDocument]]] = [
+            ("read_drawing_info", "drawing_info", lambda d: self.read_drawing_info(d, pdf_path)),
+            ("refine_symbols", "symbols", lambda d: self.refine_symbols(d, pdf_path)),
+            ("resolve_texts", "texts", self.resolve_texts),
         ]
-        for name, step in steps:
+        status: dict[str, str] = {}
+        for name, key, step in steps:
             try:
                 out = step(out)
+                status[name] = str(self._gemma_meta(out).get(key, {}).get("status", "ok"))
             except LLMError as exc:
                 out = out.model_copy(deep=True) if out is doc else out
                 self._error(out.meta, name, exc)
+                status[name] = "error"
         if out is doc:
             out = doc.model_copy(deep=True)
-        out.meta["refined_by"] = {"label": self.label, "backend": self.client.backend.name,
-                                  "model": self.client.backend.model}
+        done = [n for n, st in status.items() if st in ("ok", "partial")]
+        failed = [n for n, st in status.items() if st in ("error", "partial")]
+        overall = ("skipped" if all(st == "skipped" for st in status.values()) else
+                   "error" if not done else "partial" if failed else "ok")
+        out.meta["refine"] = {"label": self.label, "backend": self.client.backend.name,
+                              "model": self.client.backend.model, "status": overall, "steps": status}
+        if done:
+            out.meta["refined_by"] = {"label": self.label, "backend": self.client.backend.name,
+                                      "model": self.client.backend.model, "steps_ok": done, "steps_failed": failed}
         return out
 
     # -- review ------------------------------------------------------------------------------
@@ -890,7 +1145,12 @@ class GemmaAnalyzer:
         return digest
 
     def review(self, report: AnalysisReport) -> AnalysisReport:
-        """Engineering review: append Gemma findings, set summaries, account LLM usage."""
+        """Engineering review: append Gemma findings, set summaries, account LLM usage.
+
+        ``meta["review"]["status"]`` is ``"ok"`` or ``"error"``; on error the report
+        is returned unchanged apart from the error and the LLM usage of the failed
+        attempts, and ``analyze()`` reports ``review_status="error"``.
+        """
         out = report.model_copy(deep=True)
         doc = out.document
         if doc.meta.get("llm_usage") and not out.meta.get("llm_refine_usage_included"):
@@ -923,12 +1183,14 @@ class GemmaAnalyzer:
             res = self.client.generate_json(msgs, ReviewOut, validator=validate,
                                             thinking=True if self.review_thinking else None)
         except LLMError as exc:
+            delta = _usage_delta(before, self.client.usage)
             self._error(out.meta, "review", exc)
-            out.meta["review"] = {"source": self.label, "status": "error", "digest_chars": len(digest_text)}
-            out.llm = _usage_add(out.llm, _usage_delta(before, self.client.usage))
+            out.meta["review"] = {"source": self.label, "status": "error", "digest_chars": len(digest_text),
+                                  "calls": delta.calls}
+            out.llm = _usage_add(out.llm, delta)
             if f"review: {exc}"[:1000] not in out.llm.errors:
                 out.llm.errors.append(f"review: {exc}"[:1000])
-            return out
+            return out  # analyze() reports meta["review"]["status"] as the review_status
         prefix = f"{self.label.upper()}-"
         taken = {f.id for f in out.findings}
         n = 0
@@ -977,6 +1239,31 @@ def make_analyzer(cfg: "LLMConfig", responder: Optional[Callable[..., Any]] = No
 
 _TB_KEYWORDS = re.compile(r"\b(DWG|DRAWING|DRAWN|HULL|TITLE|SCALE|REV|REVISION|SHEET|DATE|APPROVED|CHECKED|"
                           r"DESIGNED|SHIP|PROJECT|OWNER|YARD|CLASS)\b|NO\.", re.I)
+
+
+_FIELD_LABEL = re.compile(r"(?:NO|NUMBER|DWG|DRAWING|HULL|SHIP|YARD|PROJECT|REV|REVISION|SHEET|SCALE)\.?:?$|.*:$", re.I)
+
+
+def printed_values(texts: Sequence[TextItem]) -> set[str]:
+    """Normalised values printed in title-block / note texts.
+
+    A value is a whole text item, or what follows a field label inside one item
+    ('DWG. NO. 1234-BA-001' -> '1234-BA-001', 'HULL NO: S1234' -> 'S1234').
+    Fragments of a printed value (e.g. '7104' of '7104-PD-BA-09') are not values.
+    """
+    out: set[str] = set()
+    for t in texts:
+        text = t.text.strip()
+        if not text:
+            continue
+        out.add(_norm(text))
+        if ":" in text and text.rsplit(":", 1)[1].strip():
+            out.add(_norm(text.rsplit(":", 1)[1]))
+        tokens = text.split()
+        for i in range(1, len(tokens)):
+            if _FIELD_LABEL.match(tokens[i - 1]):
+                out.add(_norm(" ".join(tokens[i:])))
+    return out
 
 
 def select_title_block(texts: Sequence[TextItem], page_w: float, page_h: float) -> list[TextItem]:
@@ -1041,6 +1328,13 @@ def select_title_block(texts: Sequence[TextItem], page_w: float, page_h: float) 
               if k in used or inner.contains_point(t.bbox.center.x, t.bbox.center.y)]
     return sorted(chosen, key=lambda t: (round(t.bbox.y0, 1), t.bbox.x0))
 
+
+
+def _step_status(batches: int, failed: int) -> str:
+    """ok | partial | error | skipped for a step made of ``batches`` LLM requests."""
+    if batches == 0:
+        return "skipped"
+    return "ok" if failed == 0 else ("error" if failed >= batches else "partial")
 
 
 def _pymupdf_rect(b: BBox):

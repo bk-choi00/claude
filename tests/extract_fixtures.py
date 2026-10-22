@@ -73,6 +73,7 @@ class Style:
     vertical: bool = False  # add a vertical train (rotated symbols, rotated line numbers)
     dash_exploded: bool = False  # dashed signal lines drawn as separate dash segments
     dotted_cross: bool = False  # the crossing line gets a dot (connected 4-way cross)
+    distort: float = 0.0  # symbols drawn with per-axis proportions off by up to this fraction (yard styles)
 
 
 class Sheet:
@@ -91,6 +92,7 @@ class Sheet:
         self.signal_edges: list[tuple[tuple[str, str], tuple[str, str]]] = []
         self._pending_text: list[tuple] = []
         self._n = 0
+        self._rng = random.Random(1234)
         self.frame_box = None
         if frame:
             self.draw_frame()
@@ -141,6 +143,9 @@ class Sheet:
         spec = get_symbol(cls)
         if scale is None:
             scale = self.style.scale * (self.style.eq_scale if spec.category == Category.EQUIPMENT and not spec.stretchable else 1.0)
+        if self.style.distort and not spec.stretchable and spec.rotatable:
+            d = self.style.distort
+            stretch = (1.0 + self._rng.uniform(-d, d), 1.0 + self._rng.uniform(-d, d))
         pl = Placement(x, y, scale=scale, rotation=rotation, mirrored=mirrored, stretch=stretch)
         if self.style.explode:
             self._draw_exploded(spec, pl, actuator)

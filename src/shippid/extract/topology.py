@@ -174,21 +174,20 @@ def build_network(lines: Sequence[MLine], bodies: Sequence[Body], dots: Sequence
                 q = Piece(p.x0, p.y0, ax, ay, p.dashed, p.width, p.color, p.line_id, _cross_in(p.crossings, p, 0, t0))
                 pieces.append(q)
                 cut_ends[(len(pieces) - 1, 1)] = bi
-                for key, v in list(cut_ends.items()):
-                    if key == (k, 0):
-                        cut_ends[(len(pieces) - 1, 0)] = v
+                if (k, 0) in cut_ends:  # the piece was itself cut at its start
+                    cut_ends[(len(pieces) - 1, 0)] = cut_ends[(k, 0)]
             if (1 - t1) * p.length >= 0.3:
                 q = Piece(bx, by, p.x1, p.y1, p.dashed, p.width, p.color, p.line_id, _cross_in(p.crossings, p, t1, 1))
                 pieces.append(q)
                 cut_ends[(len(pieces) - 1, 0)] = bi
-                for key, v in list(cut_ends.items()):
-                    if key == (k, 1):
-                        cut_ends[(len(pieces) - 1, 1)] = v
+                if (k, 1) in cut_ends:
+                    cut_ends[(len(pieces) - 1, 1)] = cut_ends[(k, 1)]
             k += 1
     alive = [i for i, p in enumerate(pieces) if p.alive]
 
     # ---- 2. attach ends to symbols
     attach: dict[tuple[int, int], tuple[int, bool]] = {}  # (piece, end) -> (body, on actuator)
+    attach_dist: dict[tuple[int, int], float] = {}
     if bodies:
         bb_tree = shapely.STRtree([shapely.box(*b.bbox).buffer(attach_tol) for b in bodies])
     for i in alive:
@@ -212,8 +211,8 @@ def build_network(lines: Sequence[MLine], bodies: Sequence[Body], dots: Sequence
                                   b.body[1] - attach_tol <= y <= b.body[3] + attach_tol)
                     best = (d, bi, on_act)
             if best is not None:
-                # a line end attaches only if the line leaves the symbol (does not run along it)
                 attach[(i, e)] = (best[1], best[2])
+                attach_dist[(i, e)] = best[0]
 
     # ---- 3. nodes from coincident ends (per network kind)
     dsu = DSU(2 * len(pieces))
@@ -234,8 +233,13 @@ def build_network(lines: Sequence[MLine], bodies: Sequence[Body], dots: Sequence
                 dsu.union(2 * ka[0] + ka[1], 2 * kb[0] + kb[1])
     nodes: list[Node] = []
     node_of: dict[tuple[int, int], int] = {}
-    for root, members in dsu.groups([2 * i + e for i, e in end_pts]).items():
+    for members in dsu.groups([2 * i + e for i, e in end_pts]).values():
         ends = [(m // 2, m % 2) for m in members]
+        if len(ends) >= 2:
+            # pipes meeting each other (corner / tee) near a symbol: attach only on real contact
+            for ie in ends:
+                if ie in attach and ie not in cut_ends and attach_dist.get(ie, 0.0) > 0.6:
+                    del attach[ie]
         xs = [pieces[i].end(e)[0] for i, e in ends]
         ys = [pieces[i].end(e)[1] for i, e in ends]
         n = Node(len(nodes), sum(xs) / len(xs), sum(ys) / len(ys), ends)
@@ -502,7 +506,7 @@ def _direct_links(bodies: Sequence[Body], nodes: list[Node], node_tol: float, un
 
 def _outward(b: Body, n: Node, toward_pipe: tuple[float, float]) -> tuple[float, float]:
     """Outward direction of a port: the direction in which the pipe leaves the symbol."""
-    for name, (px, py), d in b.ports:
+    for name, _, d in b.ports:
         if name == n.port:
             return d
     # direction of the pipe, pointing away from the symbol centre

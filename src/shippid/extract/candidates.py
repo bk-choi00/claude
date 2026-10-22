@@ -53,7 +53,6 @@ def group_candidates(ps: PrimSet, ids: Sequence[int], unit: float, tol: float, g
         dist[(i, j)] = d
         if d <= max(base_touch, 1.2 * max(prims[i].width, prims[j].width)):
             touch.union(i, j)
-    clusters = touch.groups(ids)
 
     group = DSU(len(prims))
     for i, j in pairs:

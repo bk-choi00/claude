@@ -4,8 +4,9 @@
 SHA-256 (duplicates are flagged, not re-analysed), page sizes (with ISO paper guess),
 readability (text characters, vector path count and raster image coverage per page; only
 *readable* vector PDFs are in scope for the extractor), and a system guess from the
-title-block region text (bottom-right of the sheet) using :func:`shippid.catalog.detect_system`,
-falling back to the whole first-page text. Results go to ``index.jsonl``.
+title-block region text (bottom-right of the sheet as displayed, honouring ``/Rotate``) using
+:func:`shippid.catalog.detect_system`, falling back to the whole first-page text. Results go
+to ``index.jsonl``.
 
 ``fetch_sources(sources_yaml, dest)`` downloads the URLs listed in a YAML file::
 
@@ -18,6 +19,17 @@ falling back to the whole first-page text. Results go to ``index.jsonl``.
 
 with httpx (redirects followed), a size limit, a content-type / ``%PDF`` magic check and
 resume of partial downloads (HTTP ``Range``). Failures are recorded and skipped.
+
+Target files are unique per source: without an explicit ``name`` the file is called
+``<url stem>_<sha1(url)[:8]>.pdf`` (the query string is part of the hash, so
+``download.php?id=1`` and ``?id=2`` do not collide). Explicit names that collide
+(case-insensitively) with another source's target raise ``ValueError`` before anything is
+downloaded; the same URL listed twice is fetched once (the repeat is reported as
+``duplicate``). Every completed download gets a provenance sidecar ``<file>.source.json``
+(url, sha256, bytes); an existing file is only reported as ``exists`` when its sidecar names
+the same URL and checksum, or when its content matches the ``sha256`` given for the source.
+Partial downloads are kept per URL (``<file>.<sha1(url)[:8]>.part``) so a resume never mixes
+bytes from different URLs.
 """
 
 from __future__ import annotations
@@ -102,7 +114,7 @@ class ScanRecord:
 
 
 def _page_stats(page: pymupdf.Page, min_text_chars: int, min_paths: int, max_image_ratio: float) -> PageStats:
-    rect = page.rect
+    rect = page.rect  # displayed (rotated) page
     area = max(rect.width * rect.height, 1e-9)
     text = page.get_text("text")
     chars = sum(1 for c in text if not c.isspace())
@@ -111,8 +123,9 @@ def _page_stats(page: pymupdf.Page, min_text_chars: int, min_paths: int, max_ima
     except Exception:  # pragma: no cover - very old PyMuPDF
         paths = len(page.get_drawings())
     covered = 0.0
+    rot = page.rotation_matrix  # image bboxes are in unrotated page space
     for info in page.get_image_info():
-        r = pymupdf.Rect(info["bbox"]) & rect
+        r = (pymupdf.Rect(info["bbox"]) * rot) & rect
         if not r.is_empty:
             covered += r.width * r.height
     ratio = min(1.0, covered / area)
@@ -122,8 +135,11 @@ def _page_stats(page: pymupdf.Page, min_text_chars: int, min_paths: int, max_ima
 
 
 def _title_text(page: pymupdf.Page) -> str:
+    """Text of the bottom-right title-block region of the sheet *as displayed* (``/Rotate`` aware:
+    landscape CAD sheets are often plotted on portrait media with a 90/270 degree rotation)."""
     r = page.rect
     clip = pymupdf.Rect(r.x0 + r.width * 0.55, r.y0 + r.height * 0.6, r.x1, r.y1)
+    clip = clip * page.derotation_matrix  # get_text clips in unrotated page space
     return " ".join(page.get_text("text", clip=clip).split())
 
 
@@ -222,8 +238,41 @@ def scan_archive(root: str | Path, out_index: Optional[str | Path] = None, *, ma
 
 # --------------------------------------------------------------------------- downloading
 
+SIDECAR_SUFFIX = ".source.json"
+_FETCH_ERRORS = (httpx.HTTPError, httpx.InvalidURL, httpx.StreamError, OSError, ValueError)
+
+
+def _url_hash(url: str) -> str:
+    return hashlib.sha1(url.encode("utf-8")).hexdigest()[:8]
+
+
+def _want_sha(entry: dict[str, Any]) -> Optional[str]:
+    raw = entry.get("sha256")
+    return str(raw).strip().lower() if raw not in (None, "") else None
+
+
+def _safe_name(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._")
+
+
+def target_name(entry: dict[str, Any]) -> str:
+    """File name of a source inside ``dest``: the explicit ``name`` (sanitised, ``.pdf`` added) or
+    ``<url stem>_<sha1(url)[:8]>.pdf``, unique per URL including its query string."""
+    name = entry.get("name")
+    if name:
+        out = _safe_name(str(name)) or f"source_{_url_hash(str(entry['url']))}"
+        return out if out.lower().endswith(".pdf") else out + ".pdf"
+    url = str(entry["url"])
+    base = Path(unquote(urlparse(url).path)).name
+    stem = base[:-4] if base.lower().endswith(".pdf") else Path(base).stem
+    stem = _safe_name(stem)[:80] or "source"
+    return f"{stem}_{_url_hash(url)}.pdf"
+
 
 def load_sources(sources_yaml: str | Path) -> list[dict[str, Any]]:
+    """Source entries of a YAML file (a list, or a mapping with a ``sources`` list). Raises
+    ``ValueError`` for malformed entries and for different sources that would be saved under the
+    same file name (compared case-insensitively) or the same URL listed with conflicting checksums."""
     data = yaml.safe_load(Path(sources_yaml).read_text(encoding="utf-8")) or []
     if isinstance(data, dict):
         data = data.get("sources", [])
@@ -236,65 +285,120 @@ def load_sources(sources_yaml: str | Path) -> list[dict[str, Any]]:
         if not isinstance(entry, dict) or not entry.get("url"):
             raise ValueError(f"invalid source entry: {entry!r}")
         out.append(dict(entry))
+    _plan_targets(out)
     return out
 
 
-def _target_name(entry: dict[str, Any], index: int) -> str:
-    name = entry.get("name")
-    if not name:
-        path = unquote(urlparse(str(entry["url"])).path)
-        name = Path(path).name or f"source_{index:04d}.pdf"
-    name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(name)).strip("._") or f"source_{index:04d}"
-    if not name.lower().endswith(".pdf"):
-        name += ".pdf"
-    return name
+def _plan_targets(sources: list[dict[str, Any]]) -> list[tuple[str, Optional[int]]]:
+    """(target name, index of the earlier identical source or None) per source."""
+    first: dict[str, int] = {}
+    plan: list[tuple[str, Optional[int]]] = []
+    conflicts = []
+    for i, entry in enumerate(sources):
+        name = target_name(entry)
+        j = first.setdefault(name.lower(), i)
+        if j == i:
+            plan.append((name, None))
+            continue
+        other = sources[j]
+        wa, wb = _want_sha(other), _want_sha(entry)
+        if str(other["url"]) != str(entry["url"]):
+            conflicts.append(f"entries {j} and {i} ({other['url']} / {entry['url']}) share the file name {name!r}")
+        elif wa and wb and wa != wb:
+            conflicts.append(f"entries {j} and {i} list {entry['url']} with different sha256")
+        plan.append((name, j))
+    if conflicts:
+        raise ValueError("conflicting sources: " + "; ".join(conflicts))
+    return plan
+
+
+def _sidecar(target: Path) -> Path:
+    return target.with_name(target.name + SIDECAR_SUFFIX)
+
+
+def _read_sidecar(target: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(_sidecar(target).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_sidecar(target: Path, url: str, digest: str) -> None:
+    tmp = target.with_name(target.name + SIDECAR_SUFFIX + ".tmp")
+    tmp.write_text(json.dumps({"url": url, "sha256": digest, "bytes": target.stat().st_size}, ensure_ascii=False),
+                   encoding="utf-8")
+    tmp.replace(_sidecar(target))
+
+
+def part_path(target: Path, url: str) -> Path:
+    """Partial-download file of ``url`` for ``target`` (one per URL, so resumes never mix sources)."""
+    return target.with_name(f"{target.name}.{_url_hash(url)}.part")
 
 
 def fetch_sources(sources_yaml: str | Path, dest: str | Path, *, client: Optional[httpx.Client] = None,
                   max_bytes: int = 200 * 1024 * 1024, timeout: float = 60.0,
                   user_agent: str = "shippid-collector/0.1 (+P&ID research dataset)") -> list[dict[str, Any]]:
     """Download the PDFs listed in ``sources_yaml`` into ``dest``; returns one result record per
-    source (status: downloaded | exists | error | skipped) and writes ``dest/fetch_results.jsonl``."""
+    source (status: downloaded | exists | duplicate | error | skipped) and writes
+    ``dest/fetch_results.jsonl`` (one line per source as it completes)."""
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
     sources = load_sources(sources_yaml)
+    plan = _plan_targets(sources)
     own = client is None
     client = client or httpx.Client(follow_redirects=True, timeout=timeout, headers={"User-Agent": user_agent})
-    results = []
+    results: list[dict[str, Any]] = []
     try:
-        for i, entry in enumerate(sources):
-            res = _fetch_one(client, entry, dest / _target_name(entry, i), max_bytes)
-            for k in ("system", "license", "notes"):
-                if k in entry:
-                    res[k] = entry[k]
-            results.append(res)
+        with (dest / "fetch_results.jsonl").open("w", encoding="utf-8") as log_fh:
+            for entry, (name, dup) in zip(sources, plan):
+                if dup is not None:
+                    prev = results[dup]
+                    res = {"url": str(entry["url"]), "path": name, "status": "duplicate", "bytes": prev.get("bytes", 0),
+                           "duplicate_of": dup, "reason": f"same URL as entry {dup} ({prev['status']})"}
+                    if prev.get("sha256"):
+                        res["sha256"] = prev["sha256"]
+                else:
+                    res = _fetch_one(client, entry, dest / name, max_bytes)
+                for k in ("system", "license", "notes"):
+                    if k in entry:
+                        res[k] = entry[k]
+                results.append(res)
+                log_fh.write(json.dumps(res, ensure_ascii=False) + "\n")
+                log_fh.flush()
     finally:
         if own:
             client.close()
-    with (dest / "fetch_results.jsonl").open("w", encoding="utf-8") as fh:
-        for r in results:
-            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
     return results
 
 
 def _fetch_one(client: httpx.Client, entry: dict[str, Any], target: Path, max_bytes: int) -> dict[str, Any]:
     url = str(entry["url"])
-    raw = entry.get("sha256")
-    want = str(raw).strip().lower() if raw not in (None, "") else None
+    want = _want_sha(entry)
     res: dict[str, Any] = {"url": url, "path": target.name, "status": "error", "bytes": 0}
     if target.exists():
         digest = sha256_file(target)
-        if want is None or digest == want:
+        meta = _read_sidecar(target)
+        same_source = meta.get("url") == url and meta.get("sha256") == digest
+        if (want is not None and digest == want) or (want is None and same_source):
+            if not same_source:  # content verified by the configured checksum: adopt the file
+                _write_sidecar(target, url, digest)
             res.update(status="exists", bytes=target.stat().st_size, sha256=digest)
             return res
-        target.unlink()  # stale file with the wrong content
-    part = target.with_name(target.name + ".part")
+        if want is not None:  # known wrong content
+            target.unlink()
+            _sidecar(target).unlink(missing_ok=True)
+        # unknown provenance without a checksum: download again, replace only on success
+    part = part_path(target, url)
+    for stale in target.parent.glob(f"{target.name}.*.part"):  # partials of other URLs for this name
+        if stale != part:
+            stale.unlink(missing_ok=True)
     offset = part.stat().st_size if part.exists() else 0
     headers = {"Range": f"bytes={offset}-"} if offset else {}
     try:
         with client.stream("GET", url, headers=headers) as resp:
             if resp.status_code == 416 and offset:  # nothing left to fetch: the partial file is complete
-                pass
+                res["resumed_from"] = offset
             elif resp.status_code >= 400:
                 res["reason"] = f"HTTP {resp.status_code}"
                 return res
@@ -305,11 +409,20 @@ def _fetch_one(client: httpx.Client, entry: dict[str, Any], target: Path, max_by
                     res.update(status="skipped", reason=f"content-type {ctype!r} is not a PDF")
                     return res
                 resumed = resp.status_code == 206 and offset > 0
-                if not resumed:
+                if resumed:
+                    m = re.match(r"bytes\s+(\d+)-", resp.headers.get("content-range", ""))
+                    if m is not None and int(m.group(1)) != offset:
+                        part.unlink(missing_ok=True)
+                        res["reason"] = f"server resumed at byte {m.group(1)} instead of {offset}; partial file discarded"
+                        return res
+                else:
                     offset = 0
-                length = resp.headers.get("content-length")
-                if length is not None and offset + int(length) > max_bytes:
-                    res.update(status="skipped", reason=f"too large ({offset + int(length)} bytes > {max_bytes})")
+                try:
+                    length: Optional[int] = int(resp.headers.get("content-length", ""))
+                except ValueError:
+                    length = None  # absent or malformed: enforced while streaming
+                if length is not None and offset + length > max_bytes:
+                    res.update(status="skipped", reason=f"too large ({offset + length} bytes > {max_bytes})")
                     return res
                 written = offset
                 with part.open("ab" if resumed else "wb") as fh:
@@ -322,8 +435,8 @@ def _fetch_one(client: httpx.Client, entry: dict[str, Any], target: Path, max_by
                             return res
                         fh.write(chunk)
                 res["resumed_from"] = offset if resumed else 0
-    except httpx.HTTPError as exc:
-        res["reason"] = f"{type(exc).__name__}: {exc}"[:300]  # the partial file is kept for resume
+    except _FETCH_ERRORS as exc:
+        res["reason"] = f"{type(exc).__name__}: {exc}"[:300]  # a partial file is kept for resume
         return res
     with part.open("rb") as fh:
         magic = fh.read(5)
@@ -337,5 +450,6 @@ def _fetch_one(client: httpx.Client, entry: dict[str, Any], target: Path, max_by
         res.update(reason=f"sha256 mismatch ({digest} != {want})")
         return res
     part.replace(target)
+    _write_sidecar(target, url, digest)
     res.update(status="downloaded", bytes=target.stat().st_size, sha256=digest)
     return res

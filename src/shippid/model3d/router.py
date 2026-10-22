@@ -71,7 +71,6 @@ def _simplify(pts: list[Pt], tol: float = 1e-6) -> list[Pt]:
         d1 = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
         d2 = (c[0] - b[0], c[1] - b[1], c[2] - b[2])
         cross = (d1[1] * d2[2] - d1[2] * d2[1], d1[2] * d2[0] - d1[0] * d2[2], d1[0] * d2[1] - d1[1] * d2[0])
-        dot = d1[0] * d2[0] + d1[1] * d2[1] + d1[2] * d2[2]
         if max(abs(x) for x in cross) < tol:
             out.pop(i)  # collinear (straight on, or a back-tracking spike)
             i = max(1, i - 1)
@@ -165,11 +164,13 @@ class VoxelGrid:
         return not (self.blocked(inflate)[c] or self.pipes[c] or self.reserved[c])
 
     def nearest_free(self, c: tuple[int, int, int], inflate: float, radius: int = 6,
-                     prefer: Optional[tuple[float, float, float]] = None) -> tuple[int, int, int]:
-        """Nearest free cell to ``c`` (BFS, ties broken toward ``prefer`` direction)."""
-        if self.free(c, inflate):
-            return c
+                     prefer: Optional[tuple[float, float, float]] = None, hard_only: bool = False
+                     ) -> tuple[int, int, int]:
+        """Nearest free cell to ``c`` (shell search, ties broken toward ``prefer``); with ``hard_only``
+        only equipment obstacles count (pipes / reserved cells are soft for the router)."""
         blocked = self.blocked(inflate)
+        if not blocked[c] and (hard_only or not (self.pipes[c] or self.reserved[c])):
+            return c
         best: Optional[tuple[float, tuple[int, int, int]]] = None
         for r in range(1, radius + 1):
             for di in range(-r, r + 1):
@@ -180,7 +181,7 @@ class VoxelGrid:
                         q = (c[0] + di, c[1] + dj, c[2] + dk)
                         if not all(0 <= q[i] < self.shape[i] for i in range(3)):
                             continue
-                        if blocked[q] or self.pipes[q] or self.reserved[q]:
+                        if blocked[q] or (not hard_only and (self.pipes[q] or self.reserved[q])):
                             continue
                         d = abs(di) + abs(dj) + abs(dk)
                         if prefer is not None:
@@ -192,16 +193,17 @@ class VoxelGrid:
         return c
 
 
-def astar(free: np.ndarray, start: tuple[int, int, int], goal: tuple[int, int, int], band_k: float,
+def astar(cost: np.ndarray, start: tuple[int, int, int], goal: tuple[int, int, int], band_k: float,
           start_dir: int = 6, bend: float = 2.0, band_w: float = 0.35, eps: float = 1.25,
           max_expansions: int = 120_000) -> Optional[list[tuple[int, int, int]]]:
-    """Orthogonal A* on a boolean ``free`` grid (sub-box coordinates).
+    """Orthogonal A* on a cell-cost grid (sub-box coordinates; cost < 0 = impassable).
 
-    Cost per step 1, +``bend`` per change of direction, +``band_w`` x |k - band_k| per horizontal
-    step (keeps runs on the preferred elevation band); weighted heuristic ``eps`` x Manhattan.
+    Step cost 1 + the entered cell's cost, +``bend`` per change of direction, +``band_w`` x
+    |k - band_k| per horizontal step (keeps runs on the preferred elevation band); weighted
+    heuristic ``eps`` x Manhattan distance (bounded-suboptimal, much faster).
     """
-    sx, sy, sz = free.shape
-    flat = free.ravel().tolist()
+    sx, sy, sz = cost.shape
+    flat = cost.ravel().tolist()
     gi, gj, gk = goal
     inf = float("inf")
     best_g: dict[int, float] = {}
@@ -230,9 +232,10 @@ def astar(free: np.ndarray, start: tuple[int, int, int], goal: tuple[int, int, i
             ni, nj, nk = i + di, j + dj, k + dk
             if ni < 0 or nj < 0 or nk < 0 or ni >= sx or nj >= sy or nk >= sz:
                 continue
-            if not flat[(ni * sy + nj) * sz + nk]:
+            c = flat[(ni * sy + nj) * sz + nk]
+            if c < 0:
                 continue
-            ng = g + 1.0 + (bend if (d < 6 and nd != d) else 0.0) + (band_pen if dk == 0 else 0.0)
+            ng = g + 1.0 + c + (bend if (d < 6 and nd != d) else 0.0) + (band_pen if dk == 0 else 0.0)
             ns = ((ni * sy + nj) * sz + nk) * 7 + nd
             if ng < best_g.get(ns, inf):
                 best_g[ns] = ng
@@ -401,6 +404,7 @@ class _Ctx:
     deadline: float
     stats: RouteStats
     notes: list[str]
+    reserved_by: dict[str, list[tuple[int, int, int]]] = field(default_factory=dict)
 
 
 def band_z(room: EngineRoom, routing: Optional[RoutingPlan], medium: Medium, line: Optional[str]) -> float:
@@ -483,9 +487,20 @@ def _sub_box(grid: VoxelGrid, a: tuple[int, int, int], b: tuple[int, int, int], 
     return tuple(slice(max(0, lo[i] - m[i]), min(grid.shape[i], hi[i] + m[i] + 1)) for i in range(3))  # type: ignore
 
 
+SOFT_PIPE = 6.0  # cost of entering a cell already used by another pipe or reserved for another terminal
+SOFT_NEAR = 0.6  # cost of running close to equipment (outside the hard inflation)
+
+
 def _search(ctx: _Ctx, ca: tuple[int, int, int], cb: tuple[int, int, int], inflate: float, zb: float,
-            start_dir: int, wide: bool) -> Optional[tuple[list[Pt], list[tuple[int, int, int]]]]:
-    """A* between two cells in a sub-box (or the whole grid); returns (points, global cells)."""
+            start_dir: int, wide: bool, own: Sequence[tuple[int, int, int]] = (), strict: bool = False
+            ) -> Optional[tuple[list[Pt], list[tuple[int, int, int]]]]:
+    """A* between two cells in a sub-box (or the whole grid); returns (points, global cells).
+
+    Hard: equipment boxes inflated by OD/2 + clearance. Soft: other pipes and other terminals'
+    reserved cells (SOFT_PIPE), cells close to equipment (SOFT_NEAR). The chain's own reserved
+    cells are free and hard cells next to its terminals are softened, so a terminal squeezed
+    between equipment or surrounded by earlier pipes never becomes an unreachable pocket.
+    """
     g = ctx.grid
     band_k = int(round((zb - g.origin[2]) / g.res - 0.5))
     band_k = min(max(band_k, 0), g.shape[2] - 1)
@@ -494,14 +509,33 @@ def _search(ctx: _Ctx, ca: tuple[int, int, int], cb: tuple[int, int, int], infla
         sl = (slice(0, g.shape[0]), slice(0, g.shape[1]), slice(0, g.shape[2]))
     else:
         sl = _sub_box(g, ca, cb, band_k, max(8, int(0.3 * span)), 4)
-    free = ~(g.blocked(inflate)[sl] | g.pipes[sl] | g.reserved[sl])
+    hard = g.blocked(inflate)[sl]
+    near = g.blocked(inflate + 0.3)[sl]
+    cost = np.where(near, SOFT_NEAR, 0.0)
+    cost[g.pipes[sl] | g.reserved[sl]] = SOFT_PIPE
     off = (sl[0].start, sl[1].start, sl[2].start)
-    la = (ca[0] - off[0], ca[1] - off[1], ca[2] - off[2])
-    lb = (cb[0] - off[0], cb[1] - off[1], cb[2] - off[2])
-    free[la] = True
-    free[lb] = True
-    cells = astar(free, la, lb, band_k - off[2], start_dir=start_dir,
-                  max_expansions=400_000 if wide else 120_000)
+    shape = cost.shape
+
+    def local(c):
+        q = (c[0] - off[0], c[1] - off[1], c[2] - off[2])
+        return q if all(0 <= q[i] < shape[i] for i in range(3)) else None
+
+    for c in own:
+        q = local(c)
+        if q is not None:
+            cost[q] = 0.0
+    cost[hard] = -1.0
+    la, lb = local(ca), local(cb)
+    for t in (la, lb):
+        cost[t] = 0.0
+        if strict:
+            continue
+        for di, dj, dk in _DIRS:
+            q = (t[0] + di, t[1] + dj, t[2] + dk)
+            if all(0 <= q[i] < shape[i] for i in range(3)) and cost[q] < 0:
+                cost[q] = SOFT_PIPE
+    cells = astar(cost, la, lb, band_k - off[2], start_dir=start_dir,
+                  max_expansions=300_000 if wide else 100_000)
     if cells is None:
         return None
     glob = [(c[0] + off[0], c[1] + off[1], c[2] + off[2]) for c in cells]
@@ -535,35 +569,7 @@ def _join(ctx: _Ctx, p: Pt, q: Pt, own: Optional[Box3]) -> list[Pt]:
     return best[1:]  # type: ignore[index]
 
 
-def _route_between(ctx: _Ctx, a: Pt, na, b: Pt, nb, od: float, zb: float, label: str) -> tuple[list[Pt], bool]:
-    """Polyline a -> b (orthogonal). Returns (points, used_fallback)."""
-    g = ctx.grid
-    inflate = od / 2 + PIPE_CLEARANCE
-    stub = max(0.2, od / 2 + 0.15)
-    sa = _add(a, na, stub) if na is not None else a
-    sb = _add(b, nb, stub) if nb is not None else b
-    ca = g.nearest_free(g.cell(sa), inflate, prefer=na)
-    cb = g.nearest_free(g.cell(sb), inflate, prefer=nb)
-    cells = None
-    fallback = False
-    if ca == cb:
-        mid = [g.center(ca)]
-    else:
-        res = None
-        if time.time() < ctx.deadline:
-            res = _search(ctx, ca, cb, inflate, zb, _dir_index(na), wide=False)
-            if res is None and time.time() < ctx.deadline:
-                ctx.stats.widened += 1
-                res = _search(ctx, ca, cb, inflate, zb, _dir_index(na), wide=True)
-        if res is None:
-            fallback = True
-            ctx.stats.fallback += 1
-            ctx.notes.append(f"{label}: Manhattan fallback route (no collision-free path within the search "
-                             f"limits/time budget); may cross equipment")
-            mid = [(sa[0], sa[1], zb), (sb[0], sa[1], zb), (sb[0], sb[1], zb)]
-        else:
-            ctx.stats.astar += 1
-            mid, cells = res
+def _compose(ctx: _Ctx, a: Pt, na, sa: Pt, mid: list[Pt], sb: Pt, b: Pt, nb) -> list[Pt]:
     pts: list[Pt] = [a]
     if na is not None:
         pts.append(sa)
@@ -572,17 +578,60 @@ def _route_between(ctx: _Ctx, a: Pt, na, b: Pt, nb, od: float, zb: float, label:
     tail = [sb, b] if nb is not None else [b]
     pts += _join(ctx, pts[-1], tail[0], None)
     pts += tail[1:]
-    pts = _simplify(_orthogonalize(pts))
-    if cells:
-        for c in cells:
-            if c not in (ca, cb):
-                g.pipes[c] = True
-                if od > 0.35:
-                    for di, dj, dk in _DIRS:
-                        q = (c[0] + di, c[1] + dj, c[2] + dk)
-                        if all(0 <= q[i] < g.shape[i] for i in range(3)) and not g.reserved[q]:
-                            g.pipes[q] = True
-    return pts, fallback
+    return _simplify(_orthogonalize(pts))
+
+
+def _clashes(ctx: _Ctx, pts: Sequence[Pt]) -> int:
+    return sum(1 for p, q in zip(pts, pts[1:]) for bx in ctx.grid.boxes if segment_hits_box(p, q, bx))
+
+
+def _route_between(ctx: _Ctx, a: Pt, na, b: Pt, nb, od: float, zb: float, label: str,
+                   own: Sequence[tuple[int, int, int]] = ()) -> tuple[list[Pt], bool]:
+    """Polyline a -> b (orthogonal). Returns (points, used_fallback)."""
+    g = ctx.grid
+    inflate = od / 2 + PIPE_CLEARANCE
+    stub = max(0.2, od / 2 + 0.15)
+    sa = _add(a, na, stub) if na is not None else a
+    sb = _add(b, nb, stub) if nb is not None else b
+    ca = g.nearest_free(g.cell(sa), inflate, prefer=na, hard_only=True)
+    cb = g.nearest_free(g.cell(sb), inflate, prefer=nb, hard_only=True)
+    if ca == cb:
+        return _compose(ctx, a, na, sa, [g.center(ca)], sb, b, nb), False
+    res = None
+    if time.time() < ctx.deadline:
+        res = _search(ctx, ca, cb, inflate, zb, _dir_index(na), wide=False, own=own)
+        if res is None and time.time() < ctx.deadline:
+            ctx.stats.widened += 1
+            res = _search(ctx, ca, cb, inflate, zb, _dir_index(na), wide=True, own=own)
+    if res is not None:
+        pts = _compose(ctx, a, na, sa, res[0], sb, b, nb)
+        if _clashes(ctx, pts) and time.time() < ctx.deadline:
+            strict = _search(ctx, ca, cb, inflate, zb, _dir_index(na), wide=False, own=own, strict=True)
+            if strict is not None:
+                spts = _compose(ctx, a, na, sa, strict[0], sb, b, nb)
+                if _clashes(ctx, spts) < _clashes(ctx, pts):
+                    res, pts = strict, spts
+        ctx.stats.astar += 1
+        _occupy(g, res[1], (ca, cb), od)
+        return pts, False
+    ctx.stats.fallback += 1
+    ctx.notes.append(f"{label}: Manhattan fallback route (no path outside the inflated equipment "
+                     f"within the search limits / time budget); may cross equipment")
+    mid = [(sa[0], sa[1], zb), (sb[0], sa[1], zb), (sb[0], sb[1], zb)]
+    return _compose(ctx, a, na, sa, mid, sb, b, nb), True
+
+
+def _occupy(g: VoxelGrid, cells: Sequence[tuple[int, int, int]], terminals, od: float) -> None:
+    """Mark routed cells as used (6-neighbourhood too for pipes larger than ~DN300)."""
+    for c in cells:
+        if c in terminals:
+            continue
+        g.pipes[c] = True
+        if od > 0.35:
+            for di, dj, dk in _DIRS:
+                q = (c[0] + di, c[1] + dj, c[2] + dk)
+                if all(0 <= q[i] < g.shape[i] for i in range(3)) and not g.reserved[q]:
+                    g.pipes[q] = True
 
 
 def _cum(pts: Sequence[Pt]) -> list[float]:
@@ -743,6 +792,10 @@ def _items_along(ctx: _Ctx, chain: _Chain, pts: list[Pt], od: float, line: Optio
     return out, spans
 
 
+def _term_key(end: _End, placed: dict[str, Placement3D]) -> str:
+    return f"{end.node}\x00{end.key}" if end.node in placed else end.node
+
+
 def _stub(ctx: _Ctx, start: Pt, normal, length: float) -> list[Pt]:
     """Dead-end stub: out along the nozzle normal, then up (instrument taps, vents, drains)."""
     if normal is not None and abs(normal[2]) < 0.5:
@@ -820,10 +873,15 @@ def route(doc: PIDDocument, placements: Sequence[Placement3D], room: EngineRoom,
                 z = adapt_band(node_z[n], min(p[2] for p in pts), max(p[2] for p in pts))
             new[n] = (x, y, z)
         nodes = new
+    hard = grid.blocked(0.25)
     for n in sorted(nodes):
         x, y, z = nodes[n]
         c = grid.nearest_free(grid.cell((x, y, z)), 0.25, radius=8)
-        grid.reserved[c] = True
+        cells = [c] + [q for q in ((c[0] + di, c[1] + dj, c[2] + dk) for di, dj, dk in _DIRS)
+                       if all(0 <= q[i] < grid.shape[i] for i in range(3)) and not hard[q]]
+        for q in cells:
+            grid.reserved[q] = True
+        ctx.reserved_by[n] = cells
         nodes[n] = grid.center(c)
     ctx.node_pos = nodes
 
@@ -834,6 +892,7 @@ def route(doc: PIDDocument, placements: Sequence[Placement3D], room: EngineRoom,
             c = grid.cell(_add(nz.as_tuple(), nrm, 0.35))
             if not grid.blocked(0.1)[c]:
                 grid.reserved[c] = True
+                ctx.reserved_by[f"{pl.object_id}\x00{name}"] = [c]
 
     # --- route chains: priority lines, then largest OD first; stubs last
     prio = {ln.strip().upper(): i for i, ln in enumerate(ctx.routing.priority)}
@@ -862,7 +921,9 @@ def route(doc: PIDDocument, placements: Sequence[Placement3D], room: EngineRoom,
             if ch.start.node == ch.end.node and ch.start.key == ch.end.key:
                 pts = [a, _add(a, (0, 0, 1), 0.5)]
             else:
-                pts, _ = _route_between(ctx, a, na, b, nb_, od, zb, label)
+                own = ctx.reserved_by.get(_term_key(ch.start, pmap), []) + \
+                    ctx.reserved_by.get(_term_key(ch.end, pmap), [])
+                pts, _ = _route_between(ctx, a, na, b, nb_, od, zb, label, own)
         if len(pts) < 2:
             pts = [pts[0], _add(pts[0], (0, 0, 1), 0.05)]
         placed_items, spans = _items_along(ctx, ch, pts, od, line, ch.end is None)
@@ -898,7 +959,8 @@ def route(doc: PIDDocument, placements: Sequence[Placement3D], room: EngineRoom,
             if r is not None:
                 end = r.points[0] if w == 0 else r.points[-1]
                 noz[port_key(p.start if w == 0 else p.end, p.id)] = end
-        inline.append(Placement3D(object_id=h, cls=o.cls, position=Vec3(x=x, y=y, z=round(z - axis_height(o.cls, size), 4)),
+        inline.append(Placement3D(object_id=h, cls=o.cls,
+                                  position=Vec3(x=x, y=y, z=round(z - axis_height(o.cls, size), 4)),
                                   size=Vec3(x=size[0], y=size[1], z=size[2]), deck=room.deck_below_z(z),
                                   nozzles=noz, rationale="[router] branch item placed at its junction position"))
 

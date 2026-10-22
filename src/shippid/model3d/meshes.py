@@ -240,7 +240,8 @@ def _filter(l, w, h, duplex=False):
 
 
 def _strainer(l, w, h):
-    return [Part("body", _merge([box(0.7 * l, 0.8 * w, 0.75 * h, 0, 0, 0.0), cyl(0.3 * min(w, h), l, "x", (0, 0, 0.5 * h))]),
+    return [Part("body", _merge([box(0.7 * l, 0.8 * w, 0.75 * h, 0, 0, 0.0),
+                                 cyl(0.3 * min(w, h), l, "x", (0, 0, 0.5 * h))]),
                  COLORS["vessel"], 0.4, 0.5),
             Part("cover", cyl(0.35 * min(l, w), 0.12 * h, "z", (0, 0, 0.81 * h)), COLORS["casing"])]
 
@@ -252,7 +253,8 @@ def _sea_chest(l, w, h):
 
 def _overboard(l, w, h):
     r = 0.4 * min(w, h)
-    return [Part("shell_valve", _merge([cyl(r, 0.6 * l, "x", (0, 0, h / 2)), cyl(1.2 * r, 0.1 * l, "x", (0.35 * l, 0, h / 2))]),
+    return [Part("shell_valve", _merge([cyl(r, 0.6 * l, "x", (0, 0, h / 2)),
+                                        cyl(1.2 * r, 0.1 * l, "x", (0.35 * l, 0, h / 2))]),
                  COLORS["base"], 0.5, 0.5)]
 
 
@@ -260,7 +262,8 @@ def _purifier(l, w, h):
     r = 0.3 * min(l, w)
     return [Part("frame", box(l, w, 0.4 * h), COLORS["unit"], 0.3, 0.5),
             Part("bowl", _merge([cyl(r, 0.35 * h, "z", (-0.1 * l, 0, 0.575 * h)),
-                                 frustum(r, 0.4 * r, 0.25 * h, "z", (-0.1 * l, 0, 0.875 * h))]), COLORS["vessel"], 0.5, 0.4),
+                                 frustum(r, 0.4 * r, 0.25 * h, "z", (-0.1 * l, 0, 0.875 * h))]),
+                 COLORS["vessel"], 0.5, 0.4),
             Part("motor", cyl(0.18 * min(l, w), 0.35 * h, "z", (0.3 * l, 0, 0.575 * h)), COLORS["motor"])]
 
 
@@ -268,7 +271,8 @@ def _compressor(l, w, h):
     return [Part("frame", box(l, w, 0.12 * h), COLORS["base"]),
             Part("block", _merge([box(0.5 * l, 0.7 * w, 0.45 * h, -0.2 * l, 0, 0.12 * h),
                                   cyl(0.15 * min(l, w), 0.35 * h, "z", (-0.3 * l, 0, 0.75 * h)),
-                                  cyl(0.15 * min(l, w), 0.35 * h, "z", (-0.1 * l, 0, 0.75 * h))]), COLORS["casing"], 0.4, 0.5),
+                                  cyl(0.15 * min(l, w), 0.35 * h, "z", (-0.1 * l, 0, 0.75 * h))]),
+                 COLORS["casing"], 0.4, 0.5),
             Part("motor", cyl(0.3 * min(w, h), 0.4 * l, "x", (0.28 * l, 0, 0.42 * h)), COLORS["motor"])]
 
 
@@ -299,9 +303,11 @@ def _bwts(l, w, h):
 def _engine(l, w, h):
     return [Part("bedplate", box(l, w, 0.22 * h), COLORS["engine_dark"], 0.3, 0.6),
             Part("frame", _merge([box(0.92 * l, 0.8 * w, 0.4 * h, 0, 0, 0.22 * h),
-                                  box(0.86 * l, 0.6 * w, 0.28 * h, -0.02 * l, 0, 0.62 * h)]), COLORS["engine"], 0.3, 0.6),
+                                  box(0.86 * l, 0.6 * w, 0.28 * h, -0.02 * l, 0, 0.62 * h)]),
+                 COLORS["engine"], 0.3, 0.6),
             Part("top", _merge([box(0.8 * l, 0.45 * w, 0.1 * h, -0.03 * l, 0, 0.9 * h),
-                                cyl(0.18 * w, 0.2 * w, "y", (0.42 * l, 0, 0.82 * h))]), COLORS["engine_dark"], 0.4, 0.5)]
+                                cyl(0.18 * w, 0.2 * w, "y", (0.42 * l, 0, 0.82 * h))]),
+                 COLORS["engine_dark"], 0.4, 0.5)]
 
 
 def _flow_meter(l, w, h):
@@ -341,7 +347,8 @@ def _actuator(act: ActuatorType, w: float, z0: float, z1: float) -> Optional[Par
                                         cyl(0.5 * w, 0.1 * span, "z", (0, 0, z0 + 0.05 * span))]), col, 0.6, 0.3)
     if act == ActuatorType.QUICK_CLOSING:
         return Part("actuator", _merge([box(0.35 * w, 0.35 * w, 0.4 * span, 0, 0, z0),
-                                        frustum(0.02, 0.4 * w, 0.5 * span, "z", (0, 0, z0 + 0.7 * span))]), col, 0.3, 0.5)
+                                        frustum(0.02, 0.4 * w, 0.5 * span, "z", (0, 0, z0 + 0.7 * span))]),
+                    col, 0.3, 0.5)
     return None
 
 
@@ -391,7 +398,8 @@ def _instrument(cls: SymbolClass, l: float, w: float, h: float) -> list[Part]:
     zc = h - r
     if cls == S.INSTRUMENT_PANEL:  # transmitter
         return [Part("stem", cyl(0.012, zc, "z", (0, 0, zc / 2)), (0.55, 0.55, 0.58), 0.7, 0.3),
-                Part("housing", _merge([cyl(r, 0.8 * w, "y", (0, 0, zc)), box(0.8 * r, 0.8 * w, 0.6 * r, 0, 0, zc - r)]),
+                Part("housing", _merge([cyl(r, 0.8 * w, "y", (0, 0, zc)),
+                                        box(0.8 * r, 0.8 * w, 0.6 * r, 0, 0, zc - r)]),
                      (0.20, 0.40, 0.70), 0.3, 0.5)]
     parts = [Part("stem", cyl(0.012, zc, "z", (0, 0, zc / 2)), (0.55, 0.55, 0.58), 0.7, 0.3),
              Part("case", cyl(r, 0.5 * w, "y", (0, 0, zc)), COLORS["rim"], 0.5, 0.4),
@@ -483,7 +491,8 @@ def deck_parts(length: float, breadth: float, z: float, grid: float = 2.5) -> li
         lines.append(box(0.04, breadth, 0.012, i * grid, 0.0, z))
     for j in range(ny + 1):
         lines.append(box(length, 0.04, 0.012, length / 2, -breadth / 2 + j * grid, z))
-    return [Part("plate", plate, COLORS["deck"], 0.1, 0.9, 0.08), Part("grid", _merge(lines), COLORS["grid"], 0.1, 0.9, 0.25)]
+    return [Part("plate", plate, COLORS["deck"], 0.1, 0.9, 0.08),
+            Part("grid", _merge(lines), COLORS["grid"], 0.1, 0.9, 0.25)]
 
 
 def outline_part(x0: float, y0: float, z0: float, x1: float, y1: float, z1: float, t: float = 0.06) -> Part:

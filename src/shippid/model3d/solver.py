@@ -27,8 +27,8 @@ import numpy as np
 from ..catalog import TYPICAL_DIMENSIONS
 from ..model import Category, Endpoint, PIDDocument, PIDObject, Placement3D, SymbolClass, Vec3
 from ..symbols import get_symbol
-from .heuristic import (Neighbor, drawing_positions, equipment_adjacency, object_labels, pipe_dn, process_pipes,
-                        _BOILER, _GEN_ENGINE, _HIGH_TANK, _MAIN_ENGINE)
+from .heuristic import (_BOILER, _GEN_ENGINE, _HIGH_TANK, _MAIN_ENGINE, Neighbor, drawing_positions,
+                        equipment_adjacency, object_labels, process_pipes)
 from .plan import LayoutPlan, PlanItem, effective_deck
 from .zones import Box3, EngineRoom
 
@@ -291,7 +291,10 @@ def _candidates(ctx: _Ctx, region: tuple[float, float, float, float], fx: float,
         zov = (a[:, 2] < z1 - 1e-6) & (z0 < a[:, 5] - 1e-6)
         for i in np.nonzero(zov)[0]:
             b = a[i]
-            c = 0.0 if (structural and ctx.struct[i]) else (MARKER_CLEARANCE if ctx.marker[i] else max(c_self, ctx.clear[i]))
+            if structural and ctx.struct[i]:
+                c = 0.0
+            else:
+                c = MARKER_CLEARANCE if ctx.marker[i] else max(c_self, ctx.clear[i])
             c += 1e-3
             xs_s = [b[3] + c + fx / 2, b[0] - c - fx / 2]
             ys_s = [b[4] + c + fy / 2, b[1] - c - fy / 2]
@@ -377,6 +380,60 @@ def _relation_detail(item: PlanItem, pen: float, gap: float) -> str:
     return f"edge gap {gap:.1f} m to {item.anchor_id} (penalty {pen:.1f})"
 
 
+@dataclass
+class _ItemCtx:
+    item: PlanItem
+    obj: PIDObject
+    size: tuple[float, float, float]
+    fx: float
+    fy: float
+    structural: bool
+    marker: bool
+    c_self: float
+    hint: tuple[float, float]
+    anchor_box: Optional[Box3]
+    group_centres: list
+    nb_centres: list
+
+
+def _attempt(ctx: _Ctx, it: _ItemCtx, zone: str, side: Optional[str], long_: Optional[str], relax: bool = False
+             ) -> Optional[tuple[float, float, float, str, float]]:
+    """Best feasible (cx, cy, z0, deck, height) for one item in a zone / band, or None."""
+    room, item, fx, fy = ctx.room, it.item, it.fx, it.fy
+    deck = effective_deck(item) if zone == item.zone else room.zone(zone).deck
+    z0 = room.deck_z(deck)
+    if zone.startswith("ship_side") and it.obj.cls == S.OVERBOARD:
+        z0 += 0.5
+    h = min(it.size[2], room.height - z0)
+    if h <= 0.05:
+        return None
+    z1 = z0 + h
+    reg = _region(room, zone, side, long_, fx, fy)
+    if reg is None:
+        return None
+    cs = MARKER_CLEARANCE if relax else it.c_self
+    pts = _candidates(ctx, reg, fx, fy, z0, z1, cs, it.structural)
+    if len(pts) == 0:
+        return None
+    pts = pts[_feasible(ctx, pts, fx, fy, z0, z1, cs, it.structural, it.marker or relax)]
+    if len(pts) == 0:
+        return None
+    tx = min(max(it.hint[0], reg[0]), reg[1])
+    ty = min(max(it.hint[1], reg[2]), reg[3])
+    score = 0.25 * np.hypot(pts[:, 0] - tx, pts[:, 1] - ty)
+    score += _relation_penalty(item, pts, fx, fy, z0, z1, it.anchor_box, room.clearance)
+    if it.group_centres:
+        gc = np.mean(np.array(it.group_centres), axis=0)
+        score += 0.15 * np.hypot(pts[:, 0] - gc[0], pts[:, 1] - gc[1])
+    if it.nb_centres:
+        nc = np.array(it.nb_centres)
+        d = np.hypot(pts[:, None, 0] - nc[None, :, 0], pts[:, None, 1] - nc[None, :, 1]).mean(axis=1)
+        score += 0.08 * d
+    order = np.lexsort((pts[:, 1], pts[:, 0], np.round(score, 6)))
+    best = pts[order[0]]
+    return (float(best[0]), float(best[1]), z0, deck, h)
+
+
 def solve(plan: LayoutPlan, doc: PIDDocument, room: EngineRoom) -> tuple[list[Placement3D], list[str]]:
     """Place every plan item; returns placements and notes (see :func:`solve_detailed`)."""
     res = solve_detailed(plan, doc, room)
@@ -421,57 +478,25 @@ def solve_detailed(plan: LayoutPlan, doc: PIDDocument, room: EngineRoom, step: f
         nb_centres = [boxes[n.id].center[:2] for n in adjacency.get(oid, []) if n.id in boxes]
         group_centres = [boxes[g].center[:2] for g in groups.get(item.group or "", []) if g in boxes]
 
-        def attempt(zone: str, side: Optional[str], long_: Optional[str], relax: bool = False
-                    ) -> Optional[tuple[float, float, float, str, float]]:
-            deck = effective_deck(item) if zone == item.zone else room.zone(zone).deck
-            z0 = room.deck_z(deck)
-            if zone.startswith("ship_side") and obj.cls == S.OVERBOARD:
-                z0 += 0.5
-            h = min(size[2], room.height - z0)
-            if h <= 0.05:
-                return None
-            z1 = z0 + h
-            reg = _region(room, zone, side, long_, fx, fy)
-            if reg is None:
-                return None
-            cs = MARKER_CLEARANCE if relax else c_self
-            pts = _candidates(ctx, reg, fx, fy, z0, z1, cs, structural)
-            if len(pts) == 0:
-                return None
-            ok = _feasible(ctx, pts, fx, fy, z0, z1, cs, structural, marker or relax)
-            pts = pts[ok]
-            if len(pts) == 0:
-                return None
-            tx = min(max(hint[0], reg[0]), reg[1])
-            ty = min(max(hint[1], reg[2]), reg[3])
-            score = 0.25 * np.hypot(pts[:, 0] - tx, pts[:, 1] - ty)
-            score += _relation_penalty(item, pts, fx, fy, z0, z1, anchor_box, room.clearance)
-            if group_centres:
-                gc = np.mean(np.array(group_centres), axis=0)
-                score += 0.15 * np.hypot(pts[:, 0] - gc[0], pts[:, 1] - gc[1])
-            if nb_centres:
-                nc = np.array(nb_centres)
-                d = np.hypot(pts[:, None, 0] - nc[None, :, 0], pts[:, None, 1] - nc[None, :, 1]).mean(axis=1)
-                score += 0.08 * d
-            order = np.lexsort((pts[:, 1], pts[:, 0], np.round(score, 6)))
-            best = pts[order[0]]
-            return (float(best[0]), float(best[1]), z0, deck, h)
+        it = _ItemCtx(item=item, obj=obj, size=size, fx=fx, fy=fy, structural=structural, marker=marker,
+                      c_self=c_self, hint=hint, anchor_box=anchor_box, group_centres=group_centres,
+                      nb_centres=nb_centres)
 
         status, msg = "ok", ""
-        res = attempt(item.zone, item.side, item.longitudinal)
+        res = _attempt(ctx, it, item.zone, item.side, item.longitudinal)
         zone_used = item.zone
         if res is None:
-            res = attempt(item.zone, None, None)
+            res = _attempt(ctx, it, item.zone, None, None)
             if res is not None:
                 status = "relocated"
         if res is None:
             for alt in ZONE_FALLBACK.get(item.zone, ()):
-                res = attempt(alt, item.side, item.longitudinal) or attempt(alt, None, None)
+                res = _attempt(ctx, it, alt, item.side, item.longitudinal) or _attempt(ctx, it, alt, None, None)
                 if res is not None:
                     status, zone_used = "relocated", alt
                     break
         if res is None:
-            res = attempt(item.zone, None, None, relax=True)
+            res = _attempt(ctx, it, item.zone, None, None, relax=True)
             if res is not None:
                 status = "relaxed"
         if res is None:
@@ -621,9 +646,51 @@ def _neighbor_targets(doc: PIDDocument, obj: PIDObject, placements: dict[str, Pl
     return out
 
 
+NOZZLE_PROBE = 0.4  # m: the space just outside a nozzle must be free for the pipe stub
+_LOCAL_NORMALS = {"+x": (1, 0, 0), "-x": (-1, 0, 0), "+y": (0, 1, 0), "-y": (0, -1, 0), "top": (0, 0, 1)}
+
+
+def _world_normal(pl: Placement3D, face: str) -> tuple[float, float, float]:
+    nx, ny, nz = _LOCAL_NORMALS[face]
+    a = math.radians(pl.yaw_deg)
+    c, s = math.cos(a), math.sin(a)
+    return (c * nx - s * ny, s * nx + c * ny, float(nz))
+
+
+def _face_candidates(pl: Placement3D, face: str, lx: float, ly: float, lz: float
+                     ) -> list[tuple[float, float, float]]:
+    """Local points on ``face`` closest to the target, then shifted along the face (0.4 m steps)."""
+    l, w, h = pl.size.as_tuple()
+    m = 0.15
+
+    def clamp(v: float, half: float) -> float:
+        return max(-half + m, min(half - m, v)) if half > m else 0.0
+
+    pz = max(0.25 * h, min(0.75 * h, lz)) if h > 0.3 else h / 2
+    out: list[tuple[float, float, float]] = []
+    for d in (0.0, 0.4, -0.4, 0.8, -0.8, 1.2, -1.2, 1.8, -1.8, 2.6, -2.6):
+        if face in ("+x", "-x"):
+            q = ((l / 2) * (1 if face == "+x" else -1), clamp(ly + d, w / 2), pz)
+        elif face in ("+y", "-y"):
+            q = (clamp(lx + d, l / 2), (w / 2) * (1 if face == "+y" else -1), pz)
+        elif l >= w:
+            q = (clamp(lx + d, l / 2), clamp(ly, w / 2), h)
+        else:
+            q = (clamp(lx, l / 2), clamp(ly + d, w / 2), h)
+        if q not in out:
+            out.append(q)
+    return out
+
+
 def compute_nozzles(doc: PIDDocument, obj: PIDObject, pl: Placement3D, placements: dict[str, Placement3D],
                     room: EngineRoom, zone_of: Optional[dict[str, PlanItem]] = None) -> dict[str, Vec3]:
-    """World positions of every nozzle of a planned object (ports + pipe ends without port names)."""
+    """World positions of every nozzle of a planned object (ports + pipe ends without port names).
+
+    Fixed symbol ports keep their mapped face. Boundary nozzles go on the face pointing to the
+    connected equipment (top face for double-bottom tanks / sea chests), at the point closest to it,
+    moved along the face (or to the next best face) until the space just outside the nozzle is free
+    of other equipment and at least 0.3 m from the object's other nozzles.
+    """
     keys: list[str] = [p.name for p in obj.ports]
     for p in process_pipes(doc):
         for end in (p.start, p.end):
@@ -638,51 +705,50 @@ def compute_nozzles(doc: PIDDocument, obj: PIDObject, pl: Placement3D, placement
     low = item is not None and item.zone in ("double_bottom", "bottom")
     box = placement_box(pl)
     cx, cy, cz = box.center
-    faces: dict[str, list[tuple[str, tuple[float, float, float]]]] = defaultdict(list)
-    out: dict[str, tuple[float, float, float]] = {}
+    others = [placement_box(q).expand(0.05) for oid, q in placements.items() if oid != obj.id]
+    bounds = room.bounds
     l, w, h = pl.size.as_tuple()
+    out: dict[str, tuple[float, float, float]] = {}
+    used: list[tuple[float, float, float]] = []
+
+    def free(pt: tuple[float, float, float], n: tuple[float, float, float]) -> bool:
+        probe = (pt[0] + NOZZLE_PROBE * n[0], pt[1] + NOZZLE_PROBE * n[1], pt[2] + NOZZLE_PROBE * n[2])
+        return bounds.contains(*probe) and not any(b.contains(*probe) for b in others)
+
     for k in keys:
         spec_face = None if low else _spec_face(obj.cls, k)
-        if spec_face is not None:
+        if spec_face is not None:  # fixed port of the symbol
             out[k] = _face_point(pl, *spec_face)
+            used.append(out[k])
             continue
         tx, ty, tz = targets.get(k, (cx, cy, box.z1 + 1.0))
         lx, ly, lz = world_to_local(pl, tx, ty, tz)
         if low:
-            face = "top"
+            order = ["top"]
         else:
             rel = {"+x": lx / (l / 2), "-x": -lx / (l / 2), "+y": ly / (w / 2), "-y": -ly / (w / 2),
                    "top": (lz - h / 2) / (h / 2)}
+            order = [f for f, _ in sorted(rel.items(), key=lambda kv: -kv[1])]
             if obj.cls == S.OVERBOARD and item is not None and item.zone.startswith("ship_side"):
-                shell = "+y" if item.zone.endswith("port") else "-y"
-                rel.pop(_local_face_for_world(pl, shell), None)
-            face = max(rel.items(), key=lambda kv: kv[1])[0]
-        faces[face].append((k, (lx, ly, lz)))
-    m = 0.15
-    for face, lst in faces.items():
-        n = len(lst)
-        for i, (k, (lx, ly, lz)) in enumerate(lst):
-            if face == "top":
-                px = max(-l / 2 + m, min(l / 2 - m, lx)) if l > 2 * m else 0.0
-                py = max(-w / 2 + m, min(w / 2 - m, ly)) if w > 2 * m else 0.0
-                if n > 1:  # spread along the longer horizontal axis
-                    if l >= w:
-                        px = -l / 2 + l * (i + 1) / (n + 1)
-                    else:
-                        py = -w / 2 + w * (i + 1) / (n + 1)
-                out[k] = local_to_world(pl, px, py, h)
-            else:
-                pz = max(0.25 * h, min(0.75 * h, lz)) if h > 0.3 else h / 2
-                if face in ("+x", "-x"):
-                    t = max(-w / 2 + m, min(w / 2 - m, ly)) if w > 2 * m else 0.0
-                    if n > 1:
-                        t = -w / 2 + w * (i + 1) / (n + 1)
-                    out[k] = local_to_world(pl, (l / 2) * (1 if face == "+x" else -1), t, pz)
-                else:
-                    t = max(-l / 2 + m, min(l / 2 - m, lx)) if l > 2 * m else 0.0
-                    if n > 1:
-                        t = -l / 2 + l * (i + 1) / (n + 1)
-                    out[k] = local_to_world(pl, t, (w / 2) * (1 if face == "+y" else -1), pz)
+                # the discharge pipe comes from inboard, perpendicular to the shell
+                inboard = _local_face_for_world(pl, "-y" if item.zone.endswith("port") else "+y")
+                order = [inboard] + [f for f in order if f != inboard]
+        chosen = None
+        for face in order:
+            n = _world_normal(pl, face)
+            for q in _face_candidates(pl, face, lx, ly, lz):
+                wpt = local_to_world(pl, *q)
+                if any(math.dist(wpt, u) < 0.3 for u in used):
+                    continue
+                if free(wpt, n):
+                    chosen = wpt
+                    break
+            if chosen is not None:
+                break
+        if chosen is None:  # every face is covered: closest point on the preferred face
+            chosen = local_to_world(pl, *_face_candidates(pl, order[0], lx, ly, lz)[0])
+        out[k] = chosen
+        used.append(chosen)
     return {k: Vec3(x=round(x, 4), y=round(y, 4), z=round(z, 4)) for k, (x, y, z) in out.items()}
 
 

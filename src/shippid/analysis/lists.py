@@ -34,12 +34,19 @@ from .graph import (
 
 S = SymbolClass
 
-# ISA 5.1 letters not in the catalogue: modifiers that may follow the first letter, and
-# readout / function letters (H / L after an alarm letter mean high / low).
+# ISA 5.1 letters not in the catalogue: first letters (measured / initiating variable),
+# modifiers that may follow the first letter, readout / function letters, and the qualifiers
+# that follow an alarm or switch letter (H / L / M = high / low / intermediate; O / C = open /
+# closed, e.g. ZSO, HSC).
+_ISA_FIRST_EXTRA = {"B": "burner/flame", "E": "voltage", "H": "hand", "I": "current", "J": "power", "K": "time",
+                    "M": "moisture", "R": "radiation", "U": "multivariable", "W": "weight/force", "X": "unclassified",
+                    "Y": "event/state"}
 _ISA_MODIFIERS = {"D": "differential", "F": "ratio", "Q": "integrate/totalize", "J": "scan", "K": "time rate"}
 _ISA_EXTRA_FUNCTIONS = {"Y": "relay/compute", "Z": "actuator", "K": "control station", "L": "light",
-                        "O": "orifice", "W": "well", "B": "burner", "U": "multifunction", "X": "unclassified"}
-_ALARM_LEVELS = {"H": "high", "L": "low"}
+                        "O": "orifice", "W": "well", "B": "burner", "U": "multifunction", "X": "unclassified",
+                        "P": "test point"}
+_LEVEL_QUALIFIERS = {"H": "high", "L": "low", "M": "intermediate"}
+_STATE_QUALIFIERS = {"O": "open", "C": "closed"}
 
 _ACTUATOR_KO = {
     ActuatorType.NONE: "-", ActuatorType.HANDWHEEL: "수동(핸드휠)", ActuatorType.DIAPHRAGM: "공압(다이어프램)",
@@ -169,31 +176,31 @@ def valve_list(doc: PIDDocument, G: Optional[nx.MultiGraph] = None) -> list[dict
 
 def decode_isa(letters: str) -> tuple[str, list[str]]:
     """ISA 5.1 letters -> (measured variable, functions), e.g. ``"PIC"`` ->
-    ``("pressure", ["indicator", "controller"])``, ``"LAL"`` -> ``("level", ["alarm low"])``."""
+    ``("pressure", ["indicator", "controller"])``, ``"LAL"`` -> ``("level", ["alarm low"])``,
+    ``"PSLL"`` -> ``("pressure", ["switch low low"])``, ``"ZSO"`` -> ``("position", ["switch open"])``,
+    ``"PSV"`` -> ``("pressure safety", ["valve"])``."""
     letters = letters.upper().strip()
     if not letters:
         return ("", [])
-    variable = ISA_FIRST_LETTER.get(letters[0], f"'{letters[0]}'")
+    first = letters[0]
+    variable = ISA_FIRST_LETTER.get(first) or _ISA_FIRST_EXTRA.get(first) or f"'{first}'"
     funcs: list[str] = []
     rest = letters[1:]
+    if rest in ("SV", "SE"):  # safety valve / safety element (rupture disc): S is the "safety" modifier
+        return (f"{variable} safety", [ISA_FUNCTIONS[rest[1]]])
     if rest and rest[0] in _ISA_MODIFIERS and rest[0] not in ISA_FUNCTIONS:
         variable = f"{variable} {_ISA_MODIFIERS[rest[0]]}"
         rest = rest[1:]
     i = 0
     while i < len(rest):
         c = rest[i]
-        if c == "A":
-            lv = ""
-            while i + 1 < len(rest) and rest[i + 1] in _ALARM_LEVELS:
-                lv += " " + _ALARM_LEVELS[rest[i + 1]]
-                i += 1
-            funcs.append("alarm" + lv)
-        elif c in ISA_FUNCTIONS:
-            funcs.append(ISA_FUNCTIONS[c])
-        elif c in _ISA_EXTRA_FUNCTIONS:
-            funcs.append(_ISA_EXTRA_FUNCTIONS[c])
-        else:
-            funcs.append(f"'{c}'")
+        name = ISA_FUNCTIONS.get(c) or _ISA_EXTRA_FUNCTIONS.get(c) or f"'{c}'"
+        # qualifiers: high / low after an alarm or switch, open / closed after a switch or light
+        allowed = {**(_LEVEL_QUALIFIERS if c in ("A", "S") else {}), **(_STATE_QUALIFIERS if c in ("S", "L") else {})}
+        while i + 1 < len(rest) and rest[i + 1] in allowed:
+            name += " " + allowed[rest[i + 1]]
+            i += 1
+        funcs.append(name)
         i += 1
     return (variable, funcs)
 

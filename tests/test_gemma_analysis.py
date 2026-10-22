@@ -12,7 +12,11 @@ import httpx
 import pymupdf
 import pytest
 
-from shippid.analysis.gemma import GemmaAnalyzer, _adjacency, _vector_candidates, make_analyzer
+from shippid.analysis.analyzer import analyze
+from shippid.analysis.gemma import (
+    GemmaAnalyzer, TextAssignment, _adjacency, _scalarize, _vector_candidates,
+    compose_instrument_tag, make_analyzer, printed_values,
+)
 from shippid.config import LLMConfig
 from shippid.llm.base import ImagePart, LLMClient, LLMError, MockBackend
 from shippid.llm.openai_compat import OpenAICompatBackend
@@ -180,8 +184,8 @@ def test_refine_symbols_merges_and_records_provenance(pid):
     assert o4.actuator == ActuatorType.HANDWHEEL and o4.attributes["vector_cls"] == "unknown"
     assert objs["o1"].source == "vector" and "gemma_cls" not in objs["o1"].attributes
     stats = out.meta["gemma"]["symbols"]
-    assert stats == {"source": "mock", "candidates": 3, "batches": 1, "failed_batches": 0, "adopted": 2,
-                     "confirmed": 1, "kept_vector": 0, "images": True}
+    assert stats == {"source": "mock", "status": "ok", "candidates": 3, "batches": 1, "failed_batches": 0,
+                     "adopted": 2, "confirmed": 1, "kept_vector": 0, "images": True, "tags": []}
     assert out.meta["llm_usage"]["calls"] == 1 and out.meta["llm_usage"]["backend"] == "mock"
     # refined objects are not sent again
     again = analyzer.refine_symbols(out, path)
@@ -414,9 +418,35 @@ def test_review_repair_and_failure(pid):
     analyzer, _ = make(lambda m, s, n: "not json", max_attempts=1)
     report = _report(doc)
     failed = analyzer.review(report)
+    assert failed.meta["review"] == {"source": "mock", "status": "error", "digest_chars": failed.meta["review"]["digest_chars"],
+                                     "calls": 1}
     assert failed.findings == report.findings and failed.summary_en == "Deterministic summary."
-    assert failed.summary_ko == "" and failed.llm.errors[-1].startswith("review:")
-    assert failed.meta["llm_errors"][0].startswith("review:")
+    assert failed.summary_ko == "" and failed.llm.errors[-1].startswith("review:") and failed.llm.calls == 1
+    assert failed.meta["llm_errors"][0].startswith("review:") and "summary_source" not in failed.meta
+    flagged = analyze(doc, reviewer=analyzer)  # the deterministic report, review reported as failed
+    assert flagged.meta["review_status"] == "error" and flagged.meta["summary_source"] == "template"
+    assert flagged.llm.calls == 1 and any(e.startswith("review:") for e in flagged.llm.errors)
+
+
+def test_failed_review_is_reported_as_failed_by_analyze(pid):
+    """Server down: analyze() must report review_status=error, not 'ok' with an unchanged report."""
+    _, doc = pid
+
+    def refuse(request):
+        raise httpx.ConnectError("connection refused", request=request)
+
+    backend = OpenAICompatBackend("google/gemma-4-31B-it", "http://localhost:8000/v1",
+                                  transport=httpx.MockTransport(refuse), max_retries=1, backoff=0.0)
+    backend._sleep = lambda s: None
+    analyzer = GemmaAnalyzer(LLMClient(backend))
+    report = analyze(doc, reviewer=analyzer)
+    assert report.meta["review_status"] == "error" and report.meta["reviewer"] == "GemmaAnalyzer"
+    assert any("cannot reach" in e for e in report.llm.errors) and report.llm.calls == 0
+    # the refinement steps all failed too: nothing claims to be refined by Gemma
+    refined = analyzer.refine_document(doc)
+    assert "refined_by" not in refined.meta and refined.meta["refine"]["status"] == "error"
+    assert set(refined.meta["refine"]["steps"].values()) == {"error"} and len(refined.meta["llm_errors"]) == 3
+    assert not [f for f in report.findings if f.source == "gemma"] and report.meta.get("summary_source") != "gemma"
 
 
 def test_review_through_openai_compatible_server(pid):
@@ -465,7 +495,11 @@ def test_refine_document_tolerates_failing_step(pid):
     assert out.object_by_id()["o2"].cls == SymbolClass.GLOBE_VALVE
     assert out.text_by_id()["t1"].owner_id == "o2"
     assert len(out.meta["llm_errors"]) == 1 and "CUDA out of memory" in out.meta["llm_errors"][0]
-    assert out.meta["refined_by"] == {"label": "mock", "backend": "mock", "model": "mock"}
+    assert out.meta["refined_by"] == {"label": "mock", "backend": "mock", "model": "mock",
+                                      "steps_ok": ["refine_symbols", "resolve_texts"],
+                                      "steps_failed": ["read_drawing_info"]}
+    assert out.meta["refine"]["status"] == "partial"
+    assert out.meta["refine"]["steps"] == {"read_drawing_info": "error", "refine_symbols": "ok", "resolve_texts": "ok"}
     assert out.meta["llm_usage"]["calls"] == 2
     assert doc.meta == {} and doc.object_by_id()["o2"].cls == SymbolClass.GATE_VALVE
 
@@ -485,3 +519,214 @@ def test_make_analyzer_from_config():
     assert an.crop_max_side == 1152 and an.concurrency == 3 and an.symbol_batch == 12 and an.label == "gemma"
     mock = make_analyzer(LLMConfig(backend="mock"), responder=lambda m, s, n: {})
     assert mock.label == "mock"
+
+
+# --------------------------------------------------------------------------- regressions (review round 2)
+
+
+def _answer(table):
+    """SymbolBatch responder answering every requested id from ``table`` (id -> item fields)."""
+    def respond(m, s, n):
+        return {"items": [{"id": d["id"], "reason": "test", **table[d["id"]]} for d in digest_of(m, "Candidates:\n")]}
+    return respond
+
+
+def _unknown_bubble(doc):
+    """o6 missed by the vector matcher: UNKNOWN, its bubble letters read as an equipment name
+    (LABEL owned by o6) and the loop number left unowned (UNKNOWN) -- what the extractor emits."""
+    doc = doc.model_copy(deep=True)
+    o6 = doc.object_by_id()["o6"]
+    o6.cls, o6.category, o6.confidence, o6.tag = SymbolClass.UNKNOWN, Category.EQUIPMENT, 0.3, None
+    o6.attributes = {"name": "PI", "candidates": {"instrument_local": 0.3, "tank": 0.28}}
+    c = o6.bbox.center
+    doc.texts = [t for t in doc.texts if t.id != "t3"] + [
+        TextItem(id="t3a", text="PI", bbox=BBox(x0=c.x - 4, y0=c.y - 7, x1=c.x + 4, y1=c.y - 1), size=6,
+                 role=TextRole.LABEL, owner_id="o6"),
+        TextItem(id="t3b", text="101", bbox=BBox(x0=c.x - 5, y0=c.y + 1, x1=c.x + 5, y1=c.y + 7), size=6,
+                 role=TextRole.UNKNOWN)]
+    o6.text_ids = ["t3a"]
+    return doc
+
+
+def test_refined_instrument_gets_tag_from_bubble_texts(pid):
+    path, doc = pid
+    doc = _unknown_bubble(doc)
+    table = {i["id"]: {k: v for k, v in i.items() if k != "id"} for i in SYMBOLS_OK["items"]}
+    table["o6"] = {"cls": "instrument_local", "actuator": "none", "confidence": 0.9}  # no tag in the answer
+    analyzer, backend = make(_answer(table))
+    out = analyzer.refine_symbols(doc, path)
+    near = {t["text"]: t for t in next(d for d in digest_of(backend.calls[0][0], "Candidates:\n") if d["id"] == "o6")["nearby_text"]}
+    assert near["PI"]["inside"] and near["101"]["inside"]
+    o6, texts = out.object_by_id()["o6"], out.text_by_id()
+    assert (o6.cls, o6.tag, o6.attributes["tag_source"]) == (SymbolClass.INSTRUMENT_LOCAL, "PI-101", "bubble_text")
+    assert sorted(o6.text_ids) == ["t3a", "t3b"] and o6.attributes["vector_name"] == "PI" and "name" not in o6.attributes
+    assert {(texts[i].role, texts[i].owner_id) for i in ("t3a", "t3b")} == {(TextRole.INSTRUMENT, "o6")}
+    assert out.meta["gemma"]["symbols"]["tags"] == [
+        {"object_id": "o6", "tag": "PI-101", "source": "bubble_text", "text_ids": ["t3a", "t3b"]}]
+    # the review digest now lists the instrument with its tag
+    digest = analyzer.review_digest(_report(out))
+    assert {"id": "o6", "cls": "instrument_local", "tag": "PI-101"} in digest["instruments"]
+
+
+def test_refined_symbol_tag_from_gemma_must_be_grounded(pid):
+    path, doc = pid
+    table = {i["id"]: {k: v for k, v in i.items() if k != "id"} for i in SYMBOLS_OK["items"]}
+    # o2's tag text t1 (BA-V001) is currently owned by o5, which has no tag: o2 may take it
+    table["o2"] = dict(table["o2"], tag="ba-v001")
+    table["o4"] = dict(table["o4"], tag="BA-V999")  # invented: printed nowhere near o4
+    analyzer, _ = make(_answer(table))
+    out = analyzer.refine_symbols(doc, path)
+    objs, texts = out.object_by_id(), out.text_by_id()
+    assert (objs["o2"].tag, objs["o2"].attributes["tag_source"]) == ("BA-V001", "mock")
+    assert texts["t1"].owner_id == "o2" and "t1" in objs["o2"].text_ids and "t1" not in objs["o5"].text_ids
+    assert objs["o4"].tag is None and objs["o4"].attributes["gemma_tag"] == "BA-V999"
+    assert objs["o4"].attributes["gemma_tag_rejected"] == "not built from the symbol's nearby texts"
+    # a text that already is another object's tag is never taken
+    held = doc.model_copy(deep=True)
+    held.object_by_id()["o5"].tag = "BA-V001"
+    out = make(_answer(table))[0].refine_symbols(held, path)
+    o2 = out.object_by_id()["o2"]
+    assert o2.tag is None and o2.attributes["gemma_tag_rejected"] == "its texts already tag another object"
+    assert out.text_by_id()["t1"].owner_id == "o5" and out.object_by_id()["o5"].tag == "BA-V001"
+
+
+def test_refined_valve_takes_free_tag_text_without_gemma_tag(pid):
+    path, doc = pid
+    doc = doc.model_copy(deep=True)
+    o4 = doc.object_by_id()["o4"]
+    doc.texts.append(TextItem(id="t30", text="BA-V004", bbox=BBox(x0=o4.bbox.x0, y0=o4.bbox.y1 + 3, x1=o4.bbox.x0 + 28,
+                                                                  y1=o4.bbox.y1 + 9), size=6, role=TextRole.TAG))
+    analyzer, _ = make(lambda m, s, n: SYMBOLS_OK)
+    out = analyzer.refine_symbols(doc, path)
+    o4 = out.object_by_id()["o4"]
+    assert (o4.cls, o4.tag, o4.attributes["tag_source"]) == (SymbolClass.CHECK_VALVE, "BA-V004", "nearby_text")
+    assert out.text_by_id()["t30"].owner_id == "o4"
+
+
+def test_low_confidence_gemma_class_is_not_adopted(pid):
+    path, doc = pid
+    table = {i["id"]: {k: v for k, v in i.items() if k != "id"} for i in SYMBOLS_OK["items"]}
+    table["o4"] = {"cls": "pump_screw", "actuator": "none", "confidence": 0.05}  # a guess over UNKNOWN
+    doc = doc.model_copy(deep=True)
+    doc.object_by_id()["o2"].confidence = 0.3
+    table["o2"] = dict(table["o2"], confidence=0.45)  # better than the vector score, still a guess
+    analyzer, _ = make(_answer(table))
+    out = analyzer.refine_symbols(doc, path)
+    objs = out.object_by_id()
+    for oid, vcls in (("o4", SymbolClass.UNKNOWN), ("o2", SymbolClass.GATE_VALVE)):
+        o = objs[oid]
+        assert o.cls == vcls and o.source == "vector" and o.attributes["refine_decision"] == "kept_vector"
+        assert "< 0.50: not adopted" in o.attributes["refine_note"]
+    assert objs["o4"].attributes["gemma_cls"] == "pump_screw" and objs["o4"].category == Category.EQUIPMENT
+    assert out.meta["gemma"]["symbols"]["kept_vector"] == 2
+    lenient = GemmaAnalyzer(LLMClient(MockBackend(_answer(table))), adopt_min_confidence=0.0)
+    assert lenient.refine_symbols(doc, path).object_by_id()["o4"].cls == SymbolClass.PUMP_SCREW
+
+
+def test_text_moves_keep_tags_consistent(pid):
+    _, doc = pid
+    doc = doc.model_copy(deep=True)
+    objs = doc.object_by_id()
+    c = objs["o6"].bbox.center
+    doc.texts = [t for t in doc.texts if t.id != "t3"] + [
+        TextItem(id="t3a", text="TIC", bbox=BBox(x0=c.x - 5, y0=c.y - 7, x1=c.x + 5, y1=c.y - 1), size=6,
+                 role=TextRole.INSTRUMENT, owner_id="o6"),
+        TextItem(id="t3b", text="601", bbox=BBox(x0=c.x - 5, y0=c.y + 1, x1=c.x + 5, y1=c.y + 7), size=6,
+                 role=TextRole.INSTRUMENT, owner_id="o6")]
+    objs["o6"].text_ids, objs["o6"].tag = ["t3a", "t3b"], "TIC-601"
+    objs["o5"].tag, objs["o5"].text_ids = "BA-V001", ["t1"]
+    move = GemmaAnalyzer._apply_assignment
+    # the loop number leaves the bubble: no stale 'TIC-601', and no fragment '601' as the new owner's tag
+    assert move(doc, TextAssignment(text_id="t3b", owner_id="o5", role=TextRole.INSTRUMENT))
+    assert objs["o6"].tag is None and objs["o6"].attributes["tag_source"] == "rebuilt" and objs["o5"].tag == "BA-V001"
+    assert move(doc, TextAssignment(text_id="t3b", owner_id="o6", role=TextRole.INSTRUMENT))  # and back
+    assert objs["o6"].tag == "TIC-601" and objs["o6"].text_ids == ["t3a", "t3b"] and objs["o5"].tag == "BA-V001"
+    assert move(doc, TextAssignment(text_id="t3b", owner_id=None, role=TextRole.INSTRUMENT))
+    assert objs["o6"].tag is None
+    # a valve tag moves with its text (normalised); the old owner keeps no copy
+    doc.text_by_id()["t1"].text = "ba-v001 "
+    assert move(doc, TextAssignment(text_id="t1", owner_id="o2", role=TextRole.TAG))
+    assert objs["o5"].tag is None and objs["o2"].tag == "BA-V001"
+    assert move(doc, TextAssignment(text_id="t1", owner_id="o2", role=TextRole.LABEL))  # same owner, no longer a tag
+    assert objs["o2"].tag is None and "t1" in objs["o2"].text_ids
+    assert not move(doc, TextAssignment(text_id="t1", owner_id="o2", role=TextRole.LABEL))  # no-op
+    # line numbers: normalised on join, cleared on leave
+    doc.text_by_id()["t2"].text = "150a-ba-001"
+    assert move(doc, TextAssignment(text_id="t2", owner_id="p2", role=TextRole.LINE_NUMBER))
+    p2 = next(p for p in doc.pipes if p.id == "p2")
+    assert (p2.line_number, p2.size) == ("150A-BA-001", "150A")
+    assert move(doc, TextAssignment(text_id="t2", owner_id="p1", role=TextRole.LINE_NUMBER))
+    assert (p2.line_number, p2.size) == (None, None)
+
+
+def test_compose_instrument_tag():
+    def t(text, y):
+        return TextItem(id=f"t{y}", text=text, bbox=BBox(x0=0, y0=y, x1=10, y1=y + 5))
+    assert compose_instrument_tag([t("601", 6), t("tic", 0)]) == "TIC-601"
+    assert compose_instrument_tag([t("PI-101", 0)]) == "PI-101" and compose_instrument_tag([t("PI101", 0)]) == "PI-101"
+    assert compose_instrument_tag([t("601", 0)]) == "601"
+
+
+def test_read_drawing_info_rejects_fragments_and_equal_numbers(pid):
+    path, doc = pid
+    answers = iter([dict(INFO_OK, drawing_no="1234", hull_no="1234"), dict(INFO_OK, hull_no="1234-BA-001"), INFO_OK])
+    analyzer, backend = make(lambda m, s, n: next(answers))
+    out = analyzer.read_drawing_info(doc, path)
+    first, second = backend.calls[1][0][-1].text(), backend.calls[2][0][-1].text()
+    assert "drawing_no '1234' is not printed" in first and "hull_no '1234' is not printed" in first
+    assert "different fields" in first and "different fields" in second
+    assert (out.info.drawing_no, out.info.hull_no) == ("1234-BA-001", "S1234")
+
+
+def test_printed_values_accepts_labelled_values_only():
+    def t(text):
+        return TextItem(id="t1", text=text, bbox=BBox(x0=0, y0=0, x1=10, y1=5))
+    values = printed_values([t("DWG. NO. 7104-PD-BA-09"), t("HULL NO: H.7104"), t("BALLAST WATER SYSTEM")])
+    assert {"7104-PD-BA-09", "H.7104", "DWG.NO.7104-PD-BA-09", "BALLASTWATERSYSTEM"} <= values
+    assert "7104" not in values and "SYSTEM" not in values and "PD-BA-09" not in values
+
+
+def test_review_digest_keeps_joined_lists():
+    neighbours = "; ".join(["unknown:o5", "NO.1 H.F.O. STOR. TK (S)"] + [f"FO{n:03d}V" for n in range(3, 11)])
+    row = {"id": "o6", "type_en": "gate valve", "connected_to": neighbours, "pipe_ids": " ".join(f"p{i}" for i in range(50)),
+           "remarks": "x" * 300, "size": "100A", "confidence": 0.5}
+    out = _scalarize(row)
+    assert out["connected_to"] == neighbours.split("; ") and out["connected_to"][-1] == "FO010V"
+    assert out["pipe_ids"][:2] == ["p0", "p1"] and out["pipe_ids"][-1] == "…(+10 more)" and len(out["pipe_ids"]) == 41
+    assert out["remarks"].endswith("…(+60 chars)") and out["size"] == "100A" and out["confidence"] == 0.5
+    assert "type_en" not in out
+
+
+def test_ambiguous_texts_uses_a_spatial_index(monkeypatch):
+    """Candidate search must not compare every text with every object / pipe."""
+    import random
+    import time
+
+    import shippid.analysis.gemma as gemma
+
+    rng = random.Random(1)
+    objects = [PIDObject(id=f"o{i}", cls=SymbolClass.GATE_VALVE, category=Category.VALVE,
+                         bbox=BBox(x0=(x := rng.uniform(0, 2300)), y0=(y := rng.uniform(0, 1600)), x1=x + 15, y1=y + 10))
+               for i in range(1, 401)]
+    pipes = [PipeRun(id=f"p{i}", points=[Point(x=(x := rng.uniform(0, 2200)), y=(y := rng.uniform(0, 1500))),
+                                         Point(x=x + 150, y=y), Point(x=x + 150, y=y + 120)],
+                     start=Endpoint(), end=Endpoint()) for i in range(1, 601)]
+    texts = [TextItem(id=f"t{i}", text="BA-V001", bbox=BBox(x0=(x := rng.uniform(0, 2300)), y0=(y := rng.uniform(0, 1600)),
+                                                            x1=x + 30, y1=y + 5), size=5,
+                      role=(TextRole.TAG, TextRole.LINE_NUMBER)[i % 2]) for i in range(1, 1201)]
+    doc = PIDDocument(objects=objects, pipes=pipes, texts=texts)
+    calls = {"n": 0}
+    real = gemma._rect_gap
+
+    def counting(a, b):
+        calls["n"] += 1
+        return real(a, b)
+
+    monkeypatch.setattr(gemma, "_rect_gap", counting)
+    analyzer, _ = make(lambda m, s, n: {})
+    t0 = time.perf_counter()
+    found = analyzer.ambiguous_texts(doc)
+    elapsed = time.perf_counter() - t0
+    assert len(found) == sum(1 for t, c in found if c) > 0  # unowned texts with candidates
+    assert calls["n"] < 0.05 * 600 * 400  # a brute-force pass makes 600 x 400 object comparisons
+    assert elapsed < 5.0

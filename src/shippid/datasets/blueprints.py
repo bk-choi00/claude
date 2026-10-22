@@ -19,7 +19,8 @@ Naming follows marine practice (``NO.1 W.B.TK (P)``, ``NO.2 BALLAST PUMP``,
 (hydraulic butterfly valves on ballast, quick-closing valves on FO/LO tank
 outlets, SDNR valves on bilge suctions, relief valves across screw pumps, check
 valves on pump discharges, three-way TCVs on cooling circuits), instruments use
-ISA 5.1 letters and line numbers use one of several yard styles.
+ISA 5.1 letters (a control valve carries the loop number of its controller: TIC-120
+drives TCV-120) and line numbers use one of several yard styles.
 """
 
 from __future__ import annotations
@@ -352,16 +353,28 @@ class _Builder:
             a=self.rng.choice("ABCDEFGHJK"), n=self.rng.randint(1, 12))
         return Item(self.key("c"), S.OFF_PAGE_CONNECTOR, name=(label,), inside=(ref,))
 
-    def instr(self, letters: str, cls: Optional[SymbolClass] = None, service: str = "") -> Item:
+    def instr(self, letters: str, cls: Optional[SymbolClass] = None, service: str = "",
+              number: Optional[str] = None) -> Item:
+        """Instrument bubble; ``number`` joins an existing ISA loop (e.g. the TIC driving TCV-120)."""
         cls = cls or (self.remote_cls if letters[-1] in "TCA" and len(letters) > 1 and letters[1] != "I"
                       else self.tap_cls)
-        letters, number = self.namer.instrument(letters)
+        if number is None:
+            letters, number = self.namer.instrument(letters)
         return Item(self.key("i"), cls, tag=self.namer.instrument_tag(letters, number), inside=(letters, number),
                     attrs={"letters": letters, "loop": number, "service": service})
 
     def tap(self, letters: str, side: int = -1, cls: Optional[SymbolClass] = None, signal_to: Optional[str] = None,
-            service: str = "") -> Tap:
-        return Tap(self.instr(letters, cls, service), side=side, signal_to=signal_to)
+            service: str = "", number: Optional[str] = None) -> Tap:
+        return Tap(self.instr(letters, cls, service, number), side=side, signal_to=signal_to)
+
+    def control_valve(self, cls: SymbolClass, actuator: ActuatorType, valve_letters: str, controller_letters: str,
+                      service: str) -> tuple[Item, str]:
+        """Control valve tagged in the loop of its controller (ISA 5.1: TIC-120 drives TCV-120);
+        returns the valve and the loop number to give the controller."""
+        _, loop = self.namer.instrument(controller_letters)
+        v = self.valve(cls, actuator, tagged=False, service=service, letters=valve_letters, loop=loop)
+        v.tag = self.namer.instrument_tag(valve_letters, loop)
+        return v, loop
 
     def branch(self) -> Branch:
         return Branch(self.key("b"))
@@ -453,16 +466,12 @@ class _Builder:
                         bypass_side: int = 1) -> list[Element]:
         """[bypass tee], cooler, 3-way TCV (bypass into its branch), TIC tap with signal to the TCV."""
         b0 = self.branch()
-        tcv = self.valve(S.THREE_WAY_VALVE, tcv_actuator, tagged=False)
-        tcv.tag = None
-        letters, number = self.namer.instrument("TCV")
-        tcv.tag = self.namer.instrument_tag(letters, number)
-        tcv.attrs["service"] = tcv_service
+        tcv, loop = self.control_valve(S.THREE_WAY_VALVE, tcv_actuator, "TCV", "TIC", tcv_service)
         tcv.attrs["branch_side"] = bypass_side
         self.topo.bypasses.append(Bypass(start=b0.key, end=tcv.key, end_port="branch", side=bypass_side,
                                          valve=self.valve(S.GLOBE_VALVE, A.HANDWHEEL)))
         self.side_pair(cooler, side_ports, cooling_code, cooling_medium)
-        tic = self.tap("TIC", side=-1, cls=self.remote_cls, signal_to=tcv.key, service=tcv_service)
+        tic = self.tap("TIC", side=-1, cls=self.remote_cls, signal_to=tcv.key, service=tcv_service, number=loop)
         return [b0, cooler, tcv, tic]
 
     def side_pair(self, unit: Item, ports: tuple[str, str], code: str, medium: Medium) -> None:
@@ -910,11 +919,10 @@ def _compressed_air(b: _Builder) -> None:
             sink=b.equip(S.ENGINE, "M/E", "STARTING AIR INLET" if b.chance(0.5) else "",
                          size=(r.uniform(3.0, 4.0), r.uniform(2.0, 2.8)), inside=True))
     if b.chance(0.7):
-        pcv = b.valve(S.GLOBE_VALVE, A.DIAPHRAGM, tagged=False)
-        letters, number = b.namer.instrument("PCV")
-        pcv.tag = b.namer.instrument_tag(letters, number)
+        pcv, loop = b.control_valve(S.GLOBE_VALVE, A.DIAPHRAGM, "PCV", "PIC", "reduced air pressure")
         el = [b.valve(S.GLOBE_VALVE, A.HANDWHEEL), b.equip(S.FILTER), pcv,
-              b.tap("PIC", side=-1, cls=b.remote_cls, signal_to=pcv.key, service="reduced air pressure")]
+              b.tap("PIC", side=-1, cls=b.remote_cls, signal_to=pcv.key, service="reduced air pressure",
+                    number=loop)]
         b.train(last, el, sink=b.connector("TO CONTROL AIR SYSTEM (7 BAR)"), size_class="small")
     out_cls = r.choice([S.GLOBE_VALVE, S.BALL_VALVE])
     for c in ["TO G/E STARTING AIR", "TO GENERAL SERVICE AIR", "TO WORKSHOP"][: b.count(1, 3)]:

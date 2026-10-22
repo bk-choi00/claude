@@ -15,7 +15,9 @@ Metrics (all on the same page only):
   with the predicted pipe that covers most of it;
 * **texts** -- Hungarian matching on IoU >= ``text_iou``; role, content and owner accuracy.
 
-Undefined ratios (no denominator) are ``None``. :func:`evaluate_dataset` aggregates documents
+Undefined ratios (no denominator) are ``None``; F1 is ``0.0`` (not ``None``) when only one side
+is empty, for counts and pipe lengths alike, so macro averages never drop a document whose
+prediction missed everything. :func:`evaluate_dataset` aggregates documents
 micro (summed counts) and macro (mean of per-document values) and :func:`write_eval_report`
 writes JSON + Markdown.
 """
@@ -49,6 +51,21 @@ def prf(tp: int, fp: int, fn: int) -> dict[str, Any]:
     r = tp / (tp + fn) if tp + fn else None
     f = 2 * tp / (2 * tp + fp + fn) if (2 * tp + fp + fn) else None
     return {"tp": tp, "fp": fp, "fn": fn, "precision": p, "recall": r, "f1": f}
+
+
+def length_prf(pred_covered: float, pred_total: float, gt_covered: float, gt_total: float) -> dict[str, Any]:
+    """Length-based precision / recall / F1 with :func:`prf` semantics: a side without length
+    leaves its ratio undefined (``None``) and makes F1 ``0.0`` when the other side has length
+    (e.g. no predicted pipes against ground-truth pipes); F1 is ``None`` only when both are empty."""
+    rec = gt_covered / gt_total if gt_total else None
+    pre = pred_covered / pred_total if pred_total else None
+    if pre is None and rec is None:
+        f1 = None
+    elif pre is None or rec is None or pre + rec <= 0:
+        f1 = 0.0
+    else:
+        f1 = 2 * pre * rec / (pre + rec)
+    return {"precision": pre, "recall": rec, "f1": f1}
 
 
 def _acc(correct: int, total: int, **extra: Any) -> dict[str, Any]:
@@ -240,13 +257,9 @@ def evaluate_document(pred: PIDDocument, gt: PIDDocument, iou: float = 0.5, *, t
             cov_g, tot_g = cov_g + c, tot_g + t
             c, t = _coverage(pl, gl, pipe_tol)
             cov_p, tot_p = cov_p + c, tot_p + t
-        rec = cov_g / tot_g if tot_g else None
-        pre = cov_p / tot_p if tot_p else None
-        f1 = 2 * pre * rec / (pre + rec) if pre is not None and rec is not None and pre + rec > 0 else (
-            0.0 if pre is not None and rec is not None else None)
         pipes[name] = {"gt_length": round(tot_g, 1), "pred_length": round(tot_p, 1),
                        "gt_covered": round(cov_g, 1), "pred_covered": round(cov_p, 1),
-                       "recall": rec, "precision": pre, "f1": f1}
+                       **length_prf(cov_p, tot_p, cov_g, tot_g)}
     gmap = _pipe_map(pred, gt, pipe_tol)
     pred_by_id = {p.id: p for p in pred.pipes}
     ln = Counter()
@@ -361,9 +374,7 @@ def evaluate_dataset(pairs: Iterable[tuple[PIDDocument, PIDDocument]], iou: floa
         tg = sum(d["pipes"][kind]["gt_length"] for d in docs)
         cp = sum(d["pipes"][kind]["pred_covered"] for d in docs)
         tpl = sum(d["pipes"][kind]["pred_length"] for d in docs)
-        rec, pre = (cg / tg if tg else None), (cp / tpl if tpl else None)
-        f1 = 2 * pre * rec / (pre + rec) if pre and rec else (0.0 if pre is not None and rec is not None else None)
-        micro[f"pipes_{kind}"] = {"recall": rec, "precision": pre, "f1": f1}
+        micro[f"pipes_{kind}"] = length_prf(cp, tpl, cg, tg)
         macro[f"pipes_{kind}"] = {m: _mean(d["pipes"][kind][m] for d in docs) for m in ("precision", "recall", "f1")}
 
     per_class: dict[str, dict[str, Any]] = {}

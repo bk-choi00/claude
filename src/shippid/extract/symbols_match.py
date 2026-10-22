@@ -19,7 +19,7 @@ Score = F1(precision, recall) x fill agreement, in [0, 1].
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Sequence
 
 import numpy as np
@@ -50,6 +50,8 @@ N_SAMPLES = 40  # outline samples per max dimension
 N_COARSE = 20  # outline samples per max dimension in the coarse pass
 MAX_COARSE_CAND = 90  # candidate points used in the coarse pass
 FINE_TOP = 6
+ANISO_MAX = 1.3  # rigid symbols may be drawn with proportions off by this factor (yard styles)
+ANISO_PENALTY = 0.1  # score penalty at the maximum anisotropy (exact proportions preferred)
 
 
 @dataclass
@@ -397,16 +399,27 @@ def _soft(d: np.ndarray, tau: float) -> np.ndarray:
     return np.exp(-np.square(d / tau))
 
 
-def coarse_scores(lib: TemplateLibrary, cs: CandidateShape, unit: Optional[float] = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Scores of every variant after bbox alignment. Returns (score, sx, sy)."""
+def coarse_scores(lib: TemplateLibrary, cs: CandidateShape, unit: Optional[float] = None,
+                  max_rigid: Optional[float] = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Scores of every variant after bbox alignment. Returns (score, sx, sy).
+
+    ``max_rigid``: candidates larger than this (points) are only compared with
+    stretchable equipment templates."""
     V = len(lib)
     Wc, Hc = max(cs.w, 1e-6), max(cs.h, 1e-6)
     # transform: page = c_c + S * q  (q relative to the variant bbox centre)
     s_uni = (Wc + Hc) / (lib.W + lib.H)
     thin_w = lib.W < 0.08 * lib.Dv
     thin_h = lib.H < 0.08 * lib.Dv
-    sx = np.where(lib.stretch & ~thin_w, Wc / np.maximum(lib.W, 1e-9), s_uni)
-    sy = np.where(lib.stretch & ~thin_h, Hc / np.maximum(lib.H, 1e-9), s_uni)
+    sx = np.where(~thin_w, Wc / np.maximum(lib.W, 1e-9), s_uni)
+    sy = np.where(~thin_h, Hc / np.maximum(lib.H, 1e-9), s_uni)
+    # rigid symbols: per-axis fit, anisotropy limited to ANISO_MAX
+    geo = np.sqrt(sx * sy)
+    ratio = np.clip(sx / sy, 1.0 / ANISO_MAX, ANISO_MAX)
+    rigid = ~lib.stretch
+    sx = np.where(rigid, geo * np.sqrt(ratio), sx)
+    sy = np.where(rigid, geo / np.sqrt(ratio), sy)
+    aniso_pen = np.where(rigid, 1.0 - ANISO_PENALTY * np.abs(np.log(ratio)) / math.log(ANISO_MAX), 1.0)
     # aspect gate for rigid symbols, plausible scale for all
     eps = 0.06
     asp_c = (Wc + eps * cs.D) / (Hc + eps * cs.D)
@@ -415,6 +428,8 @@ def coarse_scores(lib: TemplateLibrary, cs: CandidateShape, unit: Optional[float
     if unit:
         sc = np.sqrt(sx * sy)
         gate &= lib.stretch | ((sc >= 0.25 * unit) & (sc <= 5.0 * unit))
+    if max_rigid is not None and cs.D > max_rigid:
+        gate &= lib.stretch
     score = np.zeros(V)
     vsel = np.nonzero(gate)[0]
     if len(vsel) == 0:
@@ -426,7 +441,6 @@ def coarse_scores(lib: TemplateLibrary, cs: CandidateShape, unit: Optional[float
     extent_c = E * cs.D
     cell_c = extent_c / GRID
     cgrid = _dt_grid((cs.pts - cs.center) / cs.D, E) * cs.D  # page units
-    cx, cy = cs.center
     pmask = gate[lib.pt_var]
     pv = lib.pt_var[pmask]
     pts = lib.pts_all[pmask]
@@ -453,7 +467,7 @@ def coarse_scores(lib: TemplateLibrary, cs: CandidateShape, unit: Optional[float
     f1 = 2 * precision * recall / np.maximum(precision + recall, 1e-9)
     c_fill = len(cs.fill_pts) > 0
     fill_factor = np.where(lib.has_fill[vsel] == c_fill, 1.0, 0.45)
-    score[vsel] = f1 * fill_factor
+    score[vsel] = f1 * fill_factor * aniso_pen[vsel]
     return score, sx, sy
 
 
@@ -480,19 +494,15 @@ def fine_match(v: Variant, cs: CandidateShape, sx: float, sy: float, iters: int 
             break
         am, bm = a.mean(axis=0), b.mean(axis=0)
         ac, bc = a - am, b - bm
-        if uniform:
-            den = float((ac * ac).sum())
-            if den <= 1e-12:
-                break
-            s = float((ac * bc).sum()) / den
-            s = min(max(s, 0.8 * math.sqrt(sx0 * sy0)), 1.25 * math.sqrt(sx0 * sy0))
-            nsx = nsy = s
-        else:
-            denx, deny = float((ac[:, 0] ** 2).sum()), float((ac[:, 1] ** 2).sum())
-            nsx = float((ac[:, 0] * bc[:, 0]).sum()) / denx if denx > 1e-12 else sx
-            nsy = float((ac[:, 1] * bc[:, 1]).sum()) / deny if deny > 1e-12 else sy
-            nsx = min(max(nsx, 0.8 * sx0), 1.25 * sx0)
-            nsy = min(max(nsy, 0.8 * sy0), 1.25 * sy0)
+        denx, deny = float((ac[:, 0] ** 2).sum()), float((ac[:, 1] ** 2).sum())
+        nsx = float((ac[:, 0] * bc[:, 0]).sum()) / denx if denx > 1e-12 * len(a) * D * D else sx
+        nsy = float((ac[:, 1] * bc[:, 1]).sum()) / deny if deny > 1e-12 * len(a) * D * D else sy
+        nsx = min(max(nsx, 0.8 * sx0), 1.25 * sx0)
+        nsy = min(max(nsy, 0.8 * sy0), 1.25 * sy0)
+        if uniform:  # rigid symbol: keep the anisotropy within ANISO_MAX
+            g = math.sqrt(nsx * nsy)
+            r = min(max(nsx / nsy, 1.0 / ANISO_MAX), ANISO_MAX)
+            nsx, nsy = g * math.sqrt(r), g / math.sqrt(r)
         ncx = bm[0] - nsx * am[0]
         ncy = bm[1] - nsy * am[1]
         done = abs(ncx - cx) + abs(ncy - cy) < 1e-3 * cs.D and abs(nsx - sx) < 1e-4 * sx
@@ -521,6 +531,8 @@ def fine_match(v: Variant, cs: CandidateShape, sx: float, sy: float, iters: int 
         fp = float(_soft(fd2 / D, TAU_FILL).mean())
         fill = 2 * fr * fp / max(fr + fp, 1e-9)
     score = f1 * (0.45 + 0.55 * fill)
+    if uniform:
+        score *= 1.0 - ANISO_PENALTY * min(1.0, abs(math.log(sx / sy)) / math.log(ANISO_MAX))
     return MatchResult(v, float(score), sx, sy, cx, cy, precision, recall, fill)
 
 
@@ -530,7 +542,8 @@ class MatchCache:
 
     RES = 28
 
-    def __init__(self) -> None:
+    def __init__(self, max_rigid: Optional[float] = None) -> None:
+        self.max_rigid = max_rigid  # candidates larger than this (points) can only be stretchable equipment
         self._store: dict[bytes, list[tuple[int, float, float, float, float, float, float, float, float]]] = {}
         self.hits = 0
         self.misses = 0
@@ -572,16 +585,19 @@ class MatchCache:
 
 
 def match_candidate(cs: CandidateShape, lib: Optional[TemplateLibrary] = None, unit: Optional[float] = None,
-                    top: int = FINE_TOP, cache: Optional[MatchCache] = None) -> list[MatchResult]:
+                    top: int = FINE_TOP, cache: Optional[MatchCache] = None,
+                    max_rigid: Optional[float] = None) -> list[MatchResult]:
     """Fine-matched results for the most promising variants, best first."""
     lib = lib or get_library()
+    if max_rigid is None and cache is not None:
+        max_rigid = cache.max_rigid
     key = None
     if cache is not None:
         key = cache.key(cs)
         hit = cache.get(key, cs, lib)
         if hit is not None:
             return hit
-    score, sx, sy = coarse_scores(lib, cs, unit)
+    score, sx, sy = coarse_scores(lib, cs, unit, max_rigid)
     order = np.argsort(-score)
     picked: list[int] = []
     per_cls: dict[int, int] = {}

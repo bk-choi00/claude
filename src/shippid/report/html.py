@@ -454,7 +454,8 @@ def _llm_section(report: AnalysisReport) -> str:
     parts.append(_kv([("백엔드 Backend", u.backend), ("모델 Model", u.model), ("호출 Calls", u.calls),
                       ("입력 토큰 Prompt tokens", u.prompt_tokens), ("출력 토큰 Completion tokens", u.completion_tokens),
                       ("시간 Seconds", f"{u.seconds:.1f}"),
-                      ("검토 상태 Review", report.meta.get("review_status")), ("검토자 Reviewer", report.meta.get("reviewer"))]))
+                      ("검토 상태 Review", report.meta.get("review_status")), ("검토자 Reviewer", report.meta.get("reviewer")),
+                      ("요약 출처 Summary source", report.meta.get("summary_source"))]))
     if u.errors:
         parts.append("<p><b>오류 Errors</b></p><ul>" + "".join(f"<li>{_e(e)}</li>" for e in u.errors[:50]) + "</ul>")
     parts.append("</section>")

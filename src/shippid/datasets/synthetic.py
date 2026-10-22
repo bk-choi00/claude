@@ -12,12 +12,19 @@ Pipeline (all deterministic for a given seed):
 3. Stages are placed in columns, trains stacked as rows, joined by vertical headers
    (one per header group; positions shifted until no 4-way junctions or near-coincident
    tees remain). The last stage may be drawn as vertical branches off a horizontal main
-   (``fan-out``). Spacing is stretched to fill the chosen sheet (A3/A2/A1).
+   (``fan-out``). Spacing is stretched to fill the chosen sheet (A3/A2/A1). A sheet forced with
+   ``DrawingStyle.paper`` may shrink the symbol scale to ``FORCED_MIN_SCALE``, switch the title
+   block to the other side and lower the topology complexity on retries before failing with an
+   error that names the requested sheet.
 4. Return lines are routed through free lanes back to source tanks (crossing other lines).
 5. The pipe network (edges between ports / free nodes) is merged into ``PipeRun``s between
    ports and tees; tees become ``Junction``s; crossings get hops or gaps in the drawing.
-6. Tags, names, connector texts and line numbers are placed collision-free; every text gets
-   a font-metric bbox, role and owner.
+6. Tags, names, connector texts and line numbers are placed collision-free and unambiguously
+   nearest to their owner (box gap and text centre, as the extractor associates texts); every
+   text gets a font-metric bbox, role and owner. Ground truth reflects the page: an object's
+   ``tag`` / ``attributes["name"]`` / ``["rating"]`` only when printed (blueprint values that the
+   placer had to drop are kept as ``name_undrawn`` / ``rating_undrawn``); off-page connectors
+   carry ``direction`` ("in" | "out") and ``arrow_along_flow`` (see :func:`_connector_directions`).
 7. Validation (no overlapping symbols/texts, no pipe through a symbol, no collinear pipe
    overlaps); on failure the next attempt uses a fresh sub-seed.
 """
@@ -64,6 +71,10 @@ Rect = tuple[float, float, float, float]
 ALL_SYSTEMS: tuple[SystemType, ...] = tuple(s for s in SystemType if s != SystemType.UNKNOWN)
 MAX_ATTEMPTS = 8
 MIN_SCALE, MAX_SCALE = 14.0, 24.0  # symbol scale range (points per symbol unit)
+FORCED_MIN_SCALE = 10.0  # lowest symbol scale when DrawingStyle.paper forces a (small) sheet
+# a label must be nearest to its owner: other objects / pipes at least this much farther by box gap (pt) ...
+NEAR_GAP_MARGIN = 0.5
+NEAR_CENTRE_TOL = 1.0  # ... and not more than this much nearer to the text centre (pt)
 
 
 class LayoutError(RuntimeError):
@@ -104,7 +115,9 @@ class DrawingStyle:
     spacing: float = 1.0  # base spacing multiplier
     split_pipes: bool = False  # one PDF path per straight segment instead of one polyline per pipe
     interleave: bool = False  # graphics emitted in mixed order instead of pipes-then-symbols
-    paper: Optional[str] = None  # force "A1" | "A2" | "A3"; default: smallest sheet that fits
+    paper: Optional[str] = None  # force "A1" | "A2" | "A3"; default: smallest sheet that fits. A forced sheet
+    # may shrink the symbol scale down to FORCED_MIN_SCALE, use the other sheet_layout and lower the
+    # topology complexity (retries) to fit; the layout used is doc.meta["sheet_layout"].
 
 
 LAYER_SETS = (("PIPE", "SYMBOL", "TEXT", "FRAME"), ("M-PIPE", "M-SYMB", "M-TEXT", "M-BORDER"),
@@ -1184,47 +1197,60 @@ class _Gen:
         """Choose layout variant (one or two bands), symbol scale and sheet; stretch the spacing
         to fill the drawing area and centre the drawing in it."""
         st = self.st
-        sheets: dict[str, Sheet] = {}
+        sheets: dict[tuple[str, str], Sheet] = {}
 
-        def sheet_for(paper: str) -> Sheet:
-            if paper not in sheets:
+        def sheet_for(paper: str, layout: str) -> Sheet:
+            if (paper, layout) not in sheets:
                 srng = random.Random(f"{self.seed}:sheet:{paper}")
                 sst = SheetStyle(font=self.font, frame_width=srng.uniform(0.9, 1.6),
-                                 line_width=srng.uniform(0.35, 0.6), layout=st.sheet_layout, legend=st.legend,
+                                 line_width=srng.uniform(0.35, 0.6), layout=layout, legend=st.legend,
                                  notes_box=st.notes_box, layer=st.layers[3] if st.layers else None)
-                sheets[paper] = build_sheet(paper, sst, srng, self.topo)
-            return sheets[paper]
+                sheets[(paper, layout)] = build_sheet(paper, sst, srng, self.topo)
+            return sheets[(paper, layout)]
 
         papers = [st.paper] if st.paper else list(PAPER_ORDER)
-        chosen = None
-        scale = st.scale
-        while chosen is None:
-            self.set_scale(scale)
-            single = self.layout(1.0, 1.0)
-            options = [(None, _size(single.extent()))]
-            m = self.band_split(single.stage_x)
-            if m is not None:
-                options.append((m, _size(self.layout(1.0, 1.0, m).extent())))
-            for paper in papers:
-                area = sheet_for(paper).drawing_area
-                aw, ah = area.width - 30, area.height - 30
-                fits = [(min(w / aw, h / ah), split, w, h) for split, (w, h) in options if w <= aw and h <= ah]
-                if fits:
-                    fits.sort(key=lambda f: -f[0])
-                    pick = fits[0]
-                    if len(fits) > 1 and self.rng.random() < 0.25:
-                        pick = fits[1]
-                    chosen = (paper, pick)
-                    break
-            if chosen is None:
-                if scale <= MIN_SCALE:
-                    w, h = options[-1][1]
-                    raise LayoutError(f"drawing does not fit A1 ({w:.0f} x {h:.0f})")
-                scale = max(MIN_SCALE, scale * 0.88)
+        floor = min(FORCED_MIN_SCALE, st.scale) if st.paper else min(MIN_SCALE, st.scale)
+
+        def search(layout: str):
+            """Largest symbol scale (from ``st.scale`` down to ``floor``) at which the drawing fits one
+            of ``papers``; returns ((paper, pick), None) or (None, failure message)."""
+            scale = st.scale
+            while True:
+                self.set_scale(scale)
+                single = self.layout(1.0, 1.0)
+                options = [(None, _size(single.extent()))]
+                m = self.band_split(single.stage_x)
+                if m is not None:
+                    options.append((m, _size(self.layout(1.0, 1.0, m).extent())))
+                for paper in papers:
+                    area = sheet_for(paper, layout).drawing_area
+                    aw, ah = area.width - 30, area.height - 30
+                    fits = [(min(w / aw, h / ah), split, w, h) for split, (w, h) in options if w <= aw and h <= ah]
+                    if fits:
+                        fits.sort(key=lambda f: -f[0])
+                        pick = fits[0]
+                        if len(fits) > 1 and self.rng.random() < 0.25:
+                            pick = fits[1]
+                        return (paper, pick), ""
+                if scale <= floor:
+                    w, h = min((sz for _, sz in options), key=lambda sz: max(sz[0] / aw, sz[1] / ah))
+                    return None, (f"drawing does not fit {papers[-1]} ({w:.0f} x {h:.0f} pt at symbol scale "
+                                  f"{scale:.1f}; drawing area {aw:.0f} x {ah:.0f} pt, title block {layout})")
+                scale = max(floor, scale * 0.88)
+
+        layout = st.sheet_layout
+        chosen, msg = search(layout)
+        if chosen is None and st.paper:  # forced sheet: try the other title-block arrangement before failing
+            layout = "bottom" if st.sheet_layout == "right" else "right"
+            chosen, msg2 = search(layout)
+            msg = f"{msg}; {msg2}"
+        if chosen is None:
+            raise LayoutError(msg)
+        self.sheet_layout = layout
         paper, (_, split, bw, bh) = chosen
         if not st.paper and paper != "A1" and self.rng.random() < 0.15:
             paper = PAPER_ORDER[PAPER_ORDER.index(paper) + 1]
-        sheet = sheet_for(paper)
+        sheet = sheet_for(paper, layout)
         area = sheet.drawing_area
         aw, ah = area.width - 30, area.height - 30
         tw_, th_ = _size(self.layout(2.0, 2.0, split).extent())
@@ -1884,12 +1910,49 @@ class _Finisher:
         else:
             self._add_text(idx, ref, cxy[0] - w / 2, cxy[1] - h / 2, fs, self.font, TextRole.CONNECTOR, o.key)
 
+    def _nearest_owner(self, idx: _Index, rects: Sequence[Rect], owner: str) -> bool:
+        """True when every text box in ``rects`` is unambiguously nearest to object ``owner``: by box gap
+        (how the extractor associates texts; another object must be ``NEAR_GAP_MARGIN`` farther) and
+        from the text centre (no other object more than ``NEAR_CENTRE_TOL`` closer)."""
+        ob = self.net.objs[owner].bbox()
+        for r in rects:
+            g0, c0 = _gap(r, ob), _cdist(r, ob)
+            for i in idx.hits(_expand(r, max(g0 + NEAR_GAP_MARGIN, c0) + 0.5)):
+                tag = idx.tags[i]
+                if not isinstance(tag, tuple) or tag[0] != "obj" or tag[1] == owner:
+                    continue
+                fb = self.net.objs[tag[1]].bbox()
+                if _gap(r, fb) < g0 + NEAR_GAP_MARGIN or _cdist(r, fb) < c0 - NEAR_CENTRE_TOL:
+                    return False
+        return True
+
+    def _nearest_pipe(self, idx: _Index, r: Rect, i: int, run_pts: list[list[Pt]]) -> bool:
+        """True when the text box ``r`` is closer to pipe run ``i`` than to any other run."""
+        def dists(k: int) -> tuple[float, float]:
+            segs = [_seg_rect(a, b, 0.0) for a, b in zip(run_pts[k], run_pts[k][1:])]
+            return min(_gap(r, q) for q in segs), min(_cdist(r, q) for q in segs)
+
+        g0, c0 = dists(i)
+        seen = {i}
+        for j in idx.hits(_expand(r, max(g0 + NEAR_GAP_MARGIN, c0) + 0.5)):
+            tag = idx.tags[j]
+            if not isinstance(tag, tuple) or tag[0] != "pipe" or tag[1] in seen:
+                continue
+            seen.add(tag[1])
+            g, c = dists(tag[1])
+            if g < g0 + NEAR_GAP_MARGIN or c < c0 - NEAR_CENTRE_TOL:
+                return False
+        return True
+
     def _block(self, idx: _Index, lines: list[str], size: float, font: str, box: Rect, prefs: Sequence[str],
                role: TextRole, owner: str, roles: Optional[list[TextRole]] = None, gap: float = 2.0) -> bool:
+        """Place a block of label lines beside ``box`` at the first free position (in ``prefs`` order,
+        widening the gap) that is unambiguously nearest to its owner; False if there is none."""
         lines = [ln for ln in lines if ln]
         if not lines:
             return True
         lh = line_height(font, size) * 1.12
+        lh0 = line_height(font, size)
         ws = [text_width(ln, font, size) for ln in lines]
         W, H = max(ws), lh * len(lines) - (lh - line_height(font, size))
         x0, y0, x1, y1 = box
@@ -1917,14 +1980,21 @@ class _Finisher:
                     bx, by, align = x1 + gg, y0, "l"
                 elif p == "left_top":
                     bx, by, align = x0 - gg - W, y0, "r"
+                elif p == "right_bottom":
+                    bx, by, align = x1 + gg, y1 - H, "l"
+                elif p == "left_bottom":
+                    bx, by, align = x0 - gg - W, y1 - H, "r"
                 else:
                     continue
                 r = (bx, by, bx + W, by + H)
                 if not self._free(idx, _expand(r, 0.8)):
                     continue
+                xs = [bx + (W - w) / 2 if align == "c" else (bx if align == "l" else bx + W - w) for w in ws]
+                line_rects = [(xs[i], by + i * lh, xs[i] + ws[i], by + i * lh + lh0) for i in range(len(lines))]
+                if not self._nearest_owner(idx, [r] + line_rects, owner):
+                    continue
                 for i, ln in enumerate(lines):
-                    lx = bx + (W - ws[i]) / 2 if align == "c" else (bx if align == "l" else bx + W - ws[i])
-                    self._add_text(idx, ln, lx, by + i * lh, size, font, (roles[i] if roles else role), owner)
+                    self._add_text(idx, ln, xs[i], by + i * lh, size, font, (roles[i] if roles else role), owner)
                 return True
         return False
 
@@ -1979,6 +2049,7 @@ class _Finisher:
                 prefs = ["right", "left", "right_top", "left_top", "above", "below"]
             else:
                 prefs = ["above", "below", "above_right", "below_right", "above_left", "below_left", "right", "left"]
+            prefs += [p for p in _SIDE_LABEL_PREFS if p not in prefs]  # beside the body, clear of attachments
             ok = self._block(idx, lines, fs_l, self.font, box, prefs, TextRole.LABEL, o.key, roles=roles)
             if not ok and len(lines) > 1:  # drop the capacity line and retry
                 ok = self._block(idx, lines[:-1], fs_l, self.font, box, prefs, TextRole.LABEL, o.key,
@@ -2027,7 +2098,7 @@ class _Finisher:
                         cands = [(px - off - h, y0, 90), (px + off, y0, 90)]
                     for x0_, y0_, rot in cands:
                         r = (x0_, y0_, x0_ + (w if rot == 0 else h), y0_ + (h if rot == 0 else w))
-                        if self._free(idx, _expand(r, 0.6), ignore=()):
+                        if self._free(idx, _expand(r, 0.6), ignore=()) and self._nearest_pipe(idx, r, i, run_pts):
                             self._add_text(idx, text, x0_, y0_, fs, font, TextRole.LINE_NUMBER, f"p:{i}", rot)
                             placed = True
                             drawn.add(line)
@@ -2052,6 +2123,10 @@ class _Finisher:
         return st.pipe_width
 
 
+_SIDE_LABEL_PREFS = ("right_top", "left_top", "right_bottom", "left_bottom", "above_right", "below_right",
+                     "above_left", "below_left", "right", "left")
+
+
 def _line_rank(line: str) -> int:
     if "#" in line:
         return 3
@@ -2073,6 +2148,17 @@ def _label_rank(o: _Obj) -> int:
 
 def _expand(r: Rect, d: float) -> Rect:
     return (r[0] - d, r[1] - d, r[2] + d, r[3] + d)
+
+
+def _gap(a: Rect, b: Rect) -> float:
+    """Euclidean gap between two boxes (0 when they touch or overlap)."""
+    return math.hypot(max(0.0, a[0] - b[2], b[0] - a[2]), max(0.0, a[1] - b[3], b[1] - a[3]))
+
+
+def _cdist(a: Rect, b: Rect) -> float:
+    """Distance from the centre of box ``a`` to box ``b``."""
+    cx, cy = (a[0] + a[2]) / 2, (a[1] + a[3]) / 2
+    return math.hypot(max(b[0] - cx, 0.0, cx - b[2]), max(b[1] - cy, 0.0, cy - b[3]))
 
 
 def _touches(p: Pt, c: Pt, d: Pt) -> bool:
@@ -2164,19 +2250,26 @@ def _pipe_segs(pts: list[Pt], cuts: dict[int, list[Pt]], style: DrawingStyle) ->
 
 def generate(seed: int, system: Optional[SystemType] = None, style: Optional[DrawingStyle] = None) -> tuple[PIDDocument, DrawingSpec]:
     """Generate one synthetic ship P&ID: exact ground truth and the drawing spec for :mod:`pdf_writer`."""
+    forced = style.paper if style is not None else None
+    if forced is not None and forced not in PAPER_ORDER:
+        raise ValueError(f"DrawingStyle.paper must be one of {PAPER_ORDER} or None, not {forced!r}")
     rng0 = random.Random(seed)
     if system is None or system == SystemType.UNKNOWN:
         system = rng0.choice(ALL_SYSTEMS)
+    # a forced (possibly small) sheet may take the topology down to the blueprint minimum
+    c_floor, c_step = (0.0, 0.15) if forced else (0.3, 0.12)
     errors = []
     for attempt in range(MAX_ATTEMPTS):
         rng = random.Random(f"{seed}:{attempt}")
-        topo = build_topology(system, rng, complexity=max(0.3, 1.0 - 0.12 * attempt))
+        topo = build_topology(system, rng, complexity=max(c_floor, 1.0 - c_step * attempt))
         st = style if style is not None else random_style(rng)
         try:
             return _generate(topo, st, rng, seed, attempt)
         except LayoutError as exc:
             errors.append(str(exc))
-    raise RuntimeError(f"synthetic generation failed for seed={seed} system={system.value}: {errors}")
+    hint = (f" (paper={forced!r} is forced: use a larger sheet or paper=None to pick the smallest sheet that fits)"
+            if forced and any("does not fit" in e for e in errors) else "")
+    raise RuntimeError(f"synthetic generation failed for seed={seed} system={system.value}{hint}: {errors}")
 
 
 def _generate(topo: SystemTopology, st: DrawingStyle, rng: random.Random, seed: int,
@@ -2235,6 +2328,10 @@ def _generate(topo: SystemTopology, st: DrawingStyle, rng: random.Random, seed: 
 
     # ---- ground truth
     page_w, page_h = sheet.width, sheet.height
+    printed: dict[str, set[str]] = {}
+    for t in fin.texts:
+        if t.owner and not t.owner.startswith("p:"):
+            printed.setdefault(t.owner, set()).add(t.text)
     objects: list[PIDObject] = []
     for k, o in net.objs.items():
         it = o.item
@@ -2249,10 +2346,10 @@ def _generate(topo: SystemTopology, st: DrawingStyle, rng: random.Random, seed: 
         else:
             tag = it.tag if tag_drawn.get(k) else None
         attrs: dict = {}
-        if it.name:
-            attrs["name"] = it.name[0]
-            if len(it.name) > 1:
-                attrs["rating"] = it.name[1]
+        # name / rating only as far as they are printed on the sheet (the label placer may drop them);
+        # the blueprint values that did not make it onto the page are kept under separate keys
+        for key, value in zip(("name", "rating"), it.name):
+            attrs[key if value in printed.get(k, ()) else f"{key}_undrawn"] = value
         for key in ("service", "letters", "loop"):
             if it.attrs.get(key):
                 attrs[key] = it.attrs[key]
@@ -2264,7 +2361,6 @@ def _generate(topo: SystemTopology, st: DrawingStyle, rng: random.Random, seed: 
             id=obj_ids[k], cls=it.cls, category=spec.category, bbox=BBox(x0=_r(bb[0]), y0=_r(bb[1]), x1=_r(bb[2]),
                                                                          y1=_r(bb[3])),
             rotation=o.pl.rotation, mirrored=o.pl.mirrored, tag=tag, actuator=act, ports=ports, attributes=attrs))
-    by_key = {k: objects[i] for i, k in enumerate(net.objs)}
 
     def endpoint(n: str) -> Endpoint:
         if n in net.port_of:
@@ -2281,6 +2377,7 @@ def _generate(topo: SystemTopology, st: DrawingStyle, rng: random.Random, seed: 
         pipes.append(PipeRun(id=f"p{i + 1}", points=[Point(x=_r(x), y=_r(y)) for x, y in pts],
                              start=endpoint(r.nodes[0]), end=endpoint(r.nodes[-1]), kind=r.kind, line_number=line_no,
                              size=size, medium=medium, flow_direction=1 if r.flow else None))
+    _connector_directions(objects, pipes)
     junctions = []
     for n in junction_nodes:
         p = net.pos[n]
@@ -2322,6 +2419,7 @@ def _generate(topo: SystemTopology, st: DrawingStyle, rng: random.Random, seed: 
         meta={"generator": "shippid.datasets.synthetic", "seed": seed, "attempt": attempt, "paper": sheet.paper,
               "symbol_scale": round(gen.s, 3), "crossings": len(crossings), "labels_dropped": fin.dropped,
               "drains_skipped": fin.skipped_drains, "bands": scene.split is not None,
+              "sheet_layout": gen.sheet_layout,
               "fanout": gen.fanout_stage is not None},
     )
 
@@ -2372,6 +2470,35 @@ def _generate(topo: SystemTopology, st: DrawingStyle, rng: random.Random, seed: 
         spec.order = ([("path", i) for i in range(n_sheet_paths)] + [("symbol", i) for i in range(len(sheet.symbols))]
                       + items)
     return doc, spec
+
+
+def _connector_directions(objects: list[PIDObject], pipes: list[PipeRun]) -> None:
+    """Record on each off-page connector whether its line enters (``direction="in"``, "FROM ...")
+    or leaves (``"out"``, "TO ...") the drawing.
+
+    Contract limitation: :data:`symbols.OFF_PAGE_CONNECTOR` has a single port at the flat end, so
+    the arrow tip always points away from the pipe -- along the flow for outgoing lines, against it
+    for incoming ones. ``arrow_along_flow`` records this so downstream stages do not learn flow
+    direction from the arrow shape of these drawings.
+    """
+    ends: dict[str, set[str]] = {}
+    for p in pipes:
+        if p.flow_direction is None:
+            continue
+        for ep, d in ((p.start, "in"), (p.end, "out")):  # flow leaves the start object, enters the end one
+            if ep.object_id:
+                ends.setdefault(ep.object_id, set()).add(d)
+    for o in objects:
+        if o.cls != S.OFF_PAGE_CONNECTOR:
+            continue
+        seen = ends.get(o.id, set())
+        if len(seen) == 1:
+            direction = next(iter(seen))
+        else:  # no directed line: fall back to the layout role / label wording
+            label = str(o.attributes.get("name") or o.attributes.get("name_undrawn") or "")
+            direction = "in" if o.attributes.get("role") == "source" or label.startswith("FROM") else "out"
+        o.attributes["direction"] = direction
+        o.attributes["arrow_along_flow"] = direction == "out"
 
 
 def _flow_arrows(fin: _Finisher, runs: list[_Run], run_pts: list[list[Pt]], idx: _Index,

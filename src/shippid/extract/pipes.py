@@ -136,7 +136,6 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2) -> S
              and not prims[i].curve and not prims[i].dashed and prims[i].axis is not None]
     for rect in find_loose_rects(prims, loose, touch):
         rid = max(ps.rings, default=-1) + 1
-        pts = []
         xs = sorted({round(c, 6) for i in rect for c in (prims[i].x0, prims[i].x1)})
         ys = sorted({round(c, 6) for i in rect for c in (prims[i].y0, prims[i].y1)})
         x0, x1, y0, y1 = xs[0], xs[-1], ys[0], ys[-1]
@@ -176,18 +175,12 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2) -> S
 
     # ---- containers: closed outlines and circles that can hold inner symbol lines
     cont_geoms = []
-    cont_ids = []
     for ring in ps.rings.values():
-        if ring.dashed:
-            continue
-        if any(prims[i].role not in ("",) for i in ring.prim_ids):
-            continue
-        cont_geoms.append(ring.polygon)
-        cont_ids.append(("r", ring.id))
+        if not ring.dashed and all(prims[i].role == "" for i in ring.prim_ids):
+            cont_geoms.append(ring.polygon)
     for p in prims:
         if p.role == "" and p.kind == "circle" and p.r > 0.15 * unit:
             cont_geoms.append(shapely.Point(p.cx, p.cy).buffer(p.r, quad_segs=8))
-            cont_ids.append(("c", p.id))
     open_axis = [i for i in work if prims[i].role == "" and prims[i].kind == "seg" and not prims[i].closed
                  and not prims[i].curve and prims[i].axis is not None]
     if cont_geoms and open_axis:
@@ -227,19 +220,18 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2) -> S
 
     # ---- hop arcs: open curve chains bridging two collinear line ends
     bridges: list[tuple[str, float, float, float, list[int], tuple[float, float]]] = []
-    chains: list[list[int]] = []
-    cur: list[int] = []
-    for p in prims:
-        if p.role == "" and p.kind == "seg" and p.curve and not p.closed:
-            if cur and (prims[cur[-1]].path, prims[cur[-1]].sub) == (p.path, p.sub) and \
-                    math.hypot(prims[cur[-1]].x1 - p.x0, prims[cur[-1]].y1 - p.y0) <= 1e-3:
-                cur.append(p.id)
-                continue
-            if cur:
-                chains.append(cur)
-            cur = [p.id]
-    if cur:
-        chains.append(cur)
+    # chains of curve pieces joined end to end (an arc may be drawn as several separate paths)
+    curve_ids = [p.id for p in prims if p.role == "" and p.kind == "seg" and p.curve and not p.closed]
+    cdsu = DSU(len(prims))
+    end_index: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for i in curve_ids:
+        for x, y in prims[i].endpoints():
+            end_index[(int(round(x * 20)), int(round(y * 20)))].append(i)
+    for members in end_index.values():
+        for j in members[1:]:
+            cdsu.union(members[0], j)
+    chains: list[list[int]] = list(cdsu.groups(curve_ids).values())
+
     line_ends: dict[tuple[int, int], list[int]] = defaultdict(list)
     q = max(touch, 1e-3)
     for i in open_axis:
@@ -258,8 +250,15 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2) -> S
         return [i for i in out if min(math.hypot(x - a, y - b) for a, b in prims[i].endpoints()) <= touch]
 
     for ch in chains:
-        a = (prims[ch[0]].x0, prims[ch[0]].y0)
-        b = (prims[ch[-1]].x1, prims[ch[-1]].y1)
+        # chain ends: endpoints used by exactly one piece
+        cnt: dict[tuple[int, int], list[tuple[float, float]]] = defaultdict(list)
+        for k in ch:
+            for x, y in prims[k].endpoints():
+                cnt[(int(round(x * 20)), int(round(y * 20)))].append((x, y))
+        free = [v[0] for v in cnt.values() if len(v) == 1]
+        if len(free) != 2:
+            continue  # closed or branching
+        a, b = free
         chord = math.dist(a, b)
         if not (0.05 * unit <= chord <= 3.0 * unit):
             continue
@@ -366,7 +365,6 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2) -> S
         if contacts(xa, ya, m) and contacts(xb, yb, m):
             m.pipe = True
 
-    pipe_lines = [m for m in lines if m.pipe]
     for m in lines:
         role = "pipe" if m.pipe else ""
         for pid in m.prim_ids:
@@ -392,8 +390,9 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2) -> S
     for cx, cy, r, pids in filled_shapes:
         arms = 0
         dirs = set()
-        for m in pipe_lines:
-            if m.dashed:
+        near = [lines[k] for k in line_tree.query(shapely.Point(cx, cy).buffer(r + touch)).tolist()] if line_tree else []
+        for m in near:
+            if not m.pipe or m.dashed:
                 continue
             d = m.dist(cx, cy)
             if d > max(touch, 0.5 * r):
@@ -417,7 +416,7 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2) -> S
                 pid = sym_now[k]
                 if pid in own:
                     continue
-                if prim_distance_point(prims[pid], cx, cy) <= r + 0.15 * unit:
+                if point_prim_dist(cx, cy, prims[pid]) <= r + 0.15 * unit:
                     isolated = False
                     break
         if not isolated:
@@ -450,8 +449,9 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2) -> S
         dx, dy = dx / n, dy / n
         cxy = ((apex[0] + base_mid[0]) / 2, (apex[1] + base_mid[1]) / 2)
         host = None
-        for m in pipe_lines:
-            if m.dashed or m.dist(*cxy) > max(touch, 0.25 * size):
+        near = [lines[k2] for k2 in line_tree.query(shapely.Point(*cxy).buffer(size)).tolist()] if line_tree else []
+        for m in near:
+            if not m.pipe or m.dashed or m.dist(*cxy) > max(touch, 0.25 * size):
                 continue
             ux, uy = (m.x1 - m.x0) / max(m.length, 1e-6), (m.y1 - m.y0) / max(m.length, 1e-6)
             if abs(ux * dx + uy * dy) >= math.cos(math.radians(20)):
@@ -475,10 +475,6 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2) -> S
             p.role = "symbol"
             symbol_ids.append(p.id)
     return Separation(lines, dots, arrows, symbol_ids, core_boxes, unit)
-
-
-def prim_distance_point(p: Prim, x: float, y: float) -> float:
-    return point_prim_dist(x, y, p)
 
 
 def _merge_axis(pieces, axis: str, dashed: bool, prims: list[Prim], unit: float, touch: float, start_id: int) -> list[MLine]:
@@ -528,7 +524,7 @@ def _merge_axis(pieces, axis: str, dashed: bool, prims: list[Prim], unit: float,
                     continue
             merged.append(runs[i])
             i += 1
-        for lo, hi, ids, cross, n, flag in merged:
+        for lo, hi, ids, cross, _, flag in merged:
             ps = [prims[k] for k in ids]
             m = MLine(start_id + len(out), axis, 0, 0, 0, 0, ids, dashed or bool(flag),
                       max((p.width for p in ps), default=0.0), _majority_color(ps), list(cross))
@@ -543,12 +539,12 @@ def _merge_axis(pieces, axis: str, dashed: bool, prims: list[Prim], unit: float,
 def _bridge_crossing_gaps(lines: list[MLine], prims: list[Prim], unit: float, tol: float, touch: float) -> list[MLine]:
     """Join two collinear lines separated by a small gap through which a
     perpendicular line passes (the 'gap' convention for crossings)."""
-    gap_max = max(3.0 * tol, 0.45 * unit)
+    gap_max = max(3.0 * tol, 0.7 * unit)
     by_key: dict[tuple[str, bool], list[MLine]] = defaultdict(list)
     for m in lines:
         by_key[(m.axis, m.dashed)].append(m)
     result: list[MLine] = []
-    for (axis, dashed), ms in by_key.items():
+    for (axis, _), ms in by_key.items():
         perp = [o for o in lines if o.axis != axis and o.axis in ("h", "v")]
         coord_of = (lambda m: m.y0) if axis == "h" else (lambda m: m.x0)
         lo_of = (lambda m: min(m.x0, m.x1)) if axis == "h" else (lambda m: min(m.y0, m.y1))

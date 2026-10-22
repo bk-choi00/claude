@@ -11,8 +11,10 @@ import pytest
 
 from shippid.catalog import INSTRUMENT_TAG_RE, classify_tag, detect_system, parse_line_number
 from shippid.datasets import build_dataset, fetch_sources, generate, scan_archive, to_bytes
+from shippid.datasets import synthetic
 from shippid.datasets.blueprints import build_topology
-from shippid.datasets.synthetic import ALL_SYSTEMS, DrawingStyle
+from shippid.datasets.collect import SIDECAR_SUFFIX, part_path, target_name
+from shippid.datasets.synthetic import ALL_SYSTEMS, FORCED_MIN_SCALE, DrawingStyle
 from shippid.model import (
     ActuatorType,
     BBox,
@@ -66,7 +68,14 @@ def test_pdf_opens_and_is_readable_vector(drawings):
         meta = d.metadata
         assert set(k for k, v in meta.items() if v) <= {"format", "title", "creator", "producer", "subject"}
         assert b"shippid" not in pdf or meta.get("creator") == "shippid.datasets"
-        assert doc.to_json().encode()[:50] not in pdf
+        # no ground truth in any (decompressed) object or stream: JSON keys, ids, generator markers
+        blobs = [d.xref_object(x).encode() + (d.xref_stream(x) or b"" if d.xref_is_stream(x) else b"")
+                 for x in range(1, d.xref_length())]
+        payload = b"\n".join(blobs)
+        for marker in (b'"owner_id"', b'"text_ids"', b'"attributes"', b'"flow_direction"', b"synthetic:",
+                       b"shippid.datasets.synthetic", doc.objects[0].id.encode() + b'"', b"labels_dropped"):
+            assert marker not in payload, (seed, marker)
+        assert b"BT" in payload and b" Tf" in payload  # the scan sees inflated content streams
 
 
 def _words_in(words, b: BBox, tol=1.0):
@@ -223,32 +232,130 @@ def test_marine_conventions(drawings):
     assert seen[SystemType.BILGE][(SymbolClass.OILY_WATER_SEPARATOR, ActuatorType.NONE)] > 0
     fo = seen[SystemType.FUEL_OIL_TRANSFER]
     assert any(k[1] == ActuatorType.QUICK_CLOSING for k in fo)
-    assert any(k[0] == SymbolClass.THREE_WAY_VALVE for s in (SystemType.LUBE_OIL, SystemType.FRESH_WATER_COOLING)
-               for k in seen[s]) or True  # the TCV is optional in the LO blueprint
+    # the cooler TCV is mandatory on central F.W. cooling (optional in the L.O. blueprint)
     assert seen[SystemType.FRESH_WATER_COOLING][(SymbolClass.THREE_WAY_VALVE, ActuatorType.DIAPHRAGM)] > 0
+    for seed, system, doc, spec, pdf in drawings:
+        if system == SystemType.FRESH_WATER_COOLING:
+            tcvs = [o for o in doc.objects if o.cls == SymbolClass.THREE_WAY_VALVE]
+            assert len(tcvs) == 1 and tcvs[0].tag.startswith("TCV-"), seed
     assert seen[SystemType.COMPRESSED_AIR][(SymbolClass.AIR_RECEIVER, ActuatorType.NONE)] > 0
 
 
-def test_screw_pumps_have_relief_and_pumps_have_check_valves():
-    """Blueprint conventions, checked on the topology graph of generated drawings."""
-    reliefs = 0
-    for seed in range(40):
-        doc, _ = generate(seed, SystemType.FUEL_OIL_SUPPLY)
-        objs = doc.object_by_id()
-        adj = defaultdict(set)
-        for p in doc.pipes:
-            a, b = p.start.node_id, p.end.node_id
-            adj[a].add(b)
-            adj[b].add(a)
-        for o in doc.objects:
-            if o.cls == SymbolClass.SAFETY_VALVE:
-                # in and out both reach junctions next to the same pump (relief loop across the pump)
-                reliefs += 1
-                ends = adj[o.id]
-                assert len(ends) == 2 and all(e.startswith("j") for e in ends)
-        if reliefs:
+def _flow_graph(doc):
+    """Directed process pipes: (object id | junction id) -> list of (pipe, start port)."""
+    out = defaultdict(list)
+    for p in doc.pipes:
+        if p.kind == PipeKind.PROCESS and p.flow_direction == 1:
+            out[p.start.node_id].append(p)
+    return out
+
+
+def _walk(doc, pipes, out):
+    """Node ids (objects and junctions) passed going downstream from ``pipes`` along the straight run
+    of a train (instrument taps, relief and drain branches ignored) up to a header (merge, or a fork
+    without a straight continuation) or a dead end."""
+    objs = doc.object_by_id()
+
+    def heading(a, b):
+        return (b.x > a.x) - (b.x < a.x), (b.y > a.y) - (b.y < a.y)
+
+    incoming = Counter(p.end.junction_id for ps in out.values() for p in ps if p.end.junction_id)
+    seen = []
+    while len(pipes) == 1:
+        p = pipes[0]
+        nxt = p.end.node_id
+        if nxt in seen:
             break
-    assert reliefs > 0
+        seen.append(nxt)
+        if p.end.object_id:
+            pipes = list(out[nxt])
+            continue
+        if incoming[nxt] > 1:
+            break  # header merge
+        cands = [q for q in out[nxt] if not (q.end.object_id and objs[q.end.object_id].cls == SymbolClass.SAFETY_VALVE)]
+        d = heading(p.points[-2], p.points[-1])
+        pipes = cands if len(cands) == 1 else [q for q in cands if heading(q.points[0], q.points[1]) == d]
+    return seen
+
+
+def _downstream_train(doc, obj_id, port, out):
+    objs = doc.object_by_id()
+    return [objs[n] for n in _walk(doc, [p for p in out[obj_id] if p.start.port == port], out) if n in objs]
+
+
+def _until_equipment(doc, nodes):
+    objs = doc.object_by_id()
+    return nodes[:next((i for i, n in enumerate(nodes) if n in objs and objs[n].category == Category.EQUIPMENT),
+                       len(nodes)) + 1]
+
+
+PUMPS = (SymbolClass.PUMP_CENTRIFUGAL, SymbolClass.PUMP_SCREW)
+DISCHARGE = {SymbolClass.PUMP_CENTRIFUGAL: "discharge", SymbolClass.PUMP_SCREW: "out"}
+SUCTION = {SymbolClass.PUMP_CENTRIFUGAL: "suction", SymbolClass.PUMP_SCREW: "in"}
+
+
+def test_screw_pumps_have_relief_and_pumps_have_check_valves():
+    """Blueprint conventions, checked on the pipe graph of generated drawings: every relief valve spans
+    its own screw pump (inlet tee on the discharge side, outlet tee on the suction side) and every
+    pump of a pump stage that requires a non-return valve passes one before its discharge header."""
+    reliefs = pumps = 0
+    for seed in range(400, 430):
+        system = (SystemType.FUEL_OIL_SUPPLY, SystemType.FUEL_OIL_TRANSFER, SystemType.BILGE,
+                  SystemType.FIRE_MAIN, SystemType.STEAM, SystemType.LUBE_OIL)[seed % 6]
+        doc, _ = generate(seed, system)
+        objs = doc.object_by_id()
+        out = _flow_graph(doc)
+        by_port = {}
+        for p in doc.pipes:
+            for ep, other in ((p.start, p.end), (p.end, p.start)):
+                if ep.object_id:
+                    by_port[(ep.object_id, ep.port)] = other
+        for o in doc.objects:
+            if o.cls == SymbolClass.SAFETY_VALVE and system in (SystemType.FUEL_OIL_SUPPLY,
+                                                                  SystemType.FUEL_OIL_TRANSFER):
+                reliefs += 1
+                j_in, j_out = by_port[(o.id, "in")], by_port[(o.id, "out")]
+                assert j_in.junction_id and j_out.junction_id, (seed, o.id)
+                # the suction-side tee leads (along the train) into a screw pump, and that pump's
+                # outlet reaches the discharge-side tee before any other equipment
+                ahead = _until_equipment(doc, _walk(doc, list(out[j_out.junction_id]), out))
+                pump = objs[ahead[-1]]
+                assert pump.cls == SymbolClass.PUMP_SCREW, (seed, o.id, ahead)
+                assert next(p for p in doc.pipes if p.end.object_id == pump.id).end.port == "in"
+                after = _until_equipment(doc, _walk(doc, [p for p in out[pump.id] if p.start.port == "out"], out))
+                assert j_in.junction_id in after, (seed, o.id, pump.id, after)
+            if o.cls in PUMPS:
+                chain = _downstream_train(doc, o.id, DISCHARGE[o.cls], out)
+                if system == SystemType.LUBE_OIL and any(c.cls == SymbolClass.PURIFIER for c in chain):
+                    continue  # purifier feed pump: no non-return valve in the blueprint
+                pumps += 1
+                # on the pump's own discharge line: before the train reaches any other equipment
+                own = chain[:next((i for i, c in enumerate(chain) if c.category == Category.EQUIPMENT), len(chain))]
+                checks = [i for i, c in enumerate(own) if c.cls in (SymbolClass.CHECK_VALVE, SymbolClass.SDNR_VALVE)]
+                assert checks, (seed, system, o.id, [c.cls.value for c in chain])
+                # ... followed by the discharge isolation valve
+                assert any(c.category == Category.VALVE for c in own[checks[0] + 1:]), (seed, o.id)
+    assert reliefs >= 5 and pumps >= 30, (reliefs, pumps)
+
+
+def test_control_valves_share_the_loop_number_of_their_controller():
+    """ISA 5.1: TIC-120 drives TCV-120 (one loop number per control loop)."""
+    loops = Counter()
+    for seed in range(500, 530):
+        system = (SystemType.FRESH_WATER_COOLING, SystemType.LUBE_OIL, SystemType.COMPRESSED_AIR)[seed % 3]
+        doc, _ = generate(seed, system)
+        objs = doc.object_by_id()
+        for p in doc.pipes:
+            if p.kind != PipeKind.SIGNAL:
+                continue
+            ctrl, valve = objs[p.start.object_id], objs[p.end.object_id]
+            c_letters, c_num = ctrl.tag.split("-")
+            v_letters, v_num = valve.tag.split("-")
+            assert c_num == v_num, (seed, ctrl.tag, valve.tag)
+            assert c_letters[0] == v_letters[0] and c_letters.endswith("C") and v_letters.endswith("CV")
+            assert ctrl.attributes["loop"] == valve.attributes["loop"] == c_num
+            loops[v_letters] += 1
+    assert loops["TCV"] >= 10 and loops["PCV"] >= 3, loops
 
 
 def test_signal_lines_and_tap_lines(drawings):
@@ -332,6 +439,100 @@ def test_split_pipes_and_interleaved_order_render_the_same_geometry():
     assert sum(x != y for x, y in zip(a, b)) < 0.01 * len(a)
 
 
+def _gap(a: BBox, b: BBox) -> float:
+    return math.hypot(max(0.0, a.x0 - b.x1, b.x0 - a.x1), max(0.0, a.y0 - b.y1, b.y0 - a.y1))
+
+
+def test_names_and_ratings_in_ground_truth_are_printed(drawings):
+    """GT reflects the page: ``name`` / ``rating`` only when that text is drawn and owned by the object."""
+    undrawn = 0
+    for seed, system, doc, spec, pdf in drawings:
+        tx = doc.text_by_id()
+        for o in doc.objects:
+            owned = {tx[i].text for i in o.text_ids}
+            for key in ("name", "rating"):
+                if key in o.attributes:
+                    assert o.attributes[key] in owned, (seed, o.id, key, o.attributes[key], owned)
+                if f"{key}_undrawn" in o.attributes:
+                    undrawn += 1
+                    assert o.attributes[f"{key}_undrawn"] not in owned
+                    assert key not in o.attributes
+    assert sum(1 for d in drawings for o in d[2].objects if "name" in o.attributes) > 200
+    # the generator records what the label placer could not print (it does drop some)
+    assert undrawn == sum(1 for d in drawings for o in d[2].objects for k in o.attributes if k.endswith("_undrawn"))
+
+
+def test_texts_are_nearest_to_their_owner(drawings):
+    """Tags / labels / connector labels sit nearer (by box gap) to their owner than to any other object,
+    and line numbers nearer to their own pipe than to any other pipe -- as the extractor associates them."""
+    n_obj = n_line = 0
+    for seed, system, doc, spec, pdf in drawings:
+        objs = doc.object_by_id()
+        for t in doc.texts:
+            if t.role in (TextRole.TAG, TextRole.LABEL, TextRole.CONNECTOR) and t.owner_id in objs:
+                own = objs[t.owner_id]
+                g0 = _gap(t.bbox, own.bbox)
+                if g0 == 0.0:
+                    continue  # written inside its owner (tank names, connector references)
+                n_obj += 1
+                near = min((_gap(t.bbox, o.bbox), o.id) for o in doc.objects if o.id != own.id)
+                assert near[0] > g0 + 0.25, (seed, t.text, own.id, round(g0, 2), near)
+            elif t.role == TextRole.LINE_NUMBER:
+                n_line += 1
+
+                def pgap(p):
+                    return min(_gap(t.bbox, BBox(x0=min(a.x, b.x), y0=min(a.y, b.y), x1=max(a.x, b.x),
+                                                 y1=max(a.y, b.y))) for a, b in zip(p.points, p.points[1:]))
+                own = pgap(next(p for p in doc.pipes if p.id == t.owner_id))
+                other = min(pgap(p) for p in doc.pipes if p.id != t.owner_id)
+                assert other > own + 0.25, (seed, t.text, own, other)
+    assert n_obj > 500 and n_line > 300
+
+
+def test_offpage_connector_direction_is_recorded(drawings):
+    """``symbols.OFF_PAGE_CONNECTOR`` has one port at the flat end, so the arrow always points away
+    from the pipe; GT says which lines enter the drawing and that their arrow points against the flow."""
+    seen = Counter()
+    for seed, system, doc, spec, pdf in drawings:
+        for o in doc.objects:
+            if o.cls != SymbolClass.OFF_PAGE_CONNECTOR:
+                continue
+            p = next(p for p in doc.pipes if o.id in (p.start.object_id, p.end.object_id))
+            assert p.flow_direction == 1
+            entering = p.start.object_id == o.id
+            assert o.attributes["direction"] == ("in" if entering else "out"), (seed, o.id)
+            d = o.ports[0].direction
+            flow = (d.x, d.y) if entering else (-d.x, -d.y)
+            tip = (-d.x, -d.y)
+            assert o.attributes["arrow_along_flow"] == (flow == tip)
+            label = o.attributes.get("name") or o.attributes.get("name_undrawn", "")
+            if label.startswith("FROM"):
+                assert o.attributes["direction"] == "in"
+            seen[o.attributes["direction"]] += 1
+    assert seen["in"] > 0 and seen["out"] > 0
+
+
+def test_forced_paper_fits_or_fails_clearly(monkeypatch):
+    # systems that are too wide for A3 at the free-choice minimum scale still come out on A3
+    for seed, system in [(0, SystemType.BALLAST), (1, SystemType.BALLAST), (0, SystemType.BILGE),
+                         (2, SystemType.BILGE), (4, SystemType.FUEL_OIL_SUPPLY), (0, SystemType.FIRE_MAIN)]:
+        doc, spec = generate(seed, system, style=DrawingStyle(paper="A3"))
+        assert spec.paper == "A3" and doc.meta["paper"] == "A3"
+        assert (round(spec.width), round(spec.height)) == (1191, 842)
+        assert FORCED_MIN_SCALE <= doc.meta["symbol_scale"] <= 18.0
+        assert doc.meta["sheet_layout"] in ("right", "bottom")
+    doc, spec = generate(3, SystemType.BALLAST, style=DrawingStyle(paper="A2", scale=24.0))
+    assert spec.paper == "A2"
+    with pytest.raises(ValueError, match="paper"):
+        generate(1, SystemType.BILGE, style=DrawingStyle(paper="A4"))
+    # no shrinking allowed -> the error names the requested sheet, not A1
+    monkeypatch.setattr(synthetic, "FORCED_MIN_SCALE", 40.0)
+    with pytest.raises(RuntimeError) as exc:
+        generate(0, SystemType.BALLAST, style=DrawingStyle(paper="A3", scale=40.0))
+    msg = str(exc.value)
+    assert "does not fit A3" in msg and "does not fit A1" not in msg and "paper='A3' is forced" in msg
+
+
 def test_json_roundtrip(drawings, tmp_path):
     doc = drawings[0][2]
     p = doc.save(tmp_path / "gt.json")
@@ -401,6 +602,44 @@ def test_scan_archive(tmp_path, drawings):
     assert len(lines) == 6
 
 
+def _rewrap_rotated(pdf: bytes, rot: int) -> bytes:
+    """The landscape sheet placed on portrait media with /Rotate (as CAD plots often are)."""
+    src = pymupdf.open("pdf", pdf)
+    w, h = src[0].rect.width, src[0].rect.height
+    out = pymupdf.open()
+    page = out.new_page(width=h, height=w)
+    page.show_pdf_page(page.rect, src, 0, rotate=rot)
+    page.set_rotation(rot)
+    return out.tobytes()
+
+
+def test_scan_archive_rotated_pages(tmp_path, drawings):
+    root = tmp_path / "rot"
+    root.mkdir()
+    seed, system, doc, spec, pdf = drawings[1]
+    for rot in (90, 270):
+        data = _rewrap_rotated(pdf, rot)
+        page = pymupdf.open("pdf", data)[0]
+        assert page.rotation == rot and page.rect.width > page.rect.height  # displayed landscape
+        (root / f"rot{rot}.pdf").write_bytes(data)
+    # full-page scan on rotated portrait media
+    src = pymupdf.open()
+    page = src.new_page(width=595, height=842)
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 200, 283), 0)
+    pix.clear_with(180)
+    page.insert_image(page.rect, pixmap=pix, keep_proportion=False)
+    page.set_rotation(90)
+    src.save(str(root / "scan_rot.pdf"))
+    by = {r["path"]: r for r in scan_archive(root)}
+    for rot in (90, 270):
+        r = by[f"rot{rot}.pdf"]
+        assert r["status"] == "readable"
+        assert r["system_guess"] == system.value and r["system_source"] == "title_block", r["title_text"][:200]
+        assert doc.info.drawing_no in r["title_text"]
+    scan = by["scan_rot.pdf"]
+    assert scan["status"] == "unreadable" and scan["page_stats"][0]["image_ratio"] == pytest.approx(1.0, abs=1e-3)
+
+
 def _pdf_bytes(n=3000):
     d = pymupdf.open()
     d.new_page().insert_text((50, 50), "FUEL OIL TRANSFER SYSTEM " * 5)
@@ -408,7 +647,20 @@ def _pdf_bytes(n=3000):
     return data + b"%" * max(0, n - len(data))
 
 
+def _yaml(path, entries):
+    lines = ["sources:"]
+    for e in entries:
+        lines.append(f"  - url: '{e['url']}'")
+        for k, v in e.items():
+            if k != "url":
+                lines.append(f"    {k}: '{v}'")
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
 def test_fetch_sources_with_mock_transport(tmp_path):
+    import hashlib
+
     good = _pdf_bytes()
     resumable = _pdf_bytes(5000)
     calls = []
@@ -431,53 +683,144 @@ def test_fetch_sources_with_mock_transport(tmp_path):
             rng = request.headers.get("range")
             if rng:
                 start = int(rng.split("=")[1].rstrip("-"))
-                return httpx.Response(206, content=resumable[start:], headers={"content-type": "application/pdf"})
+                return httpx.Response(206, content=resumable[start:], headers={
+                    "content-type": "application/pdf",
+                    "content-range": f"bytes {start}-{len(resumable) - 1}/{len(resumable)}"})
             return httpx.Response(200, content=resumable, headers={"content-type": "application/pdf"})
         if path == "/redirect":
             return httpx.Response(302, headers={"location": "https://files.example.org/good.pdf"})
         raise httpx.ConnectError("no route", request=request)
 
-    import hashlib
-    src = tmp_path / "sources.yaml"
-    src.write_text(
-        "sources:\n"
-        "  - url: https://files.example.org/good.pdf\n"
-        f"    sha256: {hashlib.sha256(good).hexdigest()}\n"
-        "    system: fuel_oil_transfer\n"
-        "  - url: https://files.example.org/page.html\n"
-        "  - url: https://files.example.org/missing.pdf\n"
-        "  - url: https://files.example.org/huge.pdf\n"
-        "  - url: https://files.example.org/fake.pdf\n"
-        "  - url: https://files.example.org/resume.pdf\n"
-        "  - url: https://files.example.org/redirect\n"
-        "    name: redirected drawing\n"
-        "  - url: https://offline.example.org/x.pdf\n"
-        "  - url: https://files.example.org/good.pdf\n"
-        "    name: wrong.pdf\n"
-        "    sha256: 0000\n")
+    base = "https://files.example.org"
+    entries = [
+        {"url": f"{base}/good.pdf", "sha256": hashlib.sha256(good).hexdigest(), "system": "fuel_oil_transfer"},
+        {"url": f"{base}/page.html"},
+        {"url": f"{base}/missing.pdf"},
+        {"url": f"{base}/huge.pdf"},
+        {"url": f"{base}/fake.pdf"},
+        {"url": f"{base}/resume.pdf"},
+        {"url": f"{base}/redirect", "name": "redirected drawing"},
+        {"url": "https://offline.example.org/x.pdf"},
+        {"url": f"{base}/good.pdf?copy=2", "name": "wrong.pdf", "sha256": "0000"},
+    ]
+    src = _yaml(tmp_path / "sources.yaml", entries)
+    names = [target_name(e) for e in entries]
+    assert names[0].startswith("good_") and names[0].endswith(".pdf") and names[6] == "redirected_drawing.pdf"
     dest = tmp_path / "dl"
     dest.mkdir()
-    (dest / "resume.pdf.part").write_bytes(resumable[:1234])
+    part_path(dest / names[5], entries[5]["url"]).write_bytes(resumable[:1234])
     client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
     res = fetch_sources(src, dest, client=client, max_bytes=1500 + len(resumable))
-    st = {r["url"].rsplit("/", 1)[-1] + ("#" + r["path"] if r["path"] == "wrong.pdf" else ""): r for r in res}
-    assert st["good.pdf"]["status"] == "downloaded" and (dest / "good.pdf").read_bytes() == good
+    st = {r["url"].rsplit("/", 1)[-1]: r for r in res}
+    assert [r["path"] for r in res] == names
+    assert st["good.pdf"]["status"] == "downloaded" and (dest / names[0]).read_bytes() == good
     assert st["good.pdf"]["system"] == "fuel_oil_transfer"
+    assert json.loads((dest / (names[0] + SIDECAR_SUFFIX)).read_text())["url"] == entries[0]["url"]
     assert st["page.html"]["status"] == "skipped" and "content-type" in st["page.html"]["reason"]
     assert st["missing.pdf"]["status"] == "error" and st["missing.pdf"]["reason"] == "HTTP 404"
-    assert st["fake.pdf"]["status"] == "skipped" and not (dest / "fake.pdf").exists()
+    assert st["fake.pdf"]["status"] == "skipped" and not (dest / names[4]).exists()
     assert st["resume.pdf"]["status"] == "downloaded" and st["resume.pdf"]["resumed_from"] == 1234
-    assert (dest / "resume.pdf").read_bytes() == resumable
+    assert (dest / names[5]).read_bytes() == resumable
     assert ("/resume.pdf", "bytes=1234-") in calls
     assert st["redirect"]["status"] == "downloaded" and (dest / "redirected_drawing.pdf").is_file()
     assert st["x.pdf"]["status"] == "error" and "ConnectError" in st["x.pdf"]["reason"]
-    assert st["good.pdf#wrong.pdf"]["status"] == "error" and "sha256" in st["good.pdf#wrong.pdf"]["reason"]
+    assert st["good.pdf?copy=2"]["status"] == "error" and "sha256" in st["good.pdf?copy=2"]["reason"]
     assert not (dest / "wrong.pdf").exists()
-    # size limit
+    assert not list(dest.glob("*.part"))  # completed / rejected downloads leave no partial files
+    # size limit (declared length -> "too large"; streamed overflow -> "size limit")
     res2 = fetch_sources(src, tmp_path / "dl2", client=client, max_bytes=1000)
     huge = [r for r in res2 if r["url"].endswith("huge.pdf")][0]
-    assert huge["status"] == "skipped" and "large" in huge["reason"] or "limit" in huge["reason"]
-    # second run: files already present are not downloaded again
+    assert huge["status"] == "skipped" and huge["reason"].startswith("too large"), huge
+    assert not list((tmp_path / "dl2").glob(names[3] + "*"))
+    # second run: files already fetched from the same URL are not downloaded again
+    assert st["huge.pdf"]["status"] == "downloaded"
+    n_calls = len(calls)
     res3 = fetch_sources(src, dest, client=client, max_bytes=1500 + len(resumable))
-    assert [r for r in res3 if r["path"] == "good.pdf"][0]["status"] == "exists"
-    assert len((dest / "fetch_results.jsonl").read_text().splitlines()) == len(res3)
+    assert [r["status"] for r in res3 if r["path"] in (names[0], names[3], names[5], names[6])] == ["exists"] * 4
+    # only the sources without a verified local copy are requested again (good.pdf?copy=2 is wrong.pdf)
+    assert sorted(path for path, _ in calls[n_calls:]) == sorted(
+        ["/page.html", "/missing.pdf", "/fake.pdf", "/x.pdf", "/good.pdf"])
+    lines = [json.loads(x) for x in (dest / "fetch_results.jsonl").read_text().splitlines()]
+    assert lines == res3
+
+
+def test_fetch_sources_keeps_sources_apart(tmp_path):
+    """Same basename / same path with different queries -> different files; provenance is checked."""
+    import hashlib
+
+    def pdf(text):
+        d = pymupdf.open()
+        d.new_page().insert_text((50, 50), text)
+        return d.tobytes()
+
+    bodies = {"/a/pid.pdf": pdf("DRAWING A ballast"), "/b/pid.pdf": pdf("DRAWING B bilge"),
+              "/download.php?id=1": pdf("DRAWING C"), "/download.php?id=2": pdf("DRAWING D")}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        key = request.url.path + (f"?{request.url.query.decode()}" if request.url.query else "")
+        if key in bodies:
+            return httpx.Response(200, content=bodies[key], headers={"content-type": "application/pdf"})
+        if request.url.path == "/badlen.pdf":
+            return httpx.Response(200, content=bodies["/a/pid.pdf"],
+                                  headers={"content-type": "application/pdf", "content-length": "abc"})
+        if request.url.path == "/chunked.pdf":  # no content-length: the limit is enforced while streaming
+            return httpx.Response(200, content=iter([b"%PDF-" + b"0" * 600] * 3),
+                                  headers={"content-type": "application/pdf"})
+        if request.url.path == "/shifted.pdf":  # ignores the requested range start
+            return httpx.Response(206, content=bodies["/a/pid.pdf"][10:], headers={
+                "content-type": "application/pdf", "content-range": "bytes 10-99/100"})
+        return httpx.Response(404)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    keys = list(bodies)
+    entries = [{"url": f"https://x.org{k}"} for k in keys]
+    entries[1]["sha256"] = hashlib.sha256(bodies[keys[1]]).hexdigest()
+    entries.append({"url": "https://x.org/a/pid.pdf"})  # the same URL again
+    entries.append({"url": "not a url"})  # unusable URLs are recorded, not fatal (ValueError / InvalidURL)
+    entries.append({"url": "https://x.org/badlen.pdf"})  # malformed content-length
+    dest = tmp_path / "dl"
+    src = _yaml(tmp_path / "s.yaml", entries)
+    src.write_text(src.read_text() + '  - url: "http://exa\\0mple.org/x.pdf"\n')
+    res = fetch_sources(src, dest, client=client)
+    assert [r["status"] for r in res] == ["downloaded"] * 4 + ["duplicate", "error", "downloaded", "error"]
+    assert res[5]["reason"].startswith(("ValueError", "UnsupportedProtocol"))
+    assert res[7]["url"] == "http://exa\x00mple.org/x.pdf" and res[7]["reason"].startswith("InvalidURL")
+    assert len({r["path"].lower() for r in res[:4]}) == 4
+    for k, r in zip(keys, res):
+        assert (dest / r["path"]).read_bytes() == bodies[k]
+        assert r["sha256"] == hashlib.sha256(bodies[k]).hexdigest()
+    assert res[4]["duplicate_of"] == 0 and res[4]["sha256"] == res[0]["sha256"]
+    # explicit names that collide (case-insensitively) with another source are a configuration error
+    bad = _yaml(tmp_path / "bad.yaml", [{"url": "https://x.org/a/pid.pdf", "name": "PID.pdf"},
+                                        {"url": "https://x.org/b/pid.pdf", "name": "pid"}])
+    with pytest.raises(ValueError, match="share the file name"):
+        fetch_sources(bad, tmp_path / "bad", client=client)
+    assert not (tmp_path / "bad" / "pid.pdf").exists()
+    bad2 = _yaml(tmp_path / "bad2.yaml", [{"url": "https://x.org/a/pid.pdf", "sha256": "aa"},
+                                         {"url": "https://x.org/a/pid.pdf", "sha256": "bb"}])
+    with pytest.raises(ValueError, match="different sha256"):
+        fetch_sources(bad2, tmp_path / "bad2", client=client)
+    # a file under the target name that was not fetched from this URL is not reported as "exists"
+    named = _yaml(tmp_path / "named.yaml", [{"url": "https://x.org/b/pid.pdf", "name": "drawing.pdf"}])
+    (dest / "drawing.pdf").write_bytes(bodies[keys[0]])  # stray file, no provenance
+    r = fetch_sources(named, dest, client=client)[0]
+    assert r["status"] == "downloaded" and (dest / "drawing.pdf").read_bytes() == bodies[keys[1]]
+    assert fetch_sources(named, dest, client=client)[0]["status"] == "exists"
+    moved = _yaml(tmp_path / "moved.yaml", [{"url": "https://x.org/a/pid.pdf", "name": "drawing.pdf"}])
+    r = fetch_sources(moved, dest, client=client)[0]  # same name, different URL now
+    assert r["status"] == "downloaded" and (dest / "drawing.pdf").read_bytes() == bodies[keys[0]]
+    # a partial file of another URL under the same name is never resumed
+    part_path(dest / "drawing.pdf", "https://x.org/b/pid.pdf").write_bytes(bodies[keys[1]][:100])
+    (dest / "drawing.pdf").unlink()
+    r = fetch_sources(moved, dest, client=client)[0]
+    assert r["status"] == "downloaded" and r["resumed_from"] == 0
+    assert (dest / "drawing.pdf").read_bytes() == bodies[keys[0]] and not list(dest.glob("drawing.pdf.*.part"))
+    # a server resuming at the wrong offset does not corrupt the file
+    shifted = _yaml(tmp_path / "shifted.yaml", [{"url": "https://x.org/shifted.pdf", "name": "shifted.pdf"}])
+    part_path(dest / "shifted.pdf", "https://x.org/shifted.pdf").write_bytes(b"%PDF-1.7 partial")
+    r = fetch_sources(shifted, dest, client=client)[0]
+    assert r["status"] == "error" and "instead of" in r["reason"] and not (dest / "shifted.pdf").exists()
+    chunked = _yaml(tmp_path / "chunked.yaml", [{"url": "https://x.org/chunked.pdf", "name": "chunked.pdf"}])
+    r = fetch_sources(chunked, dest, client=client, max_bytes=1000)[0]
+    assert r["status"] == "skipped" and r["reason"].startswith("exceeded size limit")
+    assert not list(dest.glob("chunked.pdf*"))

@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
-from .primitives import DSU, Prim, PrimSet, bbox_inside, bbox_union, point_seg_dist, prim_distance
+from .primitives import DSU, PrimSet, bbox_inside, bbox_union, point_seg_dist, prim_distance
 from .textlines import TextLine, line_height
 
 BBox4 = tuple[float, float, float, float]

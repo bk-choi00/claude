@@ -14,7 +14,8 @@ from pydantic import BaseModel
 
 from shippid.config import LLMConfig
 from shippid.llm.base import ImagePart, LLMClient, LLMError, Message, MockBackend, schema_for
-from shippid.llm.factory import check_connection, make_client, probe_image
+from shippid.config import load_config
+from shippid.llm.factory import base_url_is_explicit, check_connection, make_client, probe_image
 from shippid.llm.gemini import GeminiBackend
 from shippid.llm.openai_compat import OpenAICompatBackend, normalize_base_url
 from shippid.llm.render import contact_sheet, open_pdf, png_size, render_clip, render_page, tiles
@@ -342,7 +343,10 @@ def test_gemini_requires_key(monkeypatch):
     ("llamacpp", "http://localhost:8080/v1", "google/gemma-4-31B-it"),
     ("lmstudio", "http://localhost:1234/v1", "google/gemma-4-31B-it"),
 ])
-def test_factory_openai_compatible(name, url, model):
+def test_factory_openai_compatible(name, url, model, monkeypatch, tmp_path):
+    monkeypatch.delenv("SHIPPID_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("SHIPPID_CONFIG", raising=False)
+    monkeypatch.chdir(tmp_path)
     client = make_client(LLMConfig(backend=name))
     assert isinstance(client.backend, OpenAICompatBackend)
     assert client.backend.base_url == url and client.backend.model == model and client.backend.name == name
@@ -514,3 +518,95 @@ def test_factory_gemini_json_object_mode():
     assert "responseJsonSchema" not in body["generationConfig"]
     assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "minimal"}
     assert '"properties"' in body["contents"][0]["parts"][-1]["text"]
+
+
+# --------------------------------------------------------------------------- regressions (review round 2)
+
+
+def test_ollama_thinking_uses_reasoning_effort():
+    """Ollama /v1 ignores chat_template_kwargs; Gemma 4 thinking is switched with reasoning_effort."""
+    def handler(body, n):
+        thinking = body.get("reasoning_effort", "none") != "none"
+        msg = completion('{"label": "pump", "score": 0.7}', reasoning="Circle with a triangle." if thinking else None,
+                         model="gemma4:31b")
+        return httpx.Response(200, json=msg)
+
+    server = Server(handler)
+    b = OpenAICompatBackend("gemma4:31b", "http://localhost:11434/v1", transport=server.transport, name="ollama")
+    assert b.thinking_param == "reasoning_effort"
+    off = b.complete([Message("user", [ImagePart(PNG), "classify"])], json_schema=schema_for(Out), thinking=False)
+    on = b.complete([Message("user", "classify")], json_schema=schema_for(Out), thinking=True)
+    first, second = server.bodies
+    assert first["reasoning_effort"] == "none" and second["reasoning_effort"] == "high"
+    assert "chat_template_kwargs" not in first and "chat_template_kwargs" not in second
+    assert first["messages"][0]["content"][0]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert first["temperature"] == 0.2 and first["top_p"] == 0.95  # sent explicitly (Ollama forces top_p=1 otherwise)
+    assert first["response_format"]["type"] == "json_schema"
+    assert (off.reasoning, on.reasoning) == ("", "Circle with a triangle.") and on.model == "gemma4:31b"
+    b.complete([Message("user", "x")])  # thinking=None and no default: server default, nothing sent
+    assert "reasoning_effort" not in server.bodies[2] and "chat_template_kwargs" not in server.bodies[2]
+
+
+def test_thinking_parameter_per_server(monkeypatch, tmp_path):
+    monkeypatch.delenv("SHIPPID_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("SHIPPID_CONFIG", raising=False)
+    monkeypatch.chdir(tmp_path)
+    ollama = make_client(LLMConfig(backend="ollama")).backend
+    body = ollama.build_request([Message("user", "hi")])  # LLMConfig.enable_thinking=False -> explicitly off
+    assert body["model"] == "gemma4:31b" and body["reasoning_effort"] == "none" and "chat_template_kwargs" not in body
+    assert ollama.build_request([Message("user", "hi")], thinking=True)["reasoning_effort"] == "high"
+    # an Ollama server addressed through the generic backend is recognised by its port
+    generic = make_client(LLMConfig(backend="openai", base_url="http://gpu-box:11434/v1")).backend
+    assert generic.thinking_param == "reasoning_effort"
+    for name in ("vllm", "sglang", "llamacpp"):
+        body = make_client(LLMConfig(backend=name)).backend.build_request([Message("user", "hi")], thinking=True)
+        assert body["chat_template_kwargs"] == {"enable_thinking": True} and "reasoning_effort" not in body
+    forced = OpenAICompatBackend("m", "http://h:8000/v1", thinking_param="reasoning_effort", reasoning_effort="low")
+    assert forced.build_request([Message("user", "hi")], thinking=True)["reasoning_effort"] == "low"
+    with pytest.raises(ValueError, match="thinking_param"):
+        OpenAICompatBackend("m", "http://h:8000/v1", thinking_param="think")
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        OpenAICompatBackend("m", "http://h:8000/v1", reasoning_effort="none")
+
+
+def test_factory_keeps_an_explicit_default_looking_base_url(monkeypatch, tmp_path):
+    """http://localhost:8000/v1 set on purpose (e.g. llama.cpp on port 8000) must not be replaced."""
+    monkeypatch.delenv("SHIPPID_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("SHIPPID_CONFIG", raising=False)
+    monkeypatch.chdir(tmp_path)
+    url8000 = "http://localhost:8000/v1/chat/completions"
+    cfg = LLMConfig(backend="llamacpp")
+    assert not base_url_is_explicit(cfg)
+    unset = make_client(cfg)
+    assert unset.backend.url == "http://localhost:8080/v1/chat/completions"
+    assert unset.backend.base_url_source == "backend default"
+    assert make_client(cfg, base_url_explicit=True).backend.url == url8000
+    flagged = LLMConfig(backend="sglang")
+    flagged.base_url_explicit = True  # set by a caller that knows the value came from the user
+    assert make_client(flagged).backend.url == url8000
+    monkeypatch.setenv("SHIPPID_LLM_BACKEND", "llamacpp")
+    monkeypatch.setenv("SHIPPID_LLM_BASE_URL", "http://localhost:8000/v1")
+    from_env = make_client(load_config().llm)
+    assert from_env.backend.url == url8000 and from_env.backend.base_url_source == "configured"
+    monkeypatch.delenv("SHIPPID_LLM_BASE_URL")
+    monkeypatch.delenv("SHIPPID_LLM_BACKEND")
+    (tmp_path / "shippid.yaml").write_text("llm:\n  backend: ollama\n  base_url: http://localhost:8000/v1\n")
+    from_yaml = make_client(load_config().llm)
+    assert from_yaml.backend.name == "ollama" and from_yaml.backend.url == url8000
+    gem = make_client(LLMConfig(backend="gemini", api_key="k"), base_url_explicit=True)
+    assert gem.backend.url.startswith("http://localhost:8000/v1/models/gemma-4-31b-it")
+    (tmp_path / "shippid.yaml").write_text("llm:\n  backend: llamacpp\n")
+    assert make_client(load_config().llm).backend.url == "http://localhost:8080/v1/chat/completions"
+
+
+def test_check_connection_reports_base_url_source(monkeypatch, tmp_path):
+    monkeypatch.delenv("SHIPPID_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("SHIPPID_CONFIG", raising=False)
+    monkeypatch.chdir(tmp_path)
+    client = make_client(LLMConfig(backend="ollama"))
+    server = Server(lambda body, n: httpx.Response(200, json=completion('{"shape": "circle", "color": "red"}')))
+    client.backend._http = httpx.Client(transport=server.transport)
+    report = check_connection(client)
+    assert report["ok"] and report["base_url_source"] == "backend default"
+    assert report["url"] == "http://localhost:11434/v1/chat/completions"
+    assert server.bodies[0]["reasoning_effort"] == "none" and "chat_template_kwargs" not in server.bodies[0]

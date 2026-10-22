@@ -4,7 +4,9 @@
 deterministic template summaries (English / Korean). An optional reviewer (e.g. the Gemma 4
 31B ``GemmaAnalyzer``) then gets a *copy* of the report and may add findings / rewrite the
 summaries; if it raises, the deterministic report is kept and the error is recorded in
-``report.llm.errors`` and ``report.meta["review_status"]``.
+``report.llm.errors`` and ``report.meta["review_status"]``. A reviewer that handles its own
+failure and returns the report unchanged is reported with its own status (see
+:func:`review_status`), never as ``"ok"``.
 """
 
 from __future__ import annotations
@@ -71,6 +73,7 @@ def analyze(doc: PIDDocument, reviewer: Optional[ReportReviewer] = None, *, max_
         report.meta["review_status"] = "none"
         return report
     name = type(reviewer).__name__
+    n_errors = len(report.llm.errors)
     try:
         reviewed = reviewer.review(report.model_copy(deep=True))
         if not isinstance(reviewed, AnalysisReport):
@@ -82,9 +85,21 @@ def analyze(doc: PIDDocument, reviewer: Optional[ReportReviewer] = None, *, max_
         report.meta["reviewer"] = name
         return report
     reviewed.meta.setdefault("analysis", "deterministic")
-    reviewed.meta["review_status"] = "ok"
+    reviewed.meta["review_status"] = review_status(reviewed, n_errors)
     reviewed.meta["reviewer"] = name
     return reviewed
+
+
+def review_status(reviewed: AnalysisReport, n_errors_before: int = 0) -> str:
+    """Outcome of a review that returned normally: the reviewer's own ``meta["review"]["status"]``
+    when it records one (a reviewer such as ``GemmaAnalyzer`` returns the unchanged copy with
+    status ``"error"`` when its LLM call fails), ``"error"`` when it reported nothing but added
+    errors to ``llm.errors``, else ``"ok"``."""
+    own = reviewed.meta.get("review")
+    status = own.get("status") if isinstance(own, dict) else None
+    if isinstance(status, str) and status.strip():
+        return status.strip().lower()
+    return "error" if len(reviewed.llm.errors) > n_errors_before else "ok"
 
 
 def _counts(doc: PIDDocument, paths: list[FlowPath], findings: list[Finding], n_src: int, n_snk: int,

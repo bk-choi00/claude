@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 import pytest
 
 from analysis_builder import DocBuilder, pump_station
 from shippid.analysis import rules as rules_mod
-from shippid.analysis.analyzer import ReportReviewer, analyze, sorted_findings
+from shippid.analysis.analyzer import ReportReviewer, analyze, review_status, sorted_findings
 from shippid.analysis.graph import (
     FlowNet,
     build_graph,
@@ -298,6 +300,86 @@ def test_pd_pump_relief_valve():
     assert verdicts(b.build(), "R_PD_PUMP_RELIEF") == [V.NOT_APPLICABLE]
 
 
+def _relief_line(rv_ports: tuple[str, str]) -> tuple[PIDDocument, str]:
+    """Storage tank -> QC valve -> screw pump -> check valve -> settling tank, relief valve across the pump."""
+    b = DocBuilder(ST.FUEL_OIL_TRANSFER)
+    ja, jb = b.junction(180, 200), b.junction(320, 200)
+    p = b.obj(S.PUMP_SCREW, 250, 200, name="TRANSFER PUMP")
+    b.chain(b.obj(S.TANK, 60, 200, name="NO.1 H.F.O. STOR. TK"),
+            b.obj(S.GATE_VALVE, 130, 200, tag="V1", actuator=A.QUICK_CLOSING), ja, p, jb,
+            b.obj(S.CHECK_VALVE, 380, 200, tag="V2"), b.obj(S.TANK, 520, 200, name="NO.1 H.F.O. SETT. TK"))
+    rv = b.obj(S.SAFETY_VALVE, 250, 140, tag="RV1")
+    b.pipe(jb, (rv, rv_ports[0]))
+    b.pipe((rv, rv_ports[1]), ja)
+    return b.build(), rv
+
+
+def test_pd_pump_relief_valve_drawn_reversed_fails():
+    doc, rv = _relief_line(("in", "out"))
+    f = findings(doc, "R_PD_PUMP_RELIEF")[0]
+    assert f.verdict == V.PASS and rv in f.object_ids
+    doc, rv = _relief_line(("out", "in"))  # outlet on the discharge junction, inlet on the suction junction
+    f = findings(doc, "R_PD_PUMP_RELIEF")[0]
+    assert f.verdict == V.FAIL and "drawn reversed" in f.description and rv in f.object_ids
+
+
+def _screw_pumps_shared_suction(relief: bool, suction_cv: bool = False) -> tuple[PIDDocument, dict]:
+    """Two screw pumps on one suction header, each discharging to its own consumer through a separate
+    line (no common discharge), optionally with a relief valve back to its own suction."""
+    b = DocBuilder(ST.LUBE_OIL)
+    ids: dict = {"pumps": [], "reliefs": [], "cvs": []}
+    hs = b.junction(150, 300)
+    b.pipe(b.obj(S.TANK, 60, 300, name="L.O. SUMP TK"), hs)
+    prev = hs
+    for i in range(2):
+        y = 300 + 150 * i
+        js = b.junction(150, y) if i else hs
+        if i:
+            b.pipe(prev, js)
+        ja, jb = b.junction(280, y), b.junction(420, y)
+        p = b.obj(S.PUMP_SCREW, 350, y, name=f"NO.{i + 1} L.O. PUMP")
+        chain: list = [js, b.obj(S.GATE_VALVE, 220, y, tag=f"V{i}1", actuator=A.HANDWHEEL)]
+        if suction_cv and i == 1:
+            cv = b.obj(S.CHECK_VALVE, 250, y, tag="CVB")
+            chain.append(cv)
+            ids["cvs"].append(cv)
+        b.chain(*chain, ja, p, jb, b.obj(S.GLOBE_VALVE, 500, y, tag=f"V{i}3", actuator=A.HANDWHEEL),
+                b.obj(S.ENGINE, 700, y, name=f"NO.{i + 1} G/E"))
+        if relief and not (suction_cv and i == 1):
+            rv = b.obj(S.SAFETY_VALVE, 350, y - 50, tag=f"RV{i}")
+            b.pipe(jb, (rv, "in"))
+            b.pipe((rv, "out"), ja)
+            ids["reliefs"].append(rv)
+        ids["pumps"].append(p)
+        prev = js
+    return b.build(), ids
+
+
+@pytest.mark.parametrize("relief", [False, True])
+def test_pump_discharge_nrv_relief_valve_back_to_suction_is_not_a_common_discharge(relief):
+    doc, ids = _screw_pumps_shared_suction(relief)
+    assert verdicts(doc, "R_PUMP_DISCHARGE_NRV") == [V.NOT_APPLICABLE, V.NOT_APPLICABLE]
+    if relief:
+        out = findings(doc, "R_PD_PUMP_RELIEF")
+        assert [f.verdict for f in out] == [V.PASS, V.PASS]
+        assert [ids["reliefs"][k] in out[k].object_ids for k in range(2)] == [True, True]
+
+
+def test_pump_discharge_nrv_not_credited_from_another_pumps_suction():
+    doc, ids = _screw_pumps_shared_suction(relief=True, suction_cv=True)
+    out = findings(doc, "R_PUMP_DISCHARGE_NRV")
+    assert [f.verdict for f in out] == [V.NOT_APPLICABLE, V.NOT_APPLICABLE]
+    assert all(ids["cvs"][0] not in f.object_ids for f in out)
+
+
+def test_pump_discharge_nrv_with_reliefs_on_common_discharge_header():
+    b, ids = pump_station(pump_cls=S.PUMP_SCREW, relief=(True, True), nrv=(True, False))
+    out = findings(b.build(), "R_PUMP_DISCHARGE_NRV")
+    assert [f.verdict for f in out] == [V.PASS, V.FAIL] and ids["nrvs"][0] in out[0].object_ids
+    assert "common line" in out[1].description
+    assert verdicts(b.build(), "R_PD_PUMP_RELIEF") == [V.PASS, V.PASS]
+
+
 def test_pump_isolation_rule():
     b, _ = pump_station()
     assert verdicts(b.build(), "R_PUMP_ISOLATION") == [V.PASS, V.PASS]
@@ -341,14 +423,78 @@ def test_quick_closing_not_applicable_without_fo_lo_tanks():
     assert verdicts(b.build(), "R_QC_VALVE_FO_LO_TANK") == [V.NOT_APPLICABLE]
 
 
-def test_fo_service_tanks_min2():
+def _tank_outlet(name: str, actuator: ActuatorType) -> tuple[PIDDocument, str]:
+    b = DocBuilder(ST.FUEL_OIL_TRANSFER)
+    t = b.obj(S.TANK, 60, 200, name=name)
+    v = b.obj(S.GATE_VALVE, 170, 200, actuator=actuator, tag="V1")
+    b.chain(t, v, b.obj(S.PUMP_SCREW, 300, 200, name="F.O. TRANSFER PUMP"),
+            b.obj(S.TANK, 500, 200, name="NO.2 H.F.O. SETT. TK"))  # filling connection only -> not applicable
+    return b.build(), t
+
+
+@pytest.mark.parametrize("name", ["NO.1 H.F.O. STOR. TK (D.B.)", "NO.1 H.F.O. DB TK", "F.O. DOUBLE BOTTOM TK (P)",
+                                  "NO.2 F.O. TK (DB)", "H.F.O. D.B. TK (S)"])
+def test_quick_closing_double_bottom_tanks_exempt(name):
+    doc, t = _tank_outlet(name, A.HANDWHEEL)
+    out = {f.object_ids[0]: f for f in findings(doc, "R_QC_VALVE_FO_LO_TANK")}
+    assert out[t].verdict == V.NOT_APPLICABLE and "double-bottom" in out[t].description
+    assert not any(f.verdict == V.FAIL for f in out.values())
+
+
+@pytest.mark.parametrize("actuator,verdict", [(A.QUICK_CLOSING, V.PASS), (A.HYDRAULIC, V.PASS),
+                                              (A.ELECTRIC, V.PASS), (A.DIAPHRAGM, V.PASS),
+                                              (A.HANDWHEEL, V.FAIL), (A.NONE, V.FAIL)])
+def test_quick_closing_accepts_remotely_operated_outlet_valves(actuator, verdict):
+    doc, t = _tank_outlet("NO.1 H.F.O. SETT. TK", actuator)
+    f = {f.object_ids[0]: f for f in findings(doc, "R_QC_VALVE_FO_LO_TANK")}[t]
+    assert f.verdict == verdict
+    if actuator in (A.HYDRAULIC, A.ELECTRIC, A.DIAPHRAGM):
+        assert "remotely operated" in f.description and "verify" in f.description and f.confidence < 1.0
+    elif actuator == A.QUICK_CLOSING:
+        assert "quick-closing valve V1" in f.description and f.confidence == 1.0
+    else:
+        assert f"actuator: {actuator.value}" in f.description and f.severity == Severity.ERROR
+
+
+def _service_tanks(*names: str) -> PIDDocument:
     b = DocBuilder(ST.FUEL_OIL_SUPPLY)
-    t1 = b.obj(S.TANK, 60, 100, name="H.F.O. SERV. TK")
-    out = findings(b.build(), "R_FO_SERVICE_TANKS_MIN2")
-    assert out[0].verdict == V.FAIL and out[0].object_ids == [t1]
-    b.obj(S.TANK, 60, 300, name="M.D.O. SERV. TK")
-    assert verdicts(b.build(), "R_FO_SERVICE_TANKS_MIN2") == [V.PASS]
+    for i, nm in enumerate(names):
+        b.obj(S.TANK, 60, 100 + 120 * i, name=nm)
+    return b.build()
+
+
+def test_fo_service_tanks_min2():
+    out = findings(_service_tanks("H.F.O. SERV. TK"), "R_FO_SERVICE_TANKS_MIN2")
+    assert out[0].verdict == V.FAIL and out[0].object_ids == ["o1"]
+    assert verdicts(_service_tanks("NO.1 H.F.O. SERV. TK", "NO.2 H.F.O. SERV. TK"),
+                    "R_FO_SERVICE_TANKS_MIN2") == [V.PASS]
     assert verdicts(DocBuilder(ST.BALLAST).build(), "R_FO_SERVICE_TANKS_MIN2") == [V.NOT_APPLICABLE]
+
+
+def test_fo_service_tanks_counted_per_fuel_type():
+    # one HFO + one MDO service tank is not two per fuel type (SOLAS II-1/26.11): never a PASS
+    f = findings(_service_tanks("H.F.O. SERV. TK", "M.D.O. SERV. TK"), "R_FO_SERVICE_TANKS_MIN2")[0]
+    assert f.verdict == V.INSUFFICIENT_DATA and f.severity == Severity.WARNING
+    assert "residual: H.F.O. SERV. TK" in f.description and "distillate: M.D.O. SERV. TK" in f.description
+    assert "SC123" in f.description
+    # standard arrangement: two residual service tanks + one distillate tank (cold start / repair)
+    f = findings(_service_tanks("NO.1 H.F.O. SERV. TK", "NO.2 H.F.O. SERV. TK", "M.D.O. SERV. TK"),
+                 "R_FO_SERVICE_TANKS_MIN2")[0]
+    assert f.verdict == V.PASS and f.confidence == pytest.approx(0.7) and "cold starting" in f.description
+    # one residual tank backed by two distillate tanks: UI SC123 equivalent arrangement (verify capacity)
+    f = findings(_service_tanks("H.F.O. SERV. TK", "NO.1 M.G.O. SERV. TK", "NO.2 M.G.O. SERV. TK"),
+                 "R_FO_SERVICE_TANKS_MIN2")[0]
+    assert f.verdict == V.PASS and f.confidence == pytest.approx(0.6) and "equivalent arrangement" in f.description
+    f = findings(_service_tanks("NO.1 H.F.O. SERV. TK", "NO.2 H.F.O. SERV. TK", "NO.1 M.D.O. SERV. TK",
+                                "NO.2 M.D.O. SERV. TK"), "R_FO_SERVICE_TANKS_MIN2")[0]
+    assert f.verdict == V.PASS and f.confidence == 1.0
+    # the generator's three-tank variant: HFO + LSHFO are both residual fuel
+    assert verdicts(_service_tanks("H.F.O. SERV. TK", "M.D.O. SERV. TK", "L.S.H.F.O. SERV. TK"),
+                    "R_FO_SERVICE_TANKS_MIN2") == [V.PASS]
+    # distillate-only ship
+    assert verdicts(_service_tanks("M.G.O. SERV. TK"), "R_FO_SERVICE_TANKS_MIN2") == [V.FAIL]
+    assert verdicts(_service_tanks("NO.1 M.G.O. DAY TK", "NO.2 M.G.O. DAY TK"),
+                    "R_FO_SERVICE_TANKS_MIN2") == [V.PASS]
 
 
 # --------------------------------------------------------------------------- bilge
@@ -630,6 +776,82 @@ def test_system_specific_rules_not_applicable_on_other_systems():
     assert verdicts(doc, "R_BILGE_PUMPS_MIN2") == [V.NOT_APPLICABLE]
 
 
+def _bilge_tank_to_pump(tank_name: Optional[str], pump_name: str = "OWS FEED PUMP") -> tuple[PIDDocument, dict]:
+    b = DocBuilder(ST.BILGE, title="BILGE SYSTEM")
+    t = b.obj(S.TANK, 60, 200, name=tank_name) if tank_name else b.obj(S.TANK, 60, 200)
+    p = b.obj(S.PUMP_SCREW, 300, 200, name=pump_name, tag="BG-P05")
+    b.chain(t, b.obj(S.GATE_VALVE, 170, 200, tag="BG-V001", actuator=A.HANDWHEEL), p,
+            b.obj(S.OILY_WATER_SEPARATOR, 500, 200, name="OILY WATER SEPARATOR"))
+    return b.build(), dict(tank=t, pump=p)
+
+
+@pytest.mark.parametrize("name", ["BILGE PRIMARY TK", "BILGE SETTLING TK", "BILGE WATER TK", "BILGE SEPARATED OIL TK",
+                                  "BILGE HOLDING TK", "BILGE STORAGE TK"])
+def test_oily_water_process_tanks_are_not_bilge_suctions(name):
+    doc, ids = _bilge_tank_to_pump(name)
+    for rid in ("R_BILGE_SUCTION_NRV", "R_STRAINER_BEFORE_PUMP"):
+        out = findings(doc, rid)
+        assert not any(f.verdict == V.FAIL for f in out), (rid, out)
+        assert all(ids["tank"] not in f.object_ids for f in out)
+
+
+@pytest.mark.parametrize("name,verdict", [("BILGE WELL (P)", V.FAIL), ("E/R BILGE (P)", V.FAIL),
+                                          ("NO.1 HOLD BILGE", V.FAIL), ("DUCT KEEL BILGE WELL", V.FAIL),
+                                          ("BILGE TK", V.INSUFFICIENT_DATA), (None, V.INSUFFICIENT_DATA)])
+def test_bilge_suction_wells_positive_match_and_uncertain(name, verdict):
+    doc, ids = _bilge_tank_to_pump(name, pump_name="NO.1 BILGE PUMP")
+    f = findings(doc, "R_BILGE_SUCTION_NRV")[0]
+    assert f.verdict == verdict and f.object_ids[0] == ids["tank"]
+    if verdict == V.INSUFFICIENT_DATA:
+        assert f.confidence <= 0.5 and "confirm whether it is a bilge suction" in f.description
+
+
+def test_well_kind_classification():
+    from shippid.analysis.rules import _well_kind
+
+    assert _well_kind("BILGE WELL (S)", False) == "well"
+    assert _well_kind("COFFERDAM", True) == "well" and _well_kind("COFFERDAM", False) is None
+    assert _well_kind("AFT BILGE", False) == "well"  # compartment bilge, no tank word
+    assert _well_kind("BILGE TK", True) == "uncertain"
+    assert _well_kind("BILGE PRIMARY TK", True) is None and _well_kind("HOT WELL", True) is None
+    assert _well_kind("NO.1 W.B.TK (P)", True) is None
+
+
+def test_strainer_rule_unconfirmed_bilge_tank_is_insufficient_data():
+    doc, ids = _bilge_tank_to_pump(None)  # unnamed tank -> gate valve -> OWS feed pump, no strainer
+    assert verdicts(doc, "R_BILGE_SUCTION_NRV") == [V.INSUFFICIENT_DATA]
+    f = findings(doc, "R_STRAINER_BEFORE_PUMP")[0]
+    assert f.verdict == V.INSUFFICIENT_DATA and f.confidence <= 0.5 and "not confirmed" in f.description
+    doc, ids = _bilge_tank_to_pump("BILGE WELL (P)", pump_name="NO.1 BILGE PUMP")
+    f = findings(doc, "R_STRAINER_BEFORE_PUMP")[0]
+    assert f.verdict == V.FAIL and ids["tank"] in f.object_ids
+
+
+def test_starting_air_rules_ignore_emergency_service_and_control_units():
+    b = DocBuilder(ST.COMPRESSED_AIR, title="STARTING AIR SYSTEM")
+    c1 = b.obj(S.COMPRESSOR, 60, 100, name="MAIN AIR COMPRESSOR")
+    c2 = b.obj(S.COMPRESSOR, 60, 300, name="EMERGENCY AIR COMPRESSOR")
+    c3 = b.obj(S.COMPRESSOR, 60, 500, name="SERVICE AIR COMPRESSOR")
+    r1 = b.obj(S.AIR_RECEIVER, 300, 100, name="MAIN AIR RECEIVER")
+    r2 = b.obj(S.AIR_RECEIVER, 300, 300, name="CONTROL AIR RECEIVER")
+    for c, r in ((c1, r1), (c2, r1), (c3, r2)):
+        b.pipe(c, r)
+    f = findings(b.build(), "R_START_AIR_COMPRESSORS_MIN2")[0]
+    assert f.verdict == V.FAIL and f.object_ids[0] == c1
+    assert "Not counted" in f.description and "EMERGENCY AIR COMPRESSOR" in f.description
+    f = findings(b.build(), "R_START_AIR_RECEIVERS_MIN2")[0]
+    assert f.verdict == V.FAIL and "CONTROL AIR RECEIVER" in f.description
+    b.obj(S.COMPRESSOR, 60, 700, name="NO.2 MAIN AIR COMPRESSOR")
+    b.obj(S.AIR_RECEIVER, 300, 500, name="NO.2 MAIN AIR RECEIVER")
+    for rid in ("R_START_AIR_COMPRESSORS_MIN2", "R_START_AIR_RECEIVERS_MIN2"):
+        f = findings(b.build(), rid)[0]
+        assert f.verdict == V.PASS and f.description.startswith("2 main starting air"), rid
+    b = DocBuilder(ST.COMPRESSED_AIR, title="CONTROL & SERVICE AIR SYSTEM")
+    b.obj(S.COMPRESSOR, 60, 100, name="NO.1 SERVICE AIR COMPRESSOR")
+    b.obj(S.COMPRESSOR, 60, 300, name="NO.2 SERVICE AIR COMPRESSOR")
+    assert verdicts(b.build(), "R_START_AIR_COMPRESSORS_MIN2") == [V.INSUFFICIENT_DATA]
+
+
 def test_bilge_drawing_hot_well_is_not_a_bilge_suction():
     b = DocBuilder(ST.STEAM)
     hw = b.obj(S.TANK, 60, 100, name="HOT WELL")
@@ -744,6 +966,20 @@ def test_valve_list_size_line_and_medium():
     ("FQI", "flow integrate/totalize", ["indicator"]),
     ("PDI", "pressure differential", ["indicator"]),
     ("QIA", "quality (e.g. oil content ppm)", ["indicator", "alarm"]),
+    ("LSH", "level", ["switch high"]),
+    ("LSL", "level", ["switch low"]),
+    ("PSLL", "pressure", ["switch low low"]),
+    ("LSHH", "level", ["switch high high"]),
+    ("TSHH", "temperature", ["switch high high"]),
+    ("LIAHL", "level", ["indicator", "alarm high low"]),
+    ("ZSO", "position", ["switch open"]),
+    ("ZSC", "position", ["switch closed"]),
+    ("HS", "hand", ["switch"]),
+    ("XA", "unclassified", ["alarm"]),
+    ("EI", "voltage", ["indicator"]),
+    ("WT", "weight/force", ["transmitter"]),
+    ("PSV", "pressure safety", ["valve"]),
+    ("TSE", "temperature safety", ["element"]),
 ])
 def test_decode_isa(letters, variable, funcs):
     assert decode_isa(letters) == (variable, funcs)
@@ -853,6 +1089,60 @@ class _WrongTypeReviewer:
         return {"not": "a report"}
 
 
+class _SilentlyFailingReviewer:
+    """Handles its own failure: returns the copy unchanged with an error appended, no status."""
+
+    def review(self, report: AnalysisReport) -> AnalysisReport:
+        report.llm.errors.append("review: upstream 503")
+        return report
+
+
+def _gemma_review(responder) -> AnalysisReport:
+    from shippid.analysis.gemma import GemmaAnalyzer
+    from shippid.llm.base import LLMClient, MockBackend
+
+    doc, _ = _bilge()
+    return analyze(doc, reviewer=GemmaAnalyzer(LLMClient(MockBackend(responder), max_attempts=1)))
+
+
+def test_review_status_reports_gemma_analyzer_failure_as_error(tmp_path):
+    from shippid.llm.base import LLMError
+    from shippid.report.html import write_html_report
+
+    def refuse(msgs, schema, name):
+        raise LLMError("connection refused: http://localhost:8000/v1/chat/completions")
+
+    rep = _gemma_review(refuse)
+    assert rep.meta["review"]["status"] == "error"
+    assert rep.meta["review_status"] == "error" and rep.meta["reviewer"] == "GemmaAnalyzer"
+    assert rep.meta["summary_source"] == "template" and rep.summary_en.startswith("[Deterministic summary")
+    assert any("connection refused" in e for e in rep.llm.errors)
+    html = write_html_report(rep, tmp_path / "r.html").read_text(encoding="utf-8")
+    assert "<dt>검토 상태 Review</dt><dd>error</dd>" in html
+    assert "<dt>요약 출처 Summary source</dt><dd>template</dd>" in html
+
+
+def test_review_status_ok_for_successful_gemma_analyzer_review():
+    def answer(msgs, schema, name):
+        return {"findings": [], "summary_en": "Mock review summary.", "summary_ko": "모의 검토 요약입니다."}
+
+    rep = _gemma_review(answer)
+    assert rep.meta["review"]["status"] == "ok" and rep.meta["review_status"] == "ok"
+    assert rep.meta["summary_source"] == "mock" and rep.summary_ko == "모의 검토 요약입니다."
+
+
+def test_review_status_from_errors_when_reviewer_records_no_status():
+    doc, _ = _bilge()
+    rep = analyze(doc, reviewer=_SilentlyFailingReviewer())
+    assert rep.meta["review_status"] == "error" and rep.llm.errors == ["review: upstream 503"]
+    base = analyze(doc)
+    assert review_status(base) == "ok"
+    base.llm.errors.append("refine: earlier stage error")
+    assert review_status(base, n_errors_before=1) == "ok"  # errors from before the review do not count
+    base.meta["review"] = {"status": "ERROR"}
+    assert review_status(base, n_errors_before=1) == "error"
+
+
 def test_reviewer_success_failure_and_wrong_type():
     doc, _ = _bilge()
     base = analyze(doc)
@@ -897,6 +1187,8 @@ def test_flow_net_search_blocked_nodes():
     pump = ids["pumps"][0]
     assert net.search(ids["chests"][0]).reached(pump)
     assert not net.search(ids["chests"][0], blocked=[strainer]).reached(pump)
+    res = net.search(ids["chests"][0], stop=[strainer])  # reached, but not passed through
+    assert res.reached(strainer) and not res.reached(pump)
 
 
 def test_count_rules_on_secondary_system_without_equipment():

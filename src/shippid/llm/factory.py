@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
+from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
+import yaml
 from pydantic import BaseModel, ValidationError
 
 from ..config import DEFAULT_MODEL, LLMConfig
@@ -16,7 +19,7 @@ from .openai_compat import OpenAICompatBackend
 
 log = logging.getLogger(__name__)
 
-# Default endpoints of the OpenAI-compatible servers (used when base_url is left at the default).
+# Default endpoints of the OpenAI-compatible servers (used when no base_url was configured).
 OPENAI_COMPAT_DEFAULT_URLS: dict[str, str] = {
     "openai": "http://localhost:8000/v1",
     "vllm": "http://localhost:8000/v1",
@@ -39,22 +42,52 @@ def _backend_name(cfg: LLMConfig) -> str:
     return _ALIASES.get(name, name)
 
 
-def make_client(cfg: LLMConfig, responder: Optional[Responder] = None) -> Optional[LLMClient]:
+def base_url_is_explicit(cfg: LLMConfig) -> bool:
+    """Whether ``cfg.base_url`` was configured by the user rather than left at LLMConfig's default.
+
+    ``LLMConfig.base_url`` defaults to a concrete URL, so an explicitly configured
+    ``http://localhost:8000/v1`` cannot be told apart by value. Resolution: a
+    ``base_url_explicit`` attribute set by the caller; a value different from the
+    default; ``$SHIPPID_LLM_BASE_URL``; ``llm.base_url`` in the config file that
+    :func:`load_config` would read (``$SHIPPID_CONFIG`` or ``./shippid.yaml``).
+    """
+    flag = getattr(cfg, "base_url_explicit", None)
+    if flag is not None:
+        return bool(flag)
+    if not cfg.base_url:
+        return False
+    if cfg.base_url != LLMConfig().base_url or os.environ.get("SHIPPID_LLM_BASE_URL"):
+        return True
+    for cand in (os.environ.get("SHIPPID_CONFIG"), "shippid.yaml"):
+        if cand and Path(cand).is_file():  # load_config uses the first file it finds
+            try:
+                data = yaml.safe_load(Path(cand).read_text(encoding="utf-8")) or {}
+            except (OSError, yaml.YAMLError):
+                return False
+            llm = data.get("llm") if isinstance(data, dict) else None
+            return isinstance(llm, dict) and bool(llm.get("base_url"))
+    return False
+
+
+def make_client(cfg: LLMConfig, responder: Optional[Responder] = None, *,
+                base_url_explicit: Optional[bool] = None) -> Optional[LLMClient]:
     """LLM client for ``cfg.backend``; ``None`` when the LLM is disabled (``none``).
 
-    ``mock`` needs an explicit ``responder`` (tests / dry runs); its output is
-    labelled ``mock`` in usage records and never passes for Gemma output.
+    Without a configured ``base_url`` (see :func:`base_url_is_explicit`; override with
+    ``base_url_explicit``) the backend's own default endpoint is used, e.g. port
+    11434 for Ollama. ``mock`` needs an explicit ``responder`` (tests / dry runs); its
+    output is labelled ``mock`` in usage records and never passes for Gemma output.
     """
     name = _backend_name(cfg)
     if name in ("none", ""):
         return None
-    default_cfg = LLMConfig()
+    explicit = base_url_is_explicit(cfg) if base_url_explicit is None else bool(base_url_explicit)
     model = cfg.model or DEFAULT_MODEL
     if model == DEFAULT_MODEL and name in DEFAULT_MODEL_NAMES:
         model = DEFAULT_MODEL_NAMES[name]
     json_mode = cfg.json_mode if cfg.json_mode in ("json_schema", "json_object", "prompt") else "json_schema"
     if name in OPENAI_COMPAT_DEFAULT_URLS:
-        base_url = cfg.base_url if cfg.base_url and cfg.base_url != default_cfg.base_url else OPENAI_COMPAT_DEFAULT_URLS[name]
+        base_url = cfg.base_url if explicit else OPENAI_COMPAT_DEFAULT_URLS[name]
         extra = dict(cfg.extra_body or {})
         top_k = extra.pop("top_k", None)
         backend = OpenAICompatBackend(
@@ -64,7 +97,7 @@ def make_client(cfg: LLMConfig, responder: Optional[Responder] = None) -> Option
             thinking_default=cfg.enable_thinking,
         )
     elif name == "gemini":
-        base_url = cfg.base_url if cfg.base_url and cfg.base_url != default_cfg.base_url else GEMINI_BASE_URL
+        base_url = cfg.base_url if explicit else GEMINI_BASE_URL
         backend = GeminiBackend(model, api_key=cfg.api_key, base_url=base_url, timeout=cfg.timeout,
                                 max_retries=cfg.max_retries,
                                 json_mode="json_mime" if json_mode == "json_object" else "json_schema",
@@ -76,6 +109,10 @@ def make_client(cfg: LLMConfig, responder: Optional[Responder] = None) -> Option
         backend = MockBackend(responder, model=model if model != DEFAULT_MODEL else "mock")
     else:
         raise ValueError(f"unknown LLM backend {cfg.backend!r}; expected one of {', '.join(BACKENDS)}")
+    if name != "mock":
+        backend.base_url_source = "configured" if explicit else "backend default"  # type: ignore[attr-defined]
+        if not explicit:
+            log.info("no base_url configured; using the %s default endpoint %s", name, base_url)
     # json_object is realised by the backend's response format; the client keeps passing the schema
     client_mode = "prompt" if json_mode == "prompt" else "json_schema"
     return LLMClient(backend, temperature=cfg.temperature, top_p=cfg.top_p, max_tokens=cfg.max_tokens,
@@ -118,7 +155,8 @@ def check_connection(client: LLMClient, *, max_tokens: int = 256) -> dict[str, A
     backend = client.backend
     report: dict[str, Any] = {
         "ok": False, "backend": backend.name, "model": backend.model, "server_model": None,
-        "url": getattr(backend, "url", None), "latency_s": None, "json_valid": False,
+        "url": getattr(backend, "url", None), "base_url_source": getattr(backend, "base_url_source", None),
+        "latency_s": None, "json_valid": False,
         "json_schema": False, "structured_output": None, "images": False, "reasoning": False,
         "prompt_tokens": 0, "completion_tokens": 0, "answer": None, "error": None,
     }

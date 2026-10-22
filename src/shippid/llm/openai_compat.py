@@ -10,9 +10,11 @@ Works with vLLM, SGLang, llama.cpp ``llama-server``, LM Studio and Ollama's
   downgraded to ``json_object`` and then to schema-in-prompt when the server
   answers HTTP 400/422 about the response format; the downgrade is remembered;
 * Gemma 4 thinking is toggled per request with the top-level
-  ``chat_template_kwargs: {"enable_thinking": bool}`` (what the OpenAI SDK's
-  ``extra_body`` produces); thoughts come back in ``message.reasoning`` (vLLM) or
-  ``message.reasoning_content`` (SGLang, llama.cpp);
+  ``chat_template_kwargs: {"enable_thinking": bool}`` (vLLM, SGLang, llama.cpp; what
+  the OpenAI SDK's ``extra_body`` produces) or, for Ollama ``/v1``, with
+  ``reasoning_effort`` (``"none"`` = off, a level such as ``"high"`` = on; Ollama
+  ignores ``chat_template_kwargs``); thoughts come back in ``message.reasoning``
+  (vLLM, Ollama) or ``message.reasoning_content`` (SGLang, llama.cpp);
 * retries with exponential backoff on 408/429/5xx, timeouts and connection errors.
 """
 
@@ -36,6 +38,10 @@ log = logging.getLogger(__name__)
 RETRY_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 MAX_BACKOFF = 60.0
 RESPONSE_FORMAT_MODES = ("json_schema", "json_object", "prompt")
+# How the Gemma 4 thinking switch is sent: vLLM / SGLang / llama.cpp read the chat-template
+# kwarg; Ollama's /v1 maps ``reasoning_effort`` to its ``think`` option instead.
+THINKING_PARAMS = ("chat_template_kwargs", "reasoning_effort")
+OLLAMA_DEFAULT_PORT = 11434
 # Words that identify a 400/422 as a complaint about structured output (vLLM, SGLang,
 # llama.cpp, LM Studio, Ollama error texts).
 _RF_HINTS = ("response_format", "json_schema", "json_object", "guided", "grammar", "structured",
@@ -162,6 +168,17 @@ def ensure_schema_in_prompt(messages: Sequence[Message], schema: dict[str, Any])
     return out + [Message("user", schema_note(schema).strip())]
 
 
+def default_thinking_param(name: str, base_url: str) -> str:
+    """``reasoning_effort`` for Ollama (by backend name or its default port 11434), else the template kwarg."""
+    try:
+        port = urlparse(base_url).port
+    except ValueError:  # malformed port: let the HTTP layer report it
+        port = None
+    if name == "ollama" or port == OLLAMA_DEFAULT_PORT:
+        return "reasoning_effort"
+    return "chat_template_kwargs"
+
+
 def image_captions(msg: Message) -> list[str]:
     return [f"Image {i}: {im.label}" for i, im in enumerate(msg.images(), 1) if im.label]
 
@@ -188,6 +205,8 @@ class OpenAICompatBackend(LLMBackend):
         response_format: str = "json_schema",
         thinking_default: Optional[bool] = None,
         backoff: float = 1.0,
+        thinking_param: Optional[str] = None,
+        reasoning_effort: str = "high",
     ):
         super().__init__(model)
         if name:
@@ -195,6 +214,13 @@ class OpenAICompatBackend(LLMBackend):
         if response_format not in RESPONSE_FORMAT_MODES:
             raise ValueError(f"response_format must be one of {RESPONSE_FORMAT_MODES}, got {response_format!r}")
         self.base_url = normalize_base_url(base_url)
+        thinking_param = thinking_param or default_thinking_param(self.name, self.base_url)
+        if thinking_param not in THINKING_PARAMS:
+            raise ValueError(f"thinking_param must be one of {THINKING_PARAMS}, got {thinking_param!r}")
+        if reasoning_effort == "none":
+            raise ValueError("reasoning_effort is the level used when thinking is ON; 'none' switches it off")
+        self.thinking_param = thinking_param
+        self.reasoning_effort = reasoning_effort
         self.api_key = api_key
         self.timeout = float(timeout)
         self.max_retries = int(max_retries)
@@ -292,7 +318,11 @@ class OpenAICompatBackend(LLMBackend):
                 body[key] = value
         thinking = self.thinking_default if thinking is None else thinking
         if thinking is not None:
-            body["chat_template_kwargs"] = {**body.get("chat_template_kwargs", {}), "enable_thinking": bool(thinking)}
+            if self.thinking_param == "reasoning_effort":  # Ollama /v1: "none" = off
+                body["reasoning_effort"] = self.reasoning_effort if thinking else "none"
+            else:
+                body["chat_template_kwargs"] = {**body.get("chat_template_kwargs", {}),
+                                                "enable_thinking": bool(thinking)}
         return body
 
     def parse_response(self, data: dict[str, Any], seconds: float = 0.0) -> LLMResponse:

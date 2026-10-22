@@ -281,7 +281,7 @@ def circle_circle_dist(a: Prim, b: Prim) -> float:
     if d >= a.r + b.r:
         return d - a.r - b.r
     if d <= abs(a.r - b.r):  # nested
-        inner, outer = (a, b) if a.r < b.r else (b, a)
+        outer = b if a.r < b.r else a
         if outer.filled:
             return 0.0
         return abs(a.r - b.r) - d

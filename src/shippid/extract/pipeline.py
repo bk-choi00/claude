@@ -11,10 +11,9 @@ from __future__ import annotations
 
 import logging
 import math
-import re
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
@@ -47,7 +46,16 @@ from .candidates import Candidate, group_candidates
 from .pipes import MLine, Separation, separate
 from .primitives import PrimSet, bbox_dist, bbox_union, estimate_unit, point_seg_dist
 from .regions import Regions, detect_regions
-from .symbols_match import CandidateShape, MatchCache, MatchResult, TemplateLibrary, candidate_shape, get_library, match_candidate
+from .symbols_match import (
+    CandidateShape,
+    MatchCache,
+    MatchResult,
+    TemplateLibrary,
+    candidate_shape,
+    coarse_scores,
+    get_library,
+    match_candidate,
+)
 from .text import ObjRef, PipeRef, assign_texts, drawing_info, medium_of_line, line_number_info
 from .textlines import TextLine, build_lines
 from .topology import Body, Network, Node, build_network
@@ -64,7 +72,7 @@ class ExtractOptions:
     group_units: float = 0.12  # proximity (symbol units) that still joins strokes into one candidate
     tap_max_units: float = 6.0  # solid runs to an instrument up to this length are instrument taps
     min_unknown_units: float = 0.3  # smaller unmatched stroke groups are dropped as noise
-    propagate_line_numbers: bool = True  # copy a line number across inline 2-port symbols
+    propagate_line_numbers: bool = True  # unlabelled runs take the nearest line number along the line
     keep_legend_symbols: bool = False
 
 
@@ -128,9 +136,9 @@ def _finalise(d: Detection, accept: float) -> None:
     if best is not None and best.score >= accept:
         d.cls = best.variant.cls
         d.score = best.score
-        tb = best.bbox()
+        tb = [float(v) for v in best.bbox()]
         d.bbox = (min(tb[0], tb[2]), min(tb[1], tb[3]), max(tb[0], tb[2]), max(tb[1], tb[3]))
-        bb = best.body_bbox()
+        bb = [float(v) for v in best.body_bbox()]
         d.body = (min(bb[0], bb[2]), min(bb[1], bb[3]), max(bb[0], bb[2]), max(bb[1], bb[3]))
     else:
         d.cls = SymbolClass.UNKNOWN
@@ -195,12 +203,12 @@ def _try_split(ps: PrimSet, c: Candidate, whole: Detection, lib, unit, cache, ac
 
 
 def _decompose(ps: PrimSet, whole: Detection, lib, unit, cache, accept) -> Optional[list[Detection]]:
-    """Symbols bolted flange-to-flange form one touching candidate. Try cuts across
-    the candidate at the boundaries of its closed outlines (never through one),
-    rank the partitions by coarse score and keep the best split when the
-    point-weighted fine score improves."""
-    from .symbols_match import coarse_scores
-
+    """Symbols bolted flange-to-flange form one touching candidate. The candidate is
+    cut into 'atoms' (closed outlines with their contents, other strokes); cuts
+    across either axis that do not pass through a closed outline are ranked by
+    coarse score, the best are fine-matched, and a split is kept when the
+    point-weighted score improves by a margin. Parts are split recursively
+    (chains of three or more symbols) within a small match budget."""
     prims = ps.prims
     atoms: list[tuple[list[int], tuple[float, float, float, float], bool]] = []  # (prim ids, bbox, solid)
     in_ring: set[int] = set()
@@ -216,7 +224,6 @@ def _decompose(ps: PrimSet, whole: Detection, lib, unit, cache, accept) -> Optio
     # strokes well inside a closed outline can never be cut away from it: merge them in
     m = 0.06 * unit
     solid_idx = [k for k, a in enumerate(atoms) if a[2]]
-    merged: list[tuple[list[int], tuple[float, float, float, float], bool]] = []
     absorbed: set[int] = set()
     for k, a in enumerate(atoms):
         if a[2]:
@@ -228,8 +235,7 @@ def _decompose(ps: PrimSet, whole: Detection, lib, unit, cache, accept) -> Optio
                 atoms[s_][0].extend(a[0])
                 absorbed.add(k)
                 break
-    merged = [a for k, a in enumerate(atoms) if k not in absorbed]
-    atoms = merged
+    atoms = [a for k, a in enumerate(atoms) if k not in absorbed]
     if len(atoms) < 2 or len(atoms) > 80:
         return None
 
@@ -523,7 +529,7 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
     cfg = config or Config()
     opts = options or ExtractOptions()
     ids = ids or IdAllocator()
-    cache = cache if cache is not None else MatchCache()
+    cache = cache if cache is not None else MatchCache(cfg.symbol_max_size)
     timing: dict[str, float] = {}
     t0 = time.perf_counter()
 
@@ -927,8 +933,62 @@ def _flow_directions(pipes: list[PipeRun], runs, net: Network, sep: Separation, 
                     changed |= set_into(*unknown[0], False)
                 elif not any(vals):
                     changed |= set_into(*unknown[0], True)
+    _flow_from_pumps(pipes, objects, flow)
     for k, f in flow.items():
         pipes[k].flow_direction = f
+
+
+_PASSABLE_EQUIPMENT = {SymbolClass.STRAINER, SymbolClass.FILTER, SymbolClass.DUPLEX_FILTER, SymbolClass.FLOW_METER,
+                       SymbolClass.HEATER, SymbolClass.BWTS_UNIT}
+
+
+def _flow_from_pumps(pipes: list[PipeRun], objects: list[PIDObject], flow: dict[int, int]) -> None:
+    """Remaining process runs: flow towards the nearest pump suction / away from the nearest
+    pump discharge, measured along the network through valves, fittings, inline equipment
+    and junctions (tanks, connectors and other equipment end the search)."""
+    import heapq
+
+    by_id = {o.id: o for o in objects}
+    adj: dict[str, list[tuple[int, str]]] = defaultdict(list)  # node -> [(run, other node)]
+    for k, p in enumerate(pipes):
+        a, b = p.start.object_id or p.start.junction_id, p.end.object_id or p.end.junction_id
+        if p.kind == PipeKind.PROCESS and a and b:
+            adj[a].append((k, b))
+            adj[b].append((k, a))
+
+    def passable(node: str) -> bool:
+        o = by_id.get(node)
+        if o is None:
+            return True  # junction
+        return o.category in (Category.VALVE, Category.FITTING) or o.cls in _PASSABLE_EQUIPMENT
+
+    heap: list[tuple[float, str, int, str]] = []  # (distance, node, run, 'suction' | 'discharge')
+    for k, p in enumerate(pipes):
+        if p.kind != PipeKind.PROCESS:
+            continue
+        for e in (p.start, p.end):
+            o = by_id.get(e.object_id) if e.object_id else None
+            if o is not None and o.cls in (SymbolClass.PUMP_CENTRIFUGAL, SymbolClass.PUMP_SCREW) and e.port in ("suction", "discharge", "in", "out"):
+                side = "suction" if e.port in ("suction", "in") else "discharge"
+                heapq.heappush(heap, (0.0, o.id, k, side))
+    seen: set[int] = set()
+    while heap:
+        d, node, k, side = heapq.heappop(heap)
+        if k in seen:
+            continue
+        seen.add(k)
+        p = pipes[k]
+        start_node = p.start.object_id or p.start.junction_id
+        toward = start_node == node  # the run is entered at its start
+        if k not in flow:
+            # suction side: flow runs towards ``node``; discharge side: away from it
+            flow[k] = (-1 if toward else 1) if side == "suction" else (1 if toward else -1)
+        far = (p.end.object_id or p.end.junction_id) if toward else start_node
+        if not far or not passable(far):
+            continue
+        for k2, _ in adj.get(far, ()):
+            if k2 not in seen:
+                heapq.heappush(heap, (d + p.length, far, k2, side))
 
 
 # --------------------------------------------------------------------------- document
@@ -974,7 +1034,7 @@ def extract_pdf(path: str | Path, config: Optional[Config] = None, pages: Option
         doc = PIDDocument(source=str(path))
         doc.meta["extractor"] = "vector"
         ids = IdAllocator()
-        cache = MatchCache()
+        cache = MatchCache(cfg.symbol_max_size)
         infos = []
         page_list = list(pages) if pages is not None else list(range(pdf.page_count))
         for idx in page_list:

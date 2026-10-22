@@ -44,7 +44,7 @@ TASK: classify symbol candidates that a deterministic vector extractor found but
 
 INPUT
 - A contact-sheet image: each cell shows one candidate cropped from the PDF, centred, with surrounding context (pipes, nearby text). The number in the grey strip on top of a cell is the candidate number "n". Every crop is scaled to fill its cell, so use size_pt for the real size (valves are typically 8-25 pt, pumps 15-35 pt, tanks and engines much larger).
-- A JSON digest with one entry per candidate: n, id, size_pt [width, height], rotation (deg), vector_class / vector_confidence / vector_actuator (the extractor's current answer), vector_candidates (template-matching classes with scores 0..1; often close or wrong), primitives (stroke counts, when available), nearby_text (nearest texts with distance in pt), connected_pipes (number of pipe ends attached), tag and name (when already known).
+- A JSON digest with one entry per candidate: n, id, size_pt [width, height], rotation (deg), vector_class / vector_confidence / vector_actuator (the extractor's current answer), vector_candidates (template-matching classes with scores 0..1; often close or wrong), primitives (stroke counts, when available), nearby_text (nearest texts with role, distance in pt and inside=true when the text sits inside the symbol's box), connected_pipes (number of pipe ends attached), tag and name (when already known).
 - The drawing's system, when known.
 
 SYMBOL LEGEND (class value: visual description; ports)
@@ -55,7 +55,8 @@ OUTPUT: a JSON object {{"items": [...]}} with exactly one item per candidate, fi
 - reason: one short phrase naming the visual evidence, e.g. "bow-tie with filled centre dot, T-bar stem".
 - cls: one class value from the legend; "unknown" if the crop is not an equipment / valve / instrument / fitting symbol: a flow-direction arrow (one filled triangle or arrowhead on a pipe), text, a pipe corner, junction or crossing hop, frame or title-block lines, noise.
 - actuator: for valves, one of {_ACTUATORS}; always "none" for anything that is not a valve.
-- confidence: calibrated probability 0..1 that cls and actuator are both right (below 0.5 when guessing).
+- confidence: calibrated probability 0..1 that cls and actuator are both right (below 0.5 when guessing; such answers are recorded but not adopted).
+- tag: the symbol's own tag built ONLY from its nearby_text, e.g. "PI-101" from the texts "PI" and "101" inside an instrument bubble, or a valve / equipment tag such as "BA-V012" written next to it; null when none of the nearby texts is its tag. Never invent or complete characters that are not in the texts.
 
 RULES: decide from the drawing first, then use text hints (an instrument tag such as "PI-101" inside a circle means an instrument; a valve tag such as "BA-V012" next to a bow-tie means a valve; names such as "NO.1 BALLAST PUMP"). A valve's actuator is drawn on a stem perpendicular to the pipe. Two triangles meeting at their tips are a valve body; a filled triangle marks the outlet side of a check valve."""
 

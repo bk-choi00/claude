@@ -1,12 +1,14 @@
 """Text roles, ownership and drawing information.
 
 Roles (first rule that applies): title block / frame margin, notes, legend,
-inside an instrument bubble, inside or at the tip of an off-page connector, line
+inside an instrument bubble, inside or right beside an off-page connector, line
 number, tag (valve / equipment / instrument patterns), label (free text such as
-equipment names). Tags are assigned to symbols with a global one-to-one
-assignment (Hungarian) over distance + compatibility + side-preference costs, so
-a crowded tag cannot be "stolen" by a closer but less suitable symbol; line
-numbers go to the nearest parallel pipe segment.
+equipment names and ratings). Tags are assigned to symbols with a global
+one-to-one assignment (Hungarian) over distance + centre offset + compatibility +
+side-preference costs, so a crowded tag cannot be "stolen" by a closer but less
+suitable symbol; line numbers go to the nearest parallel pipe segment; stacked
+label lines become an equipment's ``name`` (first line) and ``rating``.
+Title-block fields are read from labelled table cells.
 """
 
 from __future__ import annotations

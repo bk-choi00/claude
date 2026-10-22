@@ -28,11 +28,11 @@ from typing import Any, Optional
 import networkx as nx
 
 from ..llm.base import LLMClient, LLMError, Message
-from ..model import LLMUsage, PIDDocument, SymbolClass
+from ..model import LLMUsage, PIDDocument
 from .heuristic import (Neighbor, default_routing, doc_system, drawing_positions, equipment_adjacency,
                         flow_order, heuristic_plan, object_labels, object_systems, pipe_medium, process_pipes)
-from .plan import (LayoutPlan, LayoutPlanDraft, PlanItem, PlanItemDraft, RoutingPlan, check_plan, is_optional_planned,
-                   is_planned, sanitize_items)
+from .plan import (LayoutPlan, LayoutPlanDraft, PlanItem, RoutingPlan, check_plan, is_optional_planned, is_planned,
+                   sanitize_items)
 from .solver import object_size, solve_detailed
 from .zones import DECK_NAMES, LONGITUDINALS, SIDES, ZONE_ALLOWED_DECKS, ZONE_DECK, ZONE_NAMES, EngineRoom
 
@@ -107,7 +107,9 @@ class GemmaLayoutPlanner:
     """Gemma-driven arrangement planner with solver feedback and heuristic fallback."""
 
     def __init__(self, client: LLMClient, max_rounds: int = 3, chunk_size: int = 60, thinking: bool = True,
-                 max_tokens: Optional[int] = None, max_feedback_lines: int = 40):
+                 max_tokens: Optional[int] = 12000, max_feedback_lines: int = 40):
+        """``max_tokens`` covers thinking plus the JSON plan (~70 tokens per item); a 60-item chunk
+        prompt is ~12k tokens, so prompt + answer stay within a 32k context (vLLM recipe)."""
         self.client = client
         self.max_rounds = max(0, int(max_rounds))
         self.chunk_size = max(4, int(chunk_size))
@@ -122,7 +124,6 @@ class GemmaLayoutPlanner:
     def plan(self, doc: PIDDocument, room: EngineRoom) -> tuple[LayoutPlan, LLMUsage]:
         before = self.client.usage.model_copy(deep=True)
         errors: list[str] = []
-        objs = doc.object_by_id()
         required = [o.id for o in doc.objects if is_planned(o)]
         optional = [o.id for o in doc.objects if is_optional_planned(o)]
         candidates = required + optional
@@ -156,7 +157,8 @@ class GemmaLayoutPlanner:
         n_model = sum(1 for it in final if it.source == self.label)
         planner = self.label if n_model else "heuristic"
         plan = LayoutPlan(items=final, routing=self._merge_routing(doc, routing), planner=planner,
-                          notes=[f"{self.label} planned {n_model}/{len(final)} items in {len(chunks)} chunk(s)"] + notes)
+                          notes=[f"{self.label} planned {n_model}/{len(final)} items in {len(chunks)} chunk(s)"]
+                          + notes)
         usage = self._usage_delta(before, errors)
         return plan, usage
 
@@ -303,7 +305,8 @@ class GemmaLayoutPlanner:
         """Heuristic items for required ids not yet placed (anchors kept only if already placed)."""
         have = {it.object_id for it in placed}
         out: list[PlanItem] = []
-        for oid in [i for i in ref_items if i in set(required)]:
+        wanted = set(required)
+        for oid in [i for i in ref_items if i in wanted]:
             if oid in have:
                 continue
             it = ref_items[oid]

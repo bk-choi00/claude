@@ -6,7 +6,15 @@ import json
 
 import pytest
 
-from shippid.evaluate import evaluate_dataset, evaluate_document, match_boxes, norm_text, prf, write_eval_report
+from shippid.evaluate import (
+    evaluate_dataset,
+    evaluate_document,
+    length_prf,
+    match_boxes,
+    norm_text,
+    prf,
+    write_eval_report,
+)
 from shippid.model import (
     ActuatorType,
     BBox,
@@ -173,6 +181,29 @@ def test_dataset_micro_macro_and_per_class(gt, pred):
     assert r["confusion"]["gate_valve"] == {"globe_valve": 1, "gate_valve": 1}
     assert [d["source"] for d in r["documents"]] == ["gt", "gt"]
     assert r["documents"][0]["detection_f1"] == 0.5
+
+
+def test_length_prf_matches_prf_semantics():
+    assert length_prf(0, 0, 0, 30) == {"precision": None, "recall": 0.0, "f1": 0.0}  # nothing predicted
+    assert length_prf(0, 20, 0, 0) == {"precision": 0.0, "recall": None, "f1": 0.0}  # nothing to find
+    assert length_prf(0, 0, 0, 0) == {"precision": None, "recall": None, "f1": None}
+    assert length_prf(0, 10, 0, 10)["f1"] == 0.0
+    assert length_prf(20, 50, 20, 30)["f1"] == pytest.approx(0.5)
+
+
+def test_document_without_predicted_pipes_scores_zero_pipe_f1(gt):
+    nopipes = gt.model_copy(deep=True)
+    nopipes.pipes = []
+    pr = evaluate_document(nopipes, gt)["pipes"]["process"]
+    assert pr["precision"] is None and pr["recall"] == 0.0 and pr["f1"] == 0.0
+    assert evaluate_document(nopipes, gt)["pipes"]["signal"]["f1"] is None  # no signal lines on either side
+    r = evaluate_dataset([(gt, gt), (nopipes, gt)])
+    # the empty prediction is averaged in (F1 0), not dropped from the macro mean
+    assert r["macro"]["pipes_process"] == {"precision": 1.0, "recall": 0.5, "f1": 0.5}
+    assert r["micro"]["pipes_process"]["f1"] == pytest.approx(2 / 3)
+    assert r["macro"]["pipes_signal"]["f1"] is None
+    r = evaluate_dataset([(nopipes, gt)])
+    assert r["micro"]["pipes_process"] == {"precision": None, "recall": 0.0, "f1": 0.0}
 
 
 def test_empty_dataset():

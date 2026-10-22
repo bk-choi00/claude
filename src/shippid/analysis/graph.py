@@ -452,11 +452,13 @@ class FlowNet:
         return pin not in OUTLET_PORTS and pout not in INLET_PORTS
 
     def search(self, start: str, in_pipe: Optional[str] = None, *, blocked: Iterable[str] = (),
-               depart: Optional[Callable[[Link], bool]] = None) -> Search:
+               stop: Iterable[str] = (), depart: Optional[Callable[[Link], bool]] = None) -> Search:
         """BFS over (node, arrival pipe) states from ``start`` (entered by ``in_pipe``),
         honouring pipe flow direction and directional objects; ``blocked`` nodes are never
-        entered, ``depart`` filters the first pipe."""
+        entered, ``stop`` nodes are reached but not passed through, ``depart`` filters the
+        first pipe."""
         blocked = set(blocked)
+        stop = set(stop)
         s0: State = (start, in_pipe)
         res = Search(start=s0)
         res.parent[s0] = None
@@ -466,7 +468,7 @@ class FlowNet:
         while q:
             st = q.popleft()
             n, ip = st
-            if st != s0 and (n == start or not self.passable(n)):
+            if st != s0 and (n == start or n in stop or not self.passable(n)):
                 continue
             pin = self.port_of.get((n, ip)) if ip else None
             for lk in self.adj.get(n, ()):

@@ -169,8 +169,9 @@ def pipe_direction(pipe: PipeRun) -> Optional[int]:
     if pipe.flow_direction in (1, -1):
         return pipe.flow_direction
     sp, ep = (pipe.start.port or "").lower(), (pipe.end.port or "").lower()
-    fwd = (pipe.start.object_id is not None and sp in _OUT_PORTS) or (pipe.end.object_id is not None and ep in _IN_PORTS)
-    back = (pipe.start.object_id is not None and sp in _IN_PORTS) or (pipe.end.object_id is not None and ep in _OUT_PORTS)
+    s_obj, e_obj = pipe.start.object_id is not None, pipe.end.object_id is not None
+    fwd = (s_obj and sp in _OUT_PORTS) or (e_obj and ep in _IN_PORTS)
+    back = (s_obj and sp in _IN_PORTS) or (e_obj and ep in _OUT_PORTS)
     if fwd and not back:
         return 1
     if back and not fwd:
@@ -391,7 +392,8 @@ def _rule(obj: PIDObject, label: str, uv: tuple[float, float]) -> dict:
         elif _DB_TANK.search(up):
             r.update(zone="double_bottom", rationale="double-bottom tank (drains by gravity, lowest point)")
         else:
-            r.update(zone="tank_top", side=_outer_side(side, v), rationale="storage tank at the ship side on the tank top")
+            r.update(zone="tank_top", side=_outer_side(side, v),
+                     rationale="storage tank at the ship side on the tank top")
     elif cls == S.SEA_CHEST:
         r.update(zone="bottom", side=nside or _outer_side(side, v), longitudinal="aft" if u < 0.5 else "mid",
                  rationale="sea chest in the hull bottom (low) / side (high) below the waterline")

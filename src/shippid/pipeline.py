@@ -20,10 +20,13 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import TYPE_CHECKING, Any, Iterable, Optional
 
 from .config import Config, load_config
 from .model import AnalysisReport, Layout3D, PIDDocument
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .llm.base import LLMClient
 
 log = logging.getLogger(__name__)
 
@@ -61,9 +64,11 @@ def run_pipeline(
     planner: str = "auto",  # auto | gemma | heuristic
     viewer: str = "threejs",  # threejs | plotly | both
     stages: Iterable[str] = ("extract", "refine", "analyze", "model3d", "report"),
+    client: Optional["LLMClient"] = None,
 ) -> RunResult:
     """Run the selected stages on one PDF. With ``cfg.llm.backend == 'none'`` every
-    Gemma step is skipped and the deterministic path is used (recorded in the outputs)."""
+    Gemma step is skipped and the deterministic path is used (recorded in the outputs).
+    ``client`` overrides the client built from ``cfg`` (tests, custom backends)."""
     cfg = cfg or load_config()
     stages = set(stages)
     out = Path(out_dir)
@@ -71,7 +76,7 @@ def run_pipeline(
     timings: dict[str, float] = {}
     paths: dict[str, Path] = {}
 
-    client = _client(cfg)
+    client = client if client is not None else _client(cfg)
     analyzer = None
     if client is not None:
         from .analysis.gemma import GemmaAnalyzer

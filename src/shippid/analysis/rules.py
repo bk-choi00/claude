@@ -112,6 +112,7 @@ class RuleContext:
         self.objs = doc.object_by_id()
         self._links: dict[tuple[str, frozenset], list[Link]] = {}
         self._pump_fwd: dict[str, Search] = {}
+        self._pump_flow: dict[str, Search] = {}
         self._passed: dict[str, set[str]] = {}
 
     # -- lookups -----------------------------------------------------------------
@@ -201,14 +202,25 @@ class RuleContext:
         return order, arrival
 
     def pump_forward(self, p: str) -> Search:
-        """Forward flow search from a driver's discharge, not entering other drivers."""
+        """Forward search along a driver's discharge branches: other drivers are never entered
+        and relief valves are reached but not passed through (a relief valve back to the suction
+        must not make the suction header look like part of the discharge)."""
         if p not in self._pump_fwd:
             drivers = set(self.ids(*DRIVER_CLASSES)) - {p}
-            self._pump_fwd[p] = self.net.search(p, blocked=drivers, depart=lambda lk: lk.port not in INLET_PORTS)
+            self._pump_fwd[p] = self.net.search(p, blocked=drivers, stop=self.ids(S.SAFETY_VALVE),
+                                                depart=lambda lk: lk.port not in INLET_PORTS)
         return self._pump_fwd[p]
 
+    def pump_flow(self, p: str) -> Search:
+        """Everywhere a driver's discharge can flow (relief valves passed when lifting), not
+        entering other drivers."""
+        if p not in self._pump_flow:
+            drivers = set(self.ids(*DRIVER_CLASSES)) - {p}
+            self._pump_flow[p] = self.net.search(p, blocked=drivers, depart=lambda lk: lk.port not in INLET_PORTS)
+        return self._pump_flow[p]
+
     def passed(self, p: str) -> set[str]:
-        """Nodes the forward search from driver ``p`` passes through (not merely reaches)."""
+        """Nodes the discharge-branch search from driver ``p`` passes through (not merely reaches)."""
         if p not in self._passed:
             res = self.pump_forward(p)
             self._passed[p] = {parent[0][0] for parent in res.parent.values() if parent} - {p}
@@ -216,6 +228,9 @@ class RuleContext:
 
 
 # --------------------------------------------------------------------------- registry
+
+
+_DOUBLE_STOP_RE = re.compile(r"(?<!\.)\.\.(?!\.)(?=\s|$)")
 
 
 @dataclass(frozen=True)
@@ -237,6 +252,7 @@ class Rule:
                 severity = Severity.WARNING if self.severity == Severity.ERROR else Severity.INFO
             else:
                 severity = Severity.INFO
+        description = _DOUBLE_STOP_RE.sub(".", description)  # names ending in "." ("NO.2 AIR COMP.") + full stop
         return Finding(id="", rule_id=self.rule_id, verdict=verdict, severity=severity, title=title or self.title,
                        description=description, object_ids=list(dict.fromkeys(object_ids)),
                        reference=self.reference, source="rule", confidence=max(0.0, min(1.0, confidence)))
@@ -282,9 +298,25 @@ def run_rules(doc: PIDDocument, G: Optional[nx.MultiGraph] = None, *, context: O
 
 _FIRE_RE = re.compile(r"FIRE|소화")
 _NOT_FIRE_PUMP_RE = re.compile(r"JOCKEY|PRIMING|STRIPPING|TRANSFER|FEED|CIRC|BOOSTER|SUPPLY")
-_BILGE_RE = re.compile(r"BILGE|\bWELL\b|COFFERDAM|빌지")
-_NOT_WELL_RE = re.compile(r"HOLDING|SLUDGE|SEPARATED|WASTE|\bOIL|OILY|SEWAGE|OVERFLOW|DRAIN\s*T|HOT\s*WELL|CASCADE")
+_BILGE_WORD_RE = re.compile(r"BILGE|빌지")
+# positive evidence of a bilge suction point: wells, cofferdams, compartments / spaces
+_WELL_RE = re.compile(
+    r"WELL\b|BILGE\s*SUCTION|COFFERDAM|DUCT\s*KEEL|PIPE\s*DUCT|CHAIN\s*LOCKER|THRUSTER\s*R(?:OO)?M|STEERING\s*GEAR|"
+    r"PUMP\s*R(?:OO)?M|\bE/R\b|ENGINE\s*R(?:OO)?M|\bHOLD\b|TUNNEL|\bVOID\b|\bSPACE\b|\bROOM\b|COMP'?T\b|COMPARTMENT|"
+    r"웰|코퍼댐|구역")
+# oily-water process / storage tanks that merely carry "BILGE" in their name
+_NOT_WELL_RE = re.compile(
+    r"HOLDING|SLUDGE|SEPARATED|WASTE|\bOIL|OILY|SEWAGE|OVERFLOW|DRAIN\s*T|HOT\s*WELL|CASCADE|PRIMARY|SETTLING|SETT\b|"
+    r"WATER\s*(?:TK|TANK)\b|SEPARATOR|STORAGE|\bSTOR\b|핫\s*웰|침전|저장")
+_TANK_WORD_RE = re.compile(r"\bTK\b|TANK|탱크")
 _BILGE_PUMP_EXCL_RE = re.compile(r"SEPARATOR|\bO\.?W\.?S\b|FEED|SLUDGE")
+_DOUBLE_BOTTOM_RE = re.compile(r"\(D\.?\s?B\.?\)|\bD\.\s?B\b\.?|\bDB\b|DOUBLE\s*BOTTOM|이중저")
+_REMOTE_ACTUATORS = frozenset({ActuatorType.HYDRAULIC, ActuatorType.ELECTRIC, ActuatorType.DIAPHRAGM})
+_DISTILLATE_RE = re.compile(r"\bM\.?\s?D\.?\s?O\b|\bM\.?\s?G\.?\s?O\b|\bD\.?\s?O\b|DIESEL|GAS\s*OIL|\bDM[ABZ]\b|경유")
+# auxiliary air plant that does not count towards the main-engine starting-air requirement
+_NOT_START_AIR_RE = re.compile(
+    r"EMERG|EM'CY|EMCY|SERVICE|\bSERV\b|WORKING|GENERAL|\bG/S\b|CONTROL|\bCONT\b|INSTRUMENT|\bINSTR?\b|TOPPING|"
+    r"\bG/E\b|\bD/G\b|GENERATOR|AUX|DECK|비상|잡용|제어|계장|발전기")
 _FUEL_LUBE_RE = re.compile(
     r"\bF\.?\s?O\b|FUEL|\bH\.?\s?F\.?\s?O\b|\bM\.?\s?D\.?\s?O\b|\bM\.?\s?G\.?\s?O\b|\bD\.?\s?O\b|\bL\.?\s?O\b|LUB|"
     r"DIESEL|GAS\s*OIL|VLSFO|ULSFO|LSHFO|L\.S\.H\.F\.O|연료|윤활")
@@ -353,18 +385,35 @@ def _fire_pumps(ctx: RuleContext) -> list[str]:
     return out
 
 
+def _well_kind(label: str, bilge_dwg: bool) -> Optional[str]:
+    """``"well"`` (a bilge suction point), ``"uncertain"`` or ``None`` (not a bilge suction) for a
+    tank label. Oily-water process tanks (holding / primary / settling ...) are never wells; a
+    name with BILGE but no tank word ("E/R BILGE (P)") is a compartment bilge; WELL / COFFERDAM /
+    compartment names count on bilge drawings; other BILGE ... TK names are uncertain."""
+    if _NOT_WELL_RE.search(label):
+        return None
+    bilge = bool(_BILGE_WORD_RE.search(label))
+    if _WELL_RE.search(label):
+        return "well" if (bilge or bilge_dwg) else None
+    if bilge:
+        return "uncertain" if _TANK_WORD_RE.search(label) else "well"
+    return None
+
+
 def _bilge_wells(ctx: RuleContext) -> tuple[list[str], set[str]]:
-    """Bilge suction wells (tanks named BILGE WELL / COFFERDAM ...); unnamed tanks on a bilge
-    drawing are included as uncertain."""
+    """Bilge suction points (tanks named BILGE WELL / COFFERDAM / compartment bilges); unnamed
+    tanks on a bilge drawing and BILGE-named tanks of unclear purpose are included as uncertain."""
     wells, uncertain = [], set()
     bilge_dwg = ctx.has_system(ST.BILGE) or not ctx.systems_known
     for t in ctx.ids(S.TANK):
         lab = ctx.label(t)
         if lab:
-            if _NOT_WELL_RE.search(lab):
+            kind = _well_kind(lab, bilge_dwg)
+            if kind is None:
                 continue
-            if re.search(r"BILGE|빌지", lab) or (bilge_dwg and _BILGE_RE.search(lab)):
-                wells.append(t)
+            wells.append(t)
+            if kind == "uncertain":
+                uncertain.add(t)
         elif ctx.has_system(ST.BILGE):
             wells.append(t)
             uncertain.add(t)
@@ -526,12 +575,16 @@ def _r_pd_relief(ctx: RuleContext, r: Rule) -> list[Finding]:
         for q in ctx.ids(*PUMP_CLASSES):
             if q != p:
                 common |= ctx.passed(q)
-        own, shared = [], []
+        own, shared, reversed_ = [], [], []
         for n in fwd.by_node:
-            if n != p and ctx.is_obj(n) and ctx.eff(n) == S.SAFETY_VALVE:
-                st = fwd.best(n)
-                nodes, _ = fwd.path(st)
-                (shared if any(m in common for m in nodes[1:-1]) else own).append(n)
+            if n == p or not ctx.is_obj(n) or ctx.eff(n) != S.SAFETY_VALVE:
+                continue
+            good = [st for st in fwd.states_at(n) if ctx.net.port_of.get(st) not in OUTLET_PORTS]
+            if not good:  # reached only at its outlet: drawn reversed, it cannot relieve the discharge
+                reversed_.append(n)
+                continue
+            nodes, _ = fwd.path(good[0])
+            (shared if any(m in common for m in nodes[1:-1]) else own).append(n)
         if own:
             out.append(r.make(V.PASS, f"{name}: relief valve {ctx.names(own)} on the discharge side.", [p, *own],
                               ctx.conf([p, *own])))
@@ -539,6 +592,10 @@ def _r_pd_relief(ctx: RuleContext, r: Rule) -> list[Finding]:
             out.append(r.make(V.PASS, f"{name}: only a shared relief valve {ctx.names(shared)} downstream of the "
                                       f"common header protects this pump; verify it cannot be isolated from the pump.",
                               [p, *shared], 0.7 * ctx.conf([p, *shared])))
+        elif reversed_:
+            out.append(r.make(V.FAIL, f"{name}: relief valve {ctx.names(reversed_)} is drawn reversed (its outlet faces "
+                                      f"the pump discharge), so it cannot relieve the discharge side.",
+                              [p, *reversed_], ctx.conf([p, *reversed_])))
         else:
             out.append(r.make(V.FAIL, f"{name}: no relief valve found on the discharge side. Required unless the pump "
                                       f"has a built-in relief valve (state it on the drawing).", [p], ctx.conf([p])))
@@ -561,7 +618,8 @@ def _r_qc_valve(ctx: RuleContext, r: Rule) -> list[Finding]:
             if cap is not None and cap < 500:
                 continue
             if _FUEL_LUBE_RE.search(lab) or ((fo_lo_sys or oily) and _QC_FUNC_RE.search(lab)):
-                tanks.append((t, 1.0 if _QC_FUNC_RE.search(lab) else 0.7, "named"))
+                kind = "double_bottom" if _DOUBLE_BOTTOM_RE.search(lab) else "named"
+                tanks.append((t, 1.0 if _QC_FUNC_RE.search(lab) else 0.7, kind))
         elif fo_lo_sys or oily:
             tanks.append((t, 0.5, "unnamed"))
     if not tanks:
@@ -571,40 +629,50 @@ def _r_qc_valve(ctx: RuleContext, r: Rule) -> list[Finding]:
     out = []
     for t, cf, kind in tanks:
         name = ctx.name(t)
+        if kind == "double_bottom":
+            out.append(r.make(V.NOT_APPLICABLE, f"{name} is a double-bottom tank; the quick-closing requirement "
+                                                f"applies to FO/LO tanks situated above the double bottom.", [t],
+                              cf * ctx.conf([t])))
+            continue
         lks = ctx.links(t)
         if not lks:
             out.append(r.make(V.INSUFFICIENT_DATA, f"{name} has no pipe connections.", [t], cf * ctx.conf([t])))
             continue
-        bad, unknown, good, inlet_only = [], [], [], []
+        bad, unknown, good, remote, inlet_only = [], [], [], [], []
         for lk in lks:
             res = ctx.net.search(t, depart=lambda x, pid=lk.pipe_id: x.pipe_id == pid)
             outlet = any(_driver_crossable_states(ctx, res, d) for d in drivers)
-            inlet = any((t, lk.pipe_id) in ctx.pump_forward(d).parent for d in drivers)
+            inlet = any((t, lk.pipe_id) in ctx.pump_flow(d).parent for d in drivers)
             order, _ = ctx.reach(t, via=lambda x, pid=lk.pipe_id: x.pipe_id == pid,
                                  passable=lambda n: ctx.is_junction(n) or (ctx.is_obj(n) and ctx.cat(n) == Category.FITTING))
             first_valves = [n for n in order if _is_valve(ctx, n)]
             open_to = [n for n in order if ctx.is_obj(n) and not _is_valve(ctx, n) and ctx.cat(n) != Category.FITTING
                        and ctx.cat(n) != Category.INSTRUMENT]
             qc = [v for v in first_valves if ctx.node(v).get("actuator") == ActuatorType.QUICK_CLOSING]
-            non_qc = [v for v in first_valves if v not in qc]
+            rem = [v for v in first_valves if ctx.node(v).get("actuator") in _REMOTE_ACTUATORS]
+            manual = [v for v in first_valves if v not in qc and v not in rem]
             if outlet:
-                if non_qc or open_to or not first_valves:
-                    bad.append((lk.pipe_id, non_qc, open_to))
+                if manual or open_to or not first_valves:
+                    bad.append((lk.pipe_id, manual, open_to))
                 else:
                     good.extend(qc)
+                    remote.extend(rem)
             elif inlet:
                 inlet_only.append(lk.pipe_id)
-            elif qc and not non_qc and not open_to:
+            elif first_valves and not manual and not open_to:
                 good.extend(qc)
+                remote.extend(rem)
             else:
-                unknown.append((lk.pipe_id, non_qc, open_to))
-        involved = [t] + good + [v for _, vs, _ in bad + unknown for v in vs]
+                unknown.append((lk.pipe_id, manual, open_to))
+        involved = [t] + good + remote + [v for _, vs, _ in bad + unknown for v in vs]
         conf = cf * ctx.conf(involved)
         if bad:
             parts = []
             for pid, vs, open_to in bad:
                 if vs:
-                    parts.append(f"outlet {pid}: first valve {ctx.names(vs)} is not quick-closing")
+                    acts = ", ".join(sorted({_value(ctx.node(v).get("actuator") or ActuatorType.NONE) for v in vs}))
+                    parts.append(f"outlet {pid}: first valve {ctx.names(vs)} is not quick-closing or remotely "
+                                 f"operated (actuator: {acts})")
                 elif open_to:
                     parts.append(f"outlet {pid}: no valve before {ctx.names(open_to)}")
                 else:
@@ -613,11 +681,19 @@ def _r_qc_valve(ctx: RuleContext, r: Rule) -> list[Finding]:
             note = " (tank is unnamed; confirm it is a storage/settling/service tank)" if kind == "unnamed" else ""
             out.append(r.make(verdict, f"{name}: " + "; ".join(parts) + note +
                               ". Outlet valves of FO/LO tanks above the double bottom must be closable from outside "
-                              "the space (quick-closing).", involved, conf))
+                              "the space (quick-closing or remotely operated); double-bottom tanks are exempt.",
+                              involved, conf))
         elif unknown:
             out.append(r.make(V.INSUFFICIENT_DATA, f"{name}: flow direction of {', '.join(p for p, _, _ in unknown)} "
-                                                   f"cannot be determined and its first valve is not quick-closing.",
-                              involved, conf))
+                                                   f"cannot be determined and its first valve is not quick-closing or "
+                                                   f"remotely operated.", involved, conf))
+        elif remote:
+            what = f"remotely operated valve {ctx.names(dict.fromkeys(remote))}"
+            if good:
+                what = f"quick-closing valve {ctx.names(dict.fromkeys(good))} and " + what
+            out.append(r.make(V.PASS, f"{name}: {what} directly on the tank outlet; verify that the remote closing "
+                                      f"position is outside the space and that the valve can be closed from there in "
+                                      f"the event of a fire.", involved, 0.8 * conf))
         elif good:
             out.append(r.make(V.PASS, f"{name}: quick-closing valve {ctx.names(dict.fromkeys(good))} directly on the "
                                       f"tank outlet.", involved, conf))
@@ -637,11 +713,31 @@ def _r_fo_service(ctx: RuleContext, r: Rule) -> list[Finding]:
         return [r.na("Not a fuel oil supply / service drawing.")]
     if not tanks:
         return [_none_shown(ctx, r, ST.FUEL_OIL_SUPPLY, "named fuel oil service tank")]
-    if len(tanks) >= 2:
-        return [r.make(V.PASS, f"{len(tanks)} fuel oil service tanks: {ctx.names(tanks)}.", tanks, ctx.conf(tanks))]
-    return [r.make(V.FAIL, f"Only one fuel oil service tank ({ctx.names(tanks)}); two service tanks for each fuel type "
-                           f"(or an equivalent arrangement) are required. Verify other drawings.", tanks,
-                   ctx.conf(tanks))]
+    dist = [t for t in tanks if _DISTILLATE_RE.search(ctx.label(t))]
+    resid = [t for t in tanks if t not in dist]  # HFO / LSHFO / VLSFO and plain "F.O."
+    conf = ctx.conf(tanks)
+    groups = "; ".join(f"{label}: {ctx.names(ts)}" for label, ts in (("residual", resid), ("distillate", dist)) if ts)
+    if len(tanks) == 1:
+        return [r.make(V.FAIL, f"Only one fuel oil service tank ({ctx.names(tanks)}); two service tanks for each type "
+                               f"of fuel used for propulsion and vital systems (or an equivalent arrangement) are "
+                               f"required. Verify other drawings.", tanks, conf)]
+    if all(len(g) >= 2 for g in (resid, dist) if g):
+        return [r.make(V.PASS, f"At least two service tanks for each fuel type ({groups}).", tanks, conf)]
+    if len(resid) >= 2:  # one distillate tank: the UI SC123 standard arrangement (cold start / flushing)
+        return [r.make(V.PASS, f"Two or more residual fuel service tanks and one distillate service tank ({groups}). "
+                               f"Sufficient when the distillate is only used for cold starting / repair work; if it "
+                               f"also serves propulsion or generators (e.g. ECA operation), two distillate service "
+                               f"tanks are required.", tanks, 0.7 * conf)]
+    if len(dist) >= 2:  # one residual tank backed by two distillate tanks: UI SC123 equivalent arrangement
+        return [r.make(V.PASS, f"One residual fuel service tank backed by {len(dist)} distillate service tanks "
+                               f"({groups}): equivalent arrangement under IACS UI SC123 provided the distillate tanks "
+                               f"can supply propulsion, generators and boilers at full load for 8 h - verify the "
+                               f"capacities.", tanks, 0.6 * conf)]
+    return [r.make(V.INSUFFICIENT_DATA, f"Only one service tank per fuel type ({groups}). SOLAS II-1/26.11 requires "
+                                        f"two per fuel type; one residual plus one distillate tank is acceptable only "
+                                        f"as an equivalent arrangement (IACS UI SC123) where each tank can supply "
+                                        f"propulsion, generators and boilers at full load for 8 h, which cannot be "
+                                        f"verified from this drawing.", tanks, conf, severity=Severity.WARNING)]
 
 
 @rule("R_BILGE_SUCTION_NRV", "Non-return valve on every bilge suction branch", "빌지 흡입 분기관 역지(SDNR) 밸브",
@@ -672,9 +768,9 @@ def _r_bilge_nrv(ctx: RuleContext, r: Rule) -> list[Finding]:
             out.append(r.make(V.PASS, f"{name}: suction branch protected by non-return valve {ctx.names(found)}.",
                               [w, *found], conf))
         elif w in uncertain:
-            out.append(r.make(V.INSUFFICIENT_DATA, f"Unnamed tank {name} reaches {ctx.names(leaks)} without a "
-                                                   f"non-return valve; confirm whether it is a bilge suction.",
-                              [w, *leaks], conf))
+            what = f"Tank {name} (not named as a bilge well)" if ctx.label(w) else f"Unnamed tank {name}"
+            out.append(r.make(V.INSUFFICIENT_DATA, f"{what} reaches {ctx.names(leaks)} without a non-return valve; "
+                                                   f"confirm whether it is a bilge suction.", [w, *leaks], conf))
         else:
             out.append(r.make(V.FAIL, f"{name}: suction branch reaches {ctx.names(leaks)} without a screw-down "
                                       f"non-return / check valve; back-flooding of the compartment is possible.",
@@ -685,14 +781,18 @@ def _r_bilge_nrv(ctx: RuleContext, r: Rule) -> list[Finding]:
 @rule("R_BILGE_PUMPS_MIN2", "At least two power bilge pumps", "동력 빌지 펌프 2대 이상", Severity.WARNING,
       "SOLAS II-1/35-1 (number of power bilge pumps)")
 def _r_bilge_pumps(ctx: RuleContext, r: Rule) -> list[Finding]:
-    wells, _ = _bilge_wells(ctx)
+    wells, uncertain = _bilge_wells(ctx)
     if not (ctx.has_system(ST.BILGE) or (not ctx.systems_known and wells)):
         return [r.na("Not a bilge drawing.")]
     pumps: list[str] = []
-    for w in wells:
-        res = ctx.net.search(w)
-        pumps += [p for p in ctx.ids(*PUMP_CLASSES) if _driver_crossable_states(ctx, res, p)]
-    pumps = [p for p in dict.fromkeys(pumps) if not _BILGE_PUMP_EXCL_RE.search(ctx.label(p))]
+    certain = [w for w in wells if w not in uncertain]
+    for group in (certain, [w for w in wells if w in uncertain]):  # uncertain suctions only as a fallback
+        for w in group:
+            res = ctx.net.search(w)
+            pumps += [p for p in ctx.ids(*PUMP_CLASSES) if _driver_crossable_states(ctx, res, p)]
+        pumps = [p for p in dict.fromkeys(pumps) if not _BILGE_PUMP_EXCL_RE.search(ctx.label(p))]
+        if pumps:
+            break
     basis = "connected to the bilge suctions"
     if not pumps:
         pumps = [p for p in ctx.ids(*PUMP_CLASSES)
@@ -806,7 +906,7 @@ def _r_sea_chests(ctx: RuleContext, r: Rule) -> list[Finding]:
       "씨체스트·빌지 흡입 펌프 전단 스트레이너", Severity.WARNING,
       "Class rules / good practice: sea suctions and bilge suctions fitted with strainers or mud boxes")
 def _r_strainer(ctx: RuleContext, r: Rule) -> list[Finding]:
-    wells, _ = _bilge_wells(ctx)
+    wells, uncertain = _bilge_wells(ctx)
     sources = ctx.ids(S.SEA_CHEST) + wells
     if not sources:
         return [r.na("No sea chests or bilge suctions on this drawing.")]
@@ -830,12 +930,21 @@ def _r_strainer(ctx: RuleContext, r: Rule) -> list[Finding]:
         if p not in fed:
             continue
         name = ctx.name(p)
-        if unstrained[p]:
-            out.append(r.make(V.FAIL, f"{name} draws from {ctx.names(unstrained[p])} without a strainer / mud box on "
-                                      f"the suction.", [p, *unstrained[p]], ctx.conf([p, *unstrained[p]])))
+        sure = [s for s in unstrained[p] if s not in uncertain]
+        cf = 0.5 if all(s in uncertain for s in fed[p]) else 1.0
+        if sure:
+            unsure = [s for s in unstrained[p] if s in uncertain]
+            extra = f" (also from {ctx.names(unsure)}, not confirmed as a bilge suction)" if unsure else ""
+            out.append(r.make(V.FAIL, f"{name} draws from {ctx.names(sure)} without a strainer / mud box on the "
+                                      f"suction{extra}.", [p, *sure, *unsure], ctx.conf([p, *sure])))
+        elif unstrained[p]:
+            out.append(r.make(V.INSUFFICIENT_DATA, f"{name} draws from {ctx.names(unstrained[p])} without a strainer / "
+                                                   f"mud box, but the tank is not confirmed as a bilge suction (unnamed "
+                                                   f"or not named as a bilge well).", [p, *unstrained[p]],
+                              0.5 * ctx.conf([p, *unstrained[p]])))
         else:
             out.append(r.make(V.PASS, f"{name}: every suction route from {ctx.names(fed[p])} passes a strainer.",
-                              [p, *fed[p]], ctx.conf([p])))
+                              [p, *fed[p]], cf * ctx.conf([p])))
     return out
 
 
@@ -926,32 +1035,39 @@ def _air_applicable(ctx: RuleContext) -> bool:
         not ctx.systems_known and bool(ctx.ids(S.COMPRESSOR) or ctx.ids(S.AIR_RECEIVER)))
 
 
+def _start_air_count(ctx: RuleContext, r: Rule, cls: SymbolClass, what: str) -> list[Finding]:
+    """Count main starting-air units of ``cls``; emergency / service / control / topping-up /
+    generator units are listed but not counted."""
+    if not _air_applicable(ctx):
+        return [r.na("Not a compressed / starting air drawing.")]
+    units = ctx.ids(cls)
+    if not units:
+        return [_none_shown(ctx, r, ST.COMPRESSED_AIR, f"air {what}")]
+    main = [u for u in units if not _NOT_START_AIR_RE.search(ctx.label(u))]
+    other = [u for u in units if u not in main]
+    excl = f" Not counted (emergency / service / control / auxiliary units): {ctx.names(other)}." if other else ""
+    unnamed = [u for u in main if not ctx.label(u)]
+    conf = ctx.conf(main or units) * (0.8 if unnamed else 1.0)
+    if len(main) >= 2:
+        return [r.make(V.PASS, f"{len(main)} main starting air {what}s: {ctx.names(main)}.{excl}", main, conf)]
+    if not main:
+        return [r.make(V.INSUFFICIENT_DATA, f"No main starting air {what} on this drawing; only {ctx.names(other)}, "
+                                            f"which do not count towards the starting-air requirement. The main "
+                                            f"starting air system may be on another drawing.", other, conf)]
+    return [r.make(V.FAIL, f"Only one main starting air {what} ({ctx.names(main)}); at least two are required.{excl}",
+                   main + other, conf)]
+
+
 @rule("R_START_AIR_COMPRESSORS_MIN2", "At least two starting air compressors", "시동 공기 압축기 2대 이상",
       Severity.WARNING, "Class rules (main engine starting air: two or more compressors)")
 def _r_air_comp(ctx: RuleContext, r: Rule) -> list[Finding]:
-    if not _air_applicable(ctx):
-        return [r.na("Not a compressed / starting air drawing.")]
-    comps = ctx.ids(S.COMPRESSOR)
-    if not comps:
-        return [_none_shown(ctx, r, ST.COMPRESSED_AIR, "air compressor")]
-    if len(comps) >= 2:
-        return [r.make(V.PASS, f"{len(comps)} air compressors: {ctx.names(comps)}.", comps, ctx.conf(comps))]
-    return [r.make(V.FAIL, f"Only one starting air compressor ({ctx.names(comps)}); at least two are required.", comps,
-                   ctx.conf(comps))]
+    return _start_air_count(ctx, r, S.COMPRESSOR, "compressor")
 
 
 @rule("R_START_AIR_RECEIVERS_MIN2", "At least two starting air receivers", "시동 공기 저장조 2기 이상",
       Severity.WARNING, "Class rules (main engine starting air: two or more receivers)")
 def _r_air_recv(ctx: RuleContext, r: Rule) -> list[Finding]:
-    if not _air_applicable(ctx):
-        return [r.na("Not a compressed / starting air drawing.")]
-    recs = ctx.ids(S.AIR_RECEIVER)
-    if not recs:
-        return [_none_shown(ctx, r, ST.COMPRESSED_AIR, "air receiver")]
-    if len(recs) >= 2:
-        return [r.make(V.PASS, f"{len(recs)} air receivers: {ctx.names(recs)}.", recs, ctx.conf(recs))]
-    return [r.make(V.FAIL, f"Only one starting air receiver ({ctx.names(recs)}); at least two are required.", recs,
-                   ctx.conf(recs))]
+    return _start_air_count(ctx, r, S.AIR_RECEIVER, "receiver")
 
 
 @rule("R_AIR_RECEIVER_RELIEF", "Safety valve on each air receiver", "공기 저장조 안전밸브", Severity.ERROR,
