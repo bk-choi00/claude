@@ -4,11 +4,12 @@ A CAD text entity (one tag, one line number, one label line) must come out as on
 line however the exporter wrote it:
 
 * **fragments** -- per-character or per-word text objects with explicit positions
-  are merged into the logical token: same reading direction and size, aligned
-  baselines, consecutive along the reading direction with a gap of at most
+  are merged into the logical token: same reading direction, font and font size,
+  aligned baselines, consecutive along the reading direction with a gap of at most
   :data:`FRAGMENT_GAP` em (a word space, also of monospaced fonts; a full-width space
-  between CJK characters), and no table rule between them. Texts further apart stay
-  separate (two tags side by side, neighbouring table cells).
+  between CJK characters), and no table rule between them. Texts further apart or in
+  another size stay separate (two tags side by side, a tag right after a label,
+  neighbouring table cells).
 * **invisible text** (render mode 3 / zero alpha) that duplicates visible text at the
   same place is dropped (it only groups the visible fragments it covers). Where no
   visible text exists it *is* the text layer: AutoCAD ``PDFSHX=2`` exports draw SHX
@@ -35,6 +36,7 @@ from ..pdf.reader import TextWord
 FRAGMENT_GAP = 0.66  # em: largest gap between two fragments of one text (a Courier space is 0.6 em)
 CJK_GAP = 1.1  # em: between CJK characters (full-width spaces)
 SPACE_GAP = 0.12  # em: a larger gap between two merged fragments stands for a space
+SIZE_TOL = 0.02  # fragments of one text have the same font size (relative tolerance)
 _CJK_RE = re.compile(r"[ᄀ-ᇿ　-ヿ㄰-㆏㐀-鿿가-힯豈-﫿＀-￯]")
 
 
@@ -140,8 +142,8 @@ def _concat(a: _Piece, b: _Piece, gap: float) -> _Piece:
 
 def _pdf_line_pieces(words: Sequence[TextWord], index: dict[int, int], gap_factor: float,
                      rules: "_Rules") -> list[_Piece]:
-    """Words of the same PDF text line, split at large gaps and at table rules (two separate
-    texts that happen to share a baseline stay separate)."""
+    """Words of the same PDF text line, split at large gaps, at a change of font size and at
+    table rules (two separate texts that happen to share a baseline stay separate)."""
     by_line: dict[int, list[TextWord]] = {}
     for w in words:
         by_line.setdefault(w.line, []).append(w)
@@ -152,7 +154,9 @@ def _pdf_line_pieces(words: Sequence[TextWord], index: dict[int, int], gap_facto
         for w in ws[1:]:
             prev = groups[-1][-1]
             size = max(prev.size, w.size, 1.0)
-            if _gap(prev, w) > gap_factor * size or w.rotation != prev.rotation or \
+            gap = _gap(prev, w)
+            if gap > gap_factor * size or w.rotation != prev.rotation or \
+                    (abs(prev.size - w.size) > SIZE_TOL * size and gap > SPACE_GAP * size) or \
                     rules.splits(prev.bbox, w.bbox, w.rotation, size):
                 groups.append([w])
             else:
@@ -205,11 +209,14 @@ def _cjk_pair(a: _Piece, b: _Piece) -> bool:
 
 def _link_gap(a: _Piece, b: _Piece) -> Optional[float]:
     """Gap (points) from ``a`` to ``b`` along the reading direction when ``b`` may continue
-    ``a`` (same direction and size, aligned), else None."""
+    ``a``, else None. Fragments of one text entity share its reading direction and font size
+    exactly and sit on one baseline; a neighbouring entity in another size (a tag written
+    right after an equipment label) is never joined, one in another font only when the two
+    touch without a space (font fallback inside a word) or both are CJK."""
     if a.rotation != b.rotation or a.rotation % 90:
         return None
     size = max(a.size, b.size, 1e-6)
-    if max(a.size, b.size) > 1.3 * max(min(a.size, b.size), 1e-6):
+    if abs(a.size - b.size) > SIZE_TOL * size:
         return None
     au0, au1, av0, av1 = a.uv
     bu0, bu1, bv0, bv1 = b.uv
@@ -218,7 +225,10 @@ def _link_gap(a: _Piece, b: _Piece) -> Optional[float]:
     if min(av1, bv1) - max(av0, bv0) < 0.6 * min(av1 - av0, bv1 - bv0):
         return None
     gap = bu0 - au1
-    limit = (CJK_GAP if _cjk_pair(a, b) else FRAGMENT_GAP) * size
+    cjk = _cjk_pair(a, b)
+    limit = (CJK_GAP if cjk else FRAGMENT_GAP) * size
+    if a.words[-1].font != b.words[0].font and not cjk:
+        limit = SPACE_GAP * size
     if gap < -0.25 * size or gap > limit or bu1 <= au1:
         return None
     return gap

@@ -101,7 +101,8 @@ def test_reader_shx_annotations(page_rot):
     assert all(w.annotation and not w.hidden for w in words.values())
     assert pc.n_annot_chars == len("V-101") + len("250A-FO-001") + len("TK-1")
     m = page.rotation_matrix
-    for text, rect in (("V-101", (100, 50, 140, 59)), ("250A-FO-001", (200, 50, 209, 110)), ("TK-1", (300, 201, 330, 210))):
+    expect = (("V-101", (100, 50, 140, 59)), ("250A-FO-001", (200, 50, 209, 110)), ("TK-1", (300, 201, 330, 210)))
+    for text, rect in expect:
         r = pymupdf.Rect(rect) * m
         r.normalize()
         assert words[text].bbox == pytest.approx((r.x0, r.y0, r.x1, r.y1), abs=0.01), text
@@ -118,8 +119,8 @@ def test_reader_shx_annotations(page_rot):
 
 
 def _arc_pts(cx, cy, r, a0, a1, n):
-    return [(cx + r * math.cos(math.radians(a0 + (a1 - a0) * k / n)), cy - r * math.sin(math.radians(a0 + (a1 - a0) * k / n)))
-            for k in range(n + 1)]
+    angles = [math.radians(a0 + (a1 - a0) * k / n) for k in range(n + 1)]
+    return [(cx + r * math.cos(a), cy - r * math.sin(a)) for a in angles]
 
 
 def test_arc_runs_find_arcs_not_waves_or_zigzags():
@@ -208,9 +209,13 @@ def test_fragmented_text_becomes_logical_tokens():
     _fragments(p, 200, 50, "V-101", mode="word")
     _fragments(p, 200 + pymupdf.get_text_length("V-101", fontsize=7) + 14, 50, "V-102", mode="char")  # 2 em apart
     _fragments(p, 50, 200, "1번 평형수 펌프", font="korea", mode="word")  # full-width spaces
+    # a tag written 0.4 em after an equipment label in another size: two texts
+    p.insert_text((50, 250), "M/E L.O. COOLER", fontsize=5.4, fontname="cour")
+    x_tag = 50 + pymupdf.get_text_length("M/E L.O. COOLER", fontname="cour", fontsize=5.4) + 2.4
+    p.insert_text((x_tag, 250), "V-LO-028", fontsize=6.0, fontname="cour")
     lines = build_lines(read_page(_reopen(d)).words)
     assert sorted(t.text for t in lines) == sorted(["FO-101V", "NO.1 BALLAST PUMP", "250A-BA-012", "V-101", "V-102",
-                                                    "1번 평형수 펌프"])
+                                                    "1번 평형수 펌프", "M/E L.O. COOLER", "V-LO-028"])
     assert next(t for t in lines if t.text == "250A-BA-012").rotation == 90
 
 
