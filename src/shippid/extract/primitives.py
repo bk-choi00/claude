@@ -200,7 +200,7 @@ class PrimSet:
                 prims[pid].ring = -1
                 prims[pid].closed = False
             del rings[rid]
-        return cls(prims, rings)
+        return cls(*_dedupe(prims, rings))
 
     # -- spatial queries -------------------------------------------------------
     def bbox_array(self, ids: Sequence[int]) -> np.ndarray:
@@ -221,6 +221,98 @@ class PrimSet:
 
     def distance(self, i: int, j: int) -> float:
         return prim_distance(self.prims[i], self.prims[j])
+
+
+DEDUPE_Q = 20.0  # coordinates are compared on a 0.05 pt grid
+
+
+def _dedupe(prims: list[Prim], rings: dict[int, Ring]) -> tuple[list[Prim], dict[int, Ring]]:
+    """Drop coincident duplicate primitives (CAD exports often draw an entity twice, or a
+    filled shape and its outline as two paths): identical rings / circles merge their
+    fill flags, open segments identical to another segment or to a ring edge go.
+    Prim ids and ring ids are renumbered."""
+
+    def q(v: float) -> int:
+        return int(round(v * DEDUPE_Q))
+
+    def seg_key(p: Prim) -> tuple:
+        a, b = (q(p.x0), q(p.y0)), (q(p.x1), q(p.y1))
+        return (a, b) if a <= b else (b, a)
+
+    drop: set[int] = set()
+    # rings with the same vertex set
+    ring_by_key: dict[tuple, int] = {}
+    for rid in sorted(rings):
+        ring = rings[rid]
+        key = (len(ring.pts), frozenset((q(x), q(y)) for x, y in ring.pts), ring.dashed)
+        keep = ring_by_key.get(key)
+        if keep is None:
+            ring_by_key[key] = rid
+            continue
+        kr = rings[keep]
+        if ring.filled and not kr.filled:
+            kr.filled = True
+            for pid in kr.prim_ids:
+                prims[pid].filled = True
+        for pid in ring.prim_ids:
+            k_w = prims[kr.prim_ids[0]]
+            k_w.width = max(k_w.width, prims[pid].width)
+            drop.add(pid)
+        del rings[rid]
+    # circles
+    circ_by_key: dict[tuple, int] = {}
+    for p in prims:
+        if p.kind != "circle":
+            continue
+        key = (q(p.cx), q(p.cy), q(p.r))
+        keep = circ_by_key.get(key)
+        if keep is None:
+            circ_by_key[key] = p.id
+            continue
+        k = prims[keep]
+        k.filled = k.filled or p.filled
+        k.dashed = k.dashed and p.dashed
+        k.width = max(k.width, p.width)
+        drop.add(p.id)
+    # open segments: duplicates of ring edges or of each other
+    edges = {seg_key(p) for p in prims if p.kind == "seg" and p.ring >= 0 and p.id not in drop}
+    seen: dict[tuple, int] = {}
+    for p in prims:
+        if p.kind != "seg" or p.ring >= 0 or p.id in drop:
+            continue
+        key = seg_key(p)
+        if key[0] == key[1]:
+            continue
+        if key in edges:
+            drop.add(p.id)
+            continue
+        keep = seen.get(key)
+        if keep is None:
+            seen[key] = p.id
+            continue
+        k = prims[keep]
+        k.dashed = k.dashed and p.dashed
+        k.width = max(k.width, p.width)
+        drop.add(p.id)
+    if not drop:
+        return prims, rings
+    new_id: dict[int, int] = {}
+    out: list[Prim] = []
+    for p in prims:
+        if p.id in drop:
+            continue
+        new_id[p.id] = len(out)
+        p.id = len(out)
+        out.append(p)
+    new_rings: dict[int, Ring] = {}
+    for k, rid in enumerate(sorted(rings)):
+        ring = rings[rid]
+        ring.id = k
+        ring.prim_ids = [new_id[i] for i in ring.prim_ids if i in new_id]
+        for i in ring.prim_ids:
+            out[i].ring = k
+        new_rings[k] = ring
+    return out, new_rings
 
 
 # --------------------------------------------------------------------------- geometry helpers

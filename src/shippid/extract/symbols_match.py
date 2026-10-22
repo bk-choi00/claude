@@ -13,7 +13,14 @@ stretchable equipment):
 * fine pass on the best variants: ICP refinement of scale/translation with
   KD-trees, exact soft chamfer on outlines and on filled regions.
 
-Score = F1(precision, recall) x fill agreement, in [0, 1].
+Score = F1(precision, recall) x fill agreement, in [0, 1]. Two priors make the score
+a plausibility rather than a pure shape fit:
+
+* structure: a symbol must explain most of the candidate's strokes and the candidate
+  must draw most of the symbol (``min(precision, recall) >= MIN_PR``), otherwise the
+  score is cut by ``STRUCT_PENALTY`` (a box without the strainer's diagonal, hatching);
+* size: stretchable equipment (tanks, engines ...) drawn smaller than a minimum size in
+  symbol units is penalised (a small box between two valves is not a main engine).
 """
 
 from __future__ import annotations
@@ -52,6 +59,14 @@ MAX_COARSE_CAND = 90  # candidate points used in the coarse pass
 FINE_TOP = 6
 ANISO_MAX = 1.3  # rigid symbols may be drawn with proportions off by this factor (yard styles)
 ANISO_PENALTY = 0.1  # score penalty at the maximum anisotropy (exact proportions preferred)
+MIN_PR = 0.78  # structural floor on min(precision, recall); correct matches measure >= 0.83
+STRUCT_PENALTY = 0.7  # score factor below the floor (keeps the class as a ranked alternative)
+# minimum plausible size (max dimension, symbol units) of stretchable equipment; smaller is penalised
+STRETCH_MIN_UNITS = {
+    SymbolClass.TANK: 1.2, SymbolClass.ENGINE: 1.5, SymbolClass.AIR_RECEIVER: 1.1,
+    SymbolClass.OILY_WATER_SEPARATOR: 1.0, SymbolClass.BWTS_UNIT: 1.1, SymbolClass.SEA_CHEST: 1.0,
+}
+STRETCH_MIN_DEFAULT = 1.0
 
 
 @dataclass
@@ -264,6 +279,8 @@ class TemplateLibrary:
         self.H = np.array([v.h for v in self.variants])
         self.Dv = np.maximum(self.W, self.H)
         self.stretch = np.array([v.stretchable for v in self.variants])
+        self.min_units = np.array([STRETCH_MIN_UNITS.get(v.cls, STRETCH_MIN_DEFAULT) if v.stretchable else 0.0
+                                   for v in self.variants])
         self.has_fill = np.array([len(v.fill_pts) > 0 for v in self.variants])
         self.cls_idx = np.array([list(SymbolClass).index(v.cls) for v in self.variants])
         # the coarse pass uses every k-th outline sample (about N_COARSE per max dimension)
@@ -375,20 +392,33 @@ def candidate_shape(prims, rings) -> CandidateShape:
     return cs
 
 
+ASPECT_STEP = 0.12  # log-aspect bucket of the cache key (~13 % proportion steps)
+
+
+def _norm_axes(w: float, h: float, D: float) -> tuple[float, float]:
+    """Per-axis normalisation lengths (thin shapes fall back to the max dimension)."""
+    return (w if w >= 0.08 * D else D, h if h >= 0.08 * D else D)
+
+
 def _prim_signature(prims, rings, bb, D: float) -> bytes:
-    """Order-independent, translation/scale-normalised description of the strokes;
-    identical symbol drawings get identical keys despite float noise."""
-    q = 48.0 / D
+    """Order-independent description of the strokes, normalised per axis to the bbox and
+    quantised; drawings of one symbol that differ only by translation, scale or a small
+    change of proportions (yard styles) share a key."""
+    w, h = bb[2] - bb[0], bb[3] - bb[1]
+    nx, ny = _norm_axes(w, h, D)
+    qx, qy = 48.0 / nx, 48.0 / ny
     items = []
     for p in prims:
         if p.kind == "circle":
-            items.append(("c", round((p.cx - bb[0]) * q), round((p.cy - bb[1]) * q), round(p.r * q), p.filled))
+            items.append(("c", round((p.cx - bb[0]) * qx), round((p.cy - bb[1]) * qy), round(p.r * qx), round(p.r * qy),
+                          p.filled))
         else:
-            a = (round((p.x0 - bb[0]) * q), round((p.y0 - bb[1]) * q))
-            b = (round((p.x1 - bb[0]) * q), round((p.y1 - bb[1]) * q))
+            a = (round((p.x0 - bb[0]) * qx), round((p.y0 - bb[1]) * qy))
+            b = (round((p.x1 - bb[0]) * qx), round((p.y1 - bb[1]) * qy))
             items.append(("s",) + (a + b if a <= b else b + a) + (p.filled,))
     items.sort()
-    head = (round((bb[2] - bb[0]) / D, 2), round((bb[3] - bb[1]) / D, 2), sum(1 for r in rings if r.filled))
+    aspect = round(math.log(max(w, 1e-3 * D) / max(h, 1e-3 * D)) / ASPECT_STEP)
+    head = (aspect, w < 0.08 * D, h < 0.08 * D, sum(1 for r in rings if r.filled))
     return repr((head, items)).encode()
 
 
@@ -400,11 +430,12 @@ def _soft(d: np.ndarray, tau: float) -> np.ndarray:
 
 
 def coarse_scores(lib: TemplateLibrary, cs: CandidateShape, unit: Optional[float] = None,
-                  max_rigid: Optional[float] = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+                  max_rigid: Optional[float] = None, size_prior: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Scores of every variant after bbox alignment. Returns (score, sx, sy).
 
-    ``max_rigid``: candidates larger than this (points) are only compared with
-    stretchable equipment templates."""
+    ``unit`` gates rigid symbols to a plausible scale (and, with ``size_prior``, applies
+    the size prior of stretchable equipment); ``max_rigid``: candidates larger than this
+    (points) are only compared with stretchable equipment templates."""
     V = len(lib)
     Wc, Hc = max(cs.w, 1e-6), max(cs.h, 1e-6)
     # transform: page = c_c + S * q  (q relative to the variant bbox centre)
@@ -468,7 +499,25 @@ def coarse_scores(lib: TemplateLibrary, cs: CandidateShape, unit: Optional[float
     c_fill = len(cs.fill_pts) > 0
     fill_factor = np.where(lib.has_fill[vsel] == c_fill, 1.0, 0.45)
     score[vsel] = f1 * fill_factor * aniso_pen[vsel]
+    if unit and size_prior:
+        score *= _size_factors(lib.min_units, cs.D, unit)
     return score, sx, sy
+
+
+def _size_factors(min_units, D: float, unit: float):
+    """Size prior of stretchable equipment: 1 above the class minimum, falling as
+    (size / minimum) ** 1.5 below it (rigid templates: min_units 0 -> factor 1)."""
+    m = np.asarray(min_units, dtype=float) * unit
+    with np.errstate(divide="ignore", invalid="ignore"):
+        f = np.where(m > 0, np.clip(D / np.where(m > 0, m, 1.0), 0.0, 1.0) ** 1.5, 1.0)
+    return f
+
+
+def size_factor(v: "Variant", D: float, unit: Optional[float]) -> float:
+    if not unit or not v.stretchable:
+        return 1.0
+    m = STRETCH_MIN_UNITS.get(v.cls, STRETCH_MIN_DEFAULT) * unit
+    return 1.0 if D >= m else (D / m) ** 1.5
 
 
 def fine_match(v: Variant, cs: CandidateShape, sx: float, sy: float, iters: int = 3) -> MatchResult:
@@ -533,6 +582,8 @@ def fine_match(v: Variant, cs: CandidateShape, sx: float, sy: float, iters: int 
     score = f1 * (0.45 + 0.55 * fill)
     if uniform:
         score *= 1.0 - ANISO_PENALTY * min(1.0, abs(math.log(sx / sy)) / math.log(ANISO_MAX))
+    if min(precision, recall) < MIN_PR:
+        score *= STRUCT_PENALTY
     return MatchResult(v, float(score), sx, sy, cx, cy, precision, recall, fill)
 
 
@@ -548,10 +599,13 @@ class MatchCache:
         self.hits = 0
         self.misses = 0
 
-    def key(self, cs: CandidateShape) -> bytes:
-        """Normalised geometry signature: primitives relative to the bbox, quantised."""
+    def key(self, cs: CandidateShape, unit: Optional[float] = None, size_prior: bool = False) -> bytes:
+        """Normalised geometry signature (primitives relative to the bbox, quantised), plus
+        a half-octave size bucket relative to the symbol unit when one is known (the
+        unit-dependent gates and priors pick different variants for a tiny and a large drawing)."""
+        bucket = b"" if not unit else b"|%d%s" % (round(2 * math.log2(max(cs.D, 1e-6) / unit)), b"p" if size_prior else b"")
         if cs.signature is not None:
-            return cs.signature
+            return cs.signature + bucket
         D = cs.D
         n = self.RES
         rel = (cs.pts - (cs.bbox[0], cs.bbox[1])) / D
@@ -564,7 +618,7 @@ class MatchCache:
             fij = np.clip((frel * n).astype(int), 0, n - 1)
             fo[fij[:, 1], fij[:, 0]] = 1
         aspect = np.array([round(cs.w / D, 2), round(cs.h / D, 2)], dtype=np.float32)
-        return aspect.tobytes() + np.packbits(occ).tobytes() + np.packbits(fo).tobytes()
+        return aspect.tobytes() + np.packbits(occ).tobytes() + np.packbits(fo).tobytes() + bucket
 
     def get(self, k: bytes, cs: CandidateShape, lib: "TemplateLibrary") -> Optional[list[MatchResult]]:
         rows = self._store.get(k)
@@ -572,58 +626,67 @@ class MatchCache:
             self.misses += 1
             return None
         self.hits += 1
-        D = cs.D
+        nx, ny = _norm_axes(cs.w, cs.h, cs.D)
         c = cs.center
-        return [MatchResult(lib.variants[vi], sc, rsx * D, rsy * D, c[0] + rcx * D, c[1] + rcy * D, p, r, f)
+        return [MatchResult(lib.variants[vi], sc, rsx * nx, rsy * ny, c[0] + rcx * nx, c[1] + rcy * ny, p, r, f)
                 for vi, sc, rsx, rsy, rcx, rcy, p, r, f in rows]
 
     def put(self, k: bytes, cs: CandidateShape, results: list[MatchResult]) -> None:
-        D = cs.D
+        """Store the alignments per axis relative to the bbox, so a hit with slightly
+        different proportions gets a correspondingly stretched alignment."""
+        nx, ny = _norm_axes(cs.w, cs.h, cs.D)
         c = cs.center
-        self._store[k] = [(m.variant.idx, m.score, m.sx / D, m.sy / D, (m.cx - c[0]) / D, (m.cy - c[1]) / D,
+        self._store[k] = [(m.variant.idx, m.score, m.sx / nx, m.sy / ny, (m.cx - c[0]) / nx, (m.cy - c[1]) / ny,
                            m.precision, m.recall, m.fill) for m in results]
 
 
 def match_candidate(cs: CandidateShape, lib: Optional[TemplateLibrary] = None, unit: Optional[float] = None,
                     top: int = FINE_TOP, cache: Optional[MatchCache] = None,
-                    max_rigid: Optional[float] = None) -> list[MatchResult]:
-    """Fine-matched results for the most promising variants, best first."""
+                    max_rigid: Optional[float] = None, size_prior: bool = False) -> list[MatchResult]:
+    """Fine-matched results for the most promising variants, best first. ``unit`` is the
+    drawing's symbol unit (points); ``size_prior`` applies the size prior of stretchable
+    equipment relative to it (only meaningful when the unit is anchored by matched
+    valves, not estimated from the very equipment being judged)."""
     lib = lib or get_library()
     if max_rigid is None and cache is not None:
         max_rigid = cache.max_rigid
+    prior = bool(unit) and size_prior
     key = None
+    results = None
     if cache is not None:
-        key = cache.key(cs)
-        hit = cache.get(key, cs, lib)
-        if hit is not None:
-            return hit
-    score, sx, sy = coarse_scores(lib, cs, unit, max_rigid)
-    order = np.argsort(-score)
-    picked: list[int] = []
-    per_cls: dict[int, int] = {}
-    floor = max(0.05, 0.6 * float(score[order[0]])) if len(order) else 0.05
-    for k in order[: 4 * top]:
-        if score[k] <= floor:
-            break
-        c = int(lib.cls_idx[k])
-        if per_cls.get(c, 0) >= 4:
-            continue
-        per_cls[c] = per_cls.get(c, 0) + 1
-        picked.append(int(k))
-        if len(picked) >= top:
-            break
-    results = [fine_match(lib.variants[k], cs, float(sx[k]), float(sy[k])) for k in picked]
+        key = cache.key(cs, unit, prior)
+        results = cache.get(key, cs, lib)
+    if results is None:
+        score, sx, sy = coarse_scores(lib, cs, unit, max_rigid, prior)
+        order = np.argsort(-score)
+        picked: list[int] = []
+        per_cls: dict[int, int] = {}
+        floor = max(0.05, 0.6 * float(score[order[0]])) if len(order) else 0.05
+        for k in order:  # the best variants of up to ``top`` classes (at most 4 orientations each)
+            if score[k] <= floor:
+                break
+            c = int(lib.cls_idx[k])
+            if per_cls.get(c, 0) >= 4:
+                continue
+            per_cls[c] = per_cls.get(c, 0) + 1
+            picked.append(int(k))
+            if len(picked) >= top:
+                break
+        results = [fine_match(lib.variants[k], cs, float(sx[k]), float(sy[k])) for k in picked]
+        if cache is not None and key is not None:
+            cache.put(key, cs, results)  # size-independent scores; the size prior is applied below
+    if prior:
+        for r in results:
+            r.score *= size_factor(r.variant, cs.D, unit)
     results.sort(key=lambda r: (-round(r.score, 4), r.variant.idx))
     if results:
         # among near-equal variants of the winning class prefer the canonical one (rotation 0, not mirrored):
         # e.g. a stretched rectangle fits rotation 0 and 90 equally
-        top = results[0]
-        slack = 0.02 if top.variant.stretchable else 0.01
-        same = [r for r in results if r.variant.cls == top.variant.cls and r.score >= top.score - slack]
+        best = results[0]
+        slack = 0.02 if best.variant.stretchable else 0.01
+        same = [r for r in results if r.variant.cls == best.variant.cls and r.score >= best.score - slack]
         canon = min(same, key=lambda r: r.variant.idx)
-        if canon is not top:
+        if canon is not best:
             results.remove(canon)
             results.insert(0, canon)
-    if cache is not None and key is not None:
-        cache.put(key, cs, results)
     return results

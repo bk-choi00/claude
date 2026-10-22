@@ -18,7 +18,10 @@ TITLE_KEYWORDS = (
     "DWG", "DRAWING", "TITLE", "HULL", "SCALE", "REV", "DATE", "DRAWN", "CHECKED", "APPROVED", "APP'D", "CHK'D",
     "SHEET", "PROJECT", "SHIP", "OWNER", "YARD", "DESIGNED", "SHIPBUILDING", "HEAVY INDUSTRIES", "CLASS",
 )
-NOTES_RE = re.compile(r"^\s*(GENERAL\s+)?NOTES?\b\s*[:.]?", re.I)
+# a notes *heading*: "NOTES", "NOTES:", "GENERAL NOTES", "NOTE :" (optionally followed by item 1 on the
+# same line). "NOTE 2" / "SEE NOTE 3" are callouts referring to a note, not headings.
+NOTES_RE = re.compile(r"^\s*(GENERAL\s+)?NOTES?\s*[:.]?\s*(?:$|\(?1[.)]\s)", re.I)
+ENUM_RE = re.compile(r"^\s*(?:\(?\d{1,2}[.)]|\(?[A-Za-z][.)]|[-*\u2022])(?:\s|$)")
 LEGEND_RE = re.compile(r"\bLEGENDS?\b|^\s*SYMBOLS?\b|SYMBOL\s+LIST|^\s*ABBREVIATIONS?\b", re.I)
 
 
@@ -174,7 +177,7 @@ def detect_regions(ps: PrimSet, lines: Sequence[TextLine], width: float, height:
         full_h = sum(1 for m in mset if prims[m].axis == "h" and abs(prims[m].x1 - prims[m].x0) >= 0.9 * (bb[2] - bb[0]))
         full_v = sum(1 for m in mset if prims[m].axis == "v" and abs(prims[m].y1 - prims[m].y0) >= 0.9 * (bb[3] - bb[1]))
         is_title = kw >= 2 or ((attached or near_corner) and kw >= 1)
-        is_table = full_h + full_v >= 3 and len(inside) >= 6
+        is_table = full_h + full_v >= 3 and len(inside) >= 6 and _table_like(prims, members, bb, inside, tol)
         if not (is_title or is_table):
             continue
         if is_title:
@@ -193,9 +196,15 @@ def detect_regions(ps: PrimSet, lines: Sequence[TextLine], width: float, height:
             regions.grid.append(("h", (f.y0 + f.y1) / 2, min(f.x0, f.x1), max(f.x0, f.x1)))
         elif f.axis == "v":
             regions.grid.append(("v", (f.x0 + f.x1) / 2, min(f.y0, f.y1), max(f.y0, f.y1)))
+    for ring in ps.rings.values():  # boxes drawn inside the title band (notes, legend) bound cells too
+        rb = ring.bbox
+        if ring.is_rect and not ring.dashed and any(bbox_inside(rb, b, tol) for b in regions.title_blocks + regions.tables):
+            regions.grid.extend([("h", rb[1], rb[0], rb[2]), ("h", rb[3], rb[0], rb[2]),
+                                 ("v", rb[0], rb[1], rb[3]), ("v", rb[2], rb[1], rb[3])])
 
-    # ---- notes and legend blocks headed by a keyword line
-    for t in lines:
+    # ---- notes and legend blocks headed by a keyword line (legends first: a notes cell found
+    # through the table grid must not swallow a legend box next to it)
+    for t in sorted(lines, key=lambda t: not LEGEND_RE.search(t.text)):
         if t.rotation != 0:
             continue
         where = regions.kind_at(t.bbox, tol)
@@ -204,7 +213,11 @@ def detect_regions(ps: PrimSet, lines: Sequence[TextLine], width: float, height:
         if not (is_notes or is_legend):
             continue
         if where in ("title_block", "table"):
-            # a notes / symbol-list box inside the sheet's bottom band: its table cell
+            # a notes / symbol-list box inside the sheet's bottom band: its own box, else its table cell
+            box_bb = _enclosing_box(ps, t.bbox, t, da_area, tol, unit)
+            if box_bb is not None:
+                (regions.notes if is_notes else regions.legends).append(box_bb)
+                continue
             cell = regions.cell_at(t.cx, t.cy)
             if cell is not None and (cell[2] - cell[0]) * (cell[3] - cell[1]) > 6 * (t.bbox[2] - t.bbox[0]) * (t.bbox[3] - t.bbox[1]):
                 (regions.notes if is_notes else regions.legends).append(cell)
@@ -212,11 +225,13 @@ def detect_regions(ps: PrimSet, lines: Sequence[TextLine], width: float, height:
         if where is not None:
             continue
         if is_notes:
-            bb = _grow_block(t, lines, regions, column=True)
-            regions.notes.append(_enclosing_box(ps, bb, t, da_area, tol) or bb)
+            bb, body = _grow_block(t, lines, regions, column=True, with_members=True)
+            if not _notes_body(body):
+                continue  # a heading-like word without a list of notes below it
+            regions.notes.append(_enclosing_box(ps, bb, t, da_area, tol, unit) or bb)
         else:
             bb = _grow_block(t, lines, regions, column=False, unit=unit)
-            box_bb = _enclosing_box(ps, bb, t, da_area, tol)
+            box_bb = _enclosing_box(ps, bb, t, da_area, tol, unit)
             if box_bb is None:
                 bb = (bb[0] - 3.0 * unit, bb[1], bb[2], bb[3] + 0.5 * unit)
             regions.legends.append(box_bb or bb)
@@ -226,8 +241,10 @@ def detect_regions(ps: PrimSet, lines: Sequence[TextLine], width: float, height:
     return regions
 
 
-def _grow_block(head: TextLine, lines: Sequence[TextLine], regions: Regions, column: bool, unit: float = 18.0) -> BBox4:
-    """Heading plus the lines below it that form one block of text."""
+def _grow_block(head: TextLine, lines: Sequence[TextLine], regions: Regions, column: bool, unit: float = 18.0,
+                with_members: bool = False):
+    """Heading plus the lines below it that form one block of text (bbox, and the member
+    lines below the heading when ``with_members``)."""
     h = max(line_height(head), 1.0)
     members = [head]
     pool = [t for t in lines if t is not head and t.rotation == 0 and t.bbox[1] >= head.bbox[1] - 0.2 * h
@@ -246,12 +263,52 @@ def _grow_block(head: TextLine, lines: Sequence[TextLine], regions: Regions, col
         bottom = max(bottom, t.bbox[3])
     bb = bbox_union(t.bbox for t in members)
     pad = 0.3 * h
-    return (bb[0] - pad, bb[1] - pad, bb[2] + pad, bb[3] + pad)
+    out = (bb[0] - pad, bb[1] - pad, bb[2] + pad, bb[3] + pad)
+    return (out, members[1:]) if with_members else out
 
 
-def _enclosing_box(ps: PrimSet, bb: BBox4, head: TextLine, da_area: float, tol: float) -> Optional[BBox4]:
-    """Smallest closed rectangle that contains the heading (a boxed notes/legend area)."""
+def _notes_body(body: Sequence[TextLine]) -> bool:
+    """The lines under a NOTES heading are notes: an enumerated item, or a sentence."""
+    for t in body:
+        if ENUM_RE.match(t.text):
+            return True
+        words = t.text.split()
+        if len(words) >= 4 and sum(c.isalpha() for c in t.text) >= 12:
+            return True
+    return False
+
+
+def _table_like(prims, members: Sequence[int], bb: BBox4, inside: Sequence[TextLine], tol: float) -> bool:
+    """A text table has interior cell dividers: lines in both directions forming at least
+    four cells, or a column of at least four rows holding one or two text lines each. A
+    plain outline (an equipment box with its name and data written inside, or tanks
+    drawn sharing a bulkhead) is not a table."""
+    w, h = bb[2] - bb[0], bb[3] - bb[1]
+    hs: set[int] = set()
+    vs: set[int] = set()
+    for m in members:
+        p = prims[m]
+        if p.axis == "h":
+            y = (p.y0 + p.y1) / 2
+            if bb[1] + tol < y < bb[3] - tol and abs(p.x1 - p.x0) >= 0.3 * w:
+                hs.add(int(round(y / max(tol, 0.5))))
+        elif p.axis == "v":
+            x = (p.x0 + p.x1) / 2
+            if bb[0] + tol < x < bb[2] - tol and abs(p.y1 - p.y0) >= 0.3 * h:
+                vs.add(int(round(x / max(tol, 0.5))))
+    n_h, n_v = len(hs), len(vs)
+    if n_h >= 1 and n_v >= 1 and (n_h + 1) * (n_v + 1) >= 4:
+        return True
+    n_cells = max(n_h, n_v) + 1
+    return n_cells >= 4 and len(inside) <= 2 * n_cells
+
+
+def _enclosing_box(ps: PrimSet, bb: BBox4, head: TextLine, da_area: float, tol: float,
+                   unit: float = 18.0) -> Optional[BBox4]:
+    """Smallest closed rectangle around the heading's text block (a boxed notes/legend
+    area). A box with pipes attached to it is drawn equipment, never a notes box."""
     best = None
+    hb = head.bbox
     for ring in ps.rings.values():
         if not ring.is_rect or ring.dashed:
             continue
@@ -259,9 +316,30 @@ def _enclosing_box(ps: PrimSet, bb: BBox4, head: TextLine, da_area: float, tol: 
         area = (rb[2] - rb[0]) * (rb[3] - rb[1])
         if area > 0.35 * da_area or not bbox_inside(head.bbox, rb, tol):
             continue
-        hb = head.bbox
         if area < 6 * max(1.0, (hb[2] - hb[0]) * (hb[3] - hb[1])):
             continue
-        if best is None or area < best[0]:
-            best = (area, rb)
+        if best is not None and area >= best[0]:
+            continue
+        if not bbox_inside(bb, rb, max(tol, 0.5 * line_height(head))) or _pipe_attached(ps, ring, tol, unit):
+            continue
+        best = (area, rb)
     return best[1] if best else None
+
+
+def _pipe_attached(ps: PrimSet, ring, tol: float, unit: float) -> bool:
+    """A long straight open stroke ends on the ring's outline from outside (a pipe
+    connected to drawn equipment)."""
+    rb = ring.bbox
+    for p in ps.prims:
+        if p.kind != "seg" or p.closed or p.curve or p.axis is None or p.length < 1.2 * unit:
+            continue
+        pb = p.bbox
+        if pb[0] > rb[2] + tol or pb[2] < rb[0] - tol or pb[1] > rb[3] + tol or pb[3] < rb[1] - tol:
+            continue
+        for (x, y), (ox, oy) in (((p.x0, p.y0), (p.x1, p.y1)), ((p.x1, p.y1), (p.x0, p.y0))):
+            on_edge = min(abs(x - rb[0]), abs(x - rb[2]), abs(y - rb[1]), abs(y - rb[3])) <= tol and \
+                rb[0] - tol <= x <= rb[2] + tol and rb[1] - tol <= y <= rb[3] + tol
+            outside = not (rb[0] - tol <= ox <= rb[2] + tol and rb[1] - tol <= oy <= rb[3] + tol)
+            if on_edge and outside:
+                return True
+    return False

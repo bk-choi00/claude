@@ -7,6 +7,12 @@ direction. Everything is expressed in the *visible* page space (PDF points,
 origin top-left, y down, page ``/Rotate`` applied), so coordinates match a
 rendering of the page.
 
+Only what is visible is read: vector content is clipped to the CropBox and to
+the active clip paths (CAD viewports, cropped plots; approximated by the clip's
+bounding rectangle), and text hidden by clip paths is dropped. Invisible text
+(render mode 3, e.g. an OCR layer) is kept but flagged, and does not count as
+readable content.
+
 The reader does no P&ID interpretation; :mod:`shippid.extract` builds on it.
 """
 
@@ -113,6 +119,7 @@ class TextWord:
     color: Color = None
     line: int = 0  # index of the PDF text line the word came from
     origin: tuple[float, float] = (0.0, 0.0)
+    hidden: bool = False  # invisible text (render mode 3 / zero alpha), e.g. an OCR layer
 
 
 @dataclass
@@ -126,6 +133,10 @@ class TextSpan:
     color: Color = None
     line: int = 0
     origin: tuple[float, float] = (0.0, 0.0)
+    hidden: bool = False
+
+
+SCAN_MAX_PATHS = 40  # a page mostly covered by images with fewer visible vector paths is a scan
 
 
 @dataclass
@@ -140,13 +151,25 @@ class PageContent:
     words: list[TextWord] = field(default_factory=list)
     layers: list[str] = field(default_factory=list)  # OCG names defined in the document
     image_coverage: float = 0.0  # fraction of the page area covered by raster images
-    n_paths: int = 0
-    n_chars: int = 0
+    n_paths: int = 0  # visible vector paths (stroked or filled, not clipped away)
+    n_chars: int = 0  # visible characters
+    n_hidden_chars: int = 0  # invisible characters (OCR layers)
+    n_clipped_paths: int = 0  # paths dropped entirely by the CropBox / clip paths
+
+    @property
+    def empty(self) -> bool:
+        """Nothing visible or searchable on the page."""
+        return self.n_paths == 0 and self.n_chars == 0 and self.n_hidden_chars == 0 and self.image_coverage < 0.01
+
+    @property
+    def scanned(self) -> bool:
+        """Raster-dominated page (a scan, possibly with an invisible OCR text layer)."""
+        return self.image_coverage > 0.6 and self.n_paths < SCAN_MAX_PATHS
 
     @property
     def readable(self) -> bool:
-        """True when the page carries vector paths or real text (not a scan)."""
-        return (self.n_paths > 0 or self.n_chars > 0) and not (self.image_coverage > 0.6 and self.n_chars < 20)
+        """True when the page carries visible vector paths or real text and is not a scan."""
+        return (self.n_paths > 0 or self.n_chars > 0) and not self.scanned
 
 
 # --------------------------------------------------------------------------- helpers
@@ -202,6 +225,101 @@ def _n_flatten(p0, p1, p2, p3) -> int:
     return max(2, min(16, int(math.ceil(approx_len / 1.5))))
 
 
+Box = tuple[float, float, float, float]
+
+
+def _clip_seg(a: tuple[float, float], b: tuple[float, float], r: Box) -> Optional[tuple[tuple[float, float], tuple[float, float]]]:
+    """Liang-Barsky clipping of segment a-b to the rectangle ``r`` (None if outside)."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    t0, t1 = 0.0, 1.0
+    for p, q in ((-dx, a[0] - r[0]), (dx, r[2] - a[0]), (-dy, a[1] - r[1]), (dy, r[3] - a[1])):
+        if abs(p) < 1e-12:
+            if q < 0:
+                return None
+            continue
+        t = q / p
+        if p < 0:
+            t0 = max(t0, t)
+        else:
+            t1 = min(t1, t)
+        if t0 > t1:
+            return None
+    return (a[0] + t0 * dx, a[1] + t0 * dy), (a[0] + t1 * dx, a[1] + t1 * dy)
+
+
+def _box_and(a: Box, b: Box) -> Box:
+    return (max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3]))
+
+
+def _inside(inner: Box, outer: Box, tol: float) -> bool:
+    return inner[0] >= outer[0] - tol and inner[1] >= outer[1] - tol and inner[2] <= outer[2] + tol and inner[3] <= outer[3] + tol
+
+
+def _disjoint(a: Box, b: Box, tol: float) -> bool:
+    return a[0] > b[2] + tol or a[2] < b[0] - tol or a[1] > b[3] + tol or a[3] < b[1] - tol
+
+
+def _visible_paths(page: "pymupdf.Page") -> tuple[list[tuple[dict, Optional[Box]]], int]:
+    """Drawings with the clip rectangle that applies to each (in unrotated page space;
+    None = fully visible) and the number of paths that are clipped away entirely.
+
+    Clip paths are approximated by their bounding rectangle ("scissor"); nested clips
+    intersect. The base clip is the visible page (CropBox)."""
+    vis = pymupdf.Rect(page.rect) * page.derotation_matrix
+    vis.normalize()
+    base: Box = (vis.x0, vis.y0, vis.x1, vis.y1)
+    try:
+        drawings = page.get_drawings(extended=True)
+    except Exception:  # pragma: no cover - very old PyMuPDF without extended mode
+        drawings = page.get_drawings()
+    out: list[tuple[dict, Optional[Box]]] = []
+    stack: list[tuple[int, Box]] = []  # (level, effective clip)
+    dropped = 0
+    for d in drawings:
+        lvl = int(d.get("level", 0) or 0)
+        while stack and stack[-1][0] >= lvl:
+            stack.pop()
+        cur = stack[-1][1] if stack else base
+        kind = d.get("type")
+        if kind == "clip":
+            sc = d.get("scissor")
+            r = (sc.x0, sc.y0, sc.x1, sc.y1) if sc is not None else cur
+            stack.append((lvl, _box_and(cur, r)))
+            continue
+        if kind == "group":
+            stack.append((lvl, cur))
+            continue
+        if not d.get("items"):
+            continue
+        rr = d.get("rect")
+        rb: Box = (rr.x0, rr.y0, rr.x1, rr.y1) if rr is not None else cur
+        w = 0.5 * float(d.get("width") or 0.0) + 0.01
+        if cur[0] >= cur[2] or cur[1] >= cur[3] or _disjoint(rb, cur, w):
+            dropped += 1
+            continue
+        out.append((d, None if _inside(rb, cur, w + 0.05) else cur))
+    return out, dropped
+
+
+def _add_clipped(content: "PageContent", sp, clip: Box, width: float, color: Color, dashed: bool, pidx: int, sidx: int,
+                 layer: str) -> None:
+    """The visible pieces of a subpath crossing the clip boundary, as open segments (a
+    cut outline is no longer closed, a cut circle no longer a circle)."""
+    for k, pts, _ in sp:
+        if k == "c":
+            n = _n_flatten(*pts)
+            pieces = [(_bezier(*pts, i / n), _bezier(*pts, (i + 1) / n)) for i in range(n)]
+        else:
+            pieces = [(pts[0], pts[1])]
+        for a, b in pieces:
+            c = _clip_seg(a, b, clip)
+            if c is None or math.dist(*c) < 1e-6:
+                continue
+            (x0, y0), (x1, y1) = c
+            content.segments.append(Segment(x0, y0, x1, y1, width, color, dashed, pidx, sidx, False, False, -1,
+                                            "c" if k == "c" else "l", layer))
+
+
 # --------------------------------------------------------------------------- main
 
 
@@ -223,9 +341,8 @@ def read_page(page: "pymupdf.Page") -> PageContent:
         content.layers = []
 
     curve_id = 0
-    drawings = page.get_drawings()
-    content.n_paths = len(drawings)
-    for pidx, d in enumerate(drawings):
+    visible, content.n_clipped_paths = _visible_paths(page)
+    for pidx, (d, clip_u) in enumerate(visible):
         stroke_col = _rgb(d.get("color"))
         fill_col = _rgb(d.get("fill"))
         dtype = d.get("type") or ""
@@ -237,11 +354,16 @@ def read_page(page: "pymupdf.Page") -> PageContent:
             filled = False
         if not stroked and not filled:
             continue
+        content.n_paths += 1
         width = float(d.get("width") or 0.0)
         dashes = str(d.get("dashes") or "")
         dashed = bool(dashes) and not _NO_DASH_RE.match(dashes.strip()) and bool(re.search(r"[1-9]", dashes.split("]")[0]))
         layer = str(d.get("layer") or "")
         color = stroke_col if stroked else fill_col
+        clip: Optional[Box] = None
+        if clip_u is not None:  # partially visible path: clip rectangle in visible page space
+            c0, c1 = tp((clip_u[0], clip_u[1])), tp((clip_u[2], clip_u[3]))
+            clip = (min(c0[0], c1[0]), min(c0[1], c1[1]), max(c0[0], c1[0]), max(c0[1], c1[1]))
 
         # ---- split the path into subpaths: lists of (kind, pts, curve_id)
         subpaths: list[list[tuple[str, list[tuple[float, float]], int]]] = []
@@ -283,6 +405,15 @@ def read_page(page: "pymupdf.Page") -> PageContent:
         for sidx, sp in enumerate(subpaths):
             if not sp:
                 continue
+            if clip is not None:
+                xs = [x for _, pts, _ in sp for x, _ in pts]
+                ys = [y for _, pts, _ in sp for _, y in pts]
+                sbox = (min(xs), min(ys), max(xs), max(ys))
+                if _disjoint(sbox, clip, 0.5 * width):
+                    continue
+                if not _inside(sbox, clip, 0.5 * width + 0.05):
+                    _add_clipped(content, sp, clip, width, color, dashed, pidx, sidx, layer)
+                    continue
             start = sp[0][1][0]
             end = sp[-1][1][-1]
             closed = math.dist(start, end) <= 1e-2 or sp[0][0] in ("re", "qu")
@@ -341,9 +472,12 @@ def read_page(page: "pymupdf.Page") -> PageContent:
                     content.segments.append(Segment(a[0], a[1], b[0], b[1], width, color, dashed, pidx, sidx, closed, filled, -1, k, layer))
 
     # ---- text
-    td = page.get_text("rawdict", flags=pymupdf.TEXT_PRESERVE_WHITESPACE | pymupdf.TEXT_PRESERVE_LIGATURES)
+    # TEXT_CLIP (== TEXT_MEDIABOX_CLIP in older releases): drop glyphs outside the page and clip paths
+    clip_flag = getattr(pymupdf, "TEXT_CLIP", 0) | getattr(pymupdf, "TEXT_MEDIABOX_CLIP", 0)
+    td = page.get_text("rawdict", flags=pymupdf.TEXT_PRESERVE_WHITESPACE | pymupdf.TEXT_PRESERVE_LIGATURES | clip_flag)
+    page_box = (-0.5, -0.5, content.width + 0.5, content.height + 0.5)
     line_no = 0
-    n_chars = 0
+    n_chars = n_hidden = 0
     for block in td.get("blocks", []):
         if block.get("type", 0) != 0:
             continue
@@ -364,10 +498,16 @@ def read_page(page: "pymupdf.Page") -> PageContent:
                 text = "".join(c["c"] for c in chars)
                 if not text.strip():
                     continue
-                n_chars += len(text.strip())
                 sb = _tbox(span["bbox"], tp)
+                if _disjoint(sb, page_box, 0.0):
+                    continue
+                hidden = span.get("alpha", 255) == 0
+                if hidden:
+                    n_hidden += len(text.strip())
+                else:
+                    n_chars += len(text.strip())
                 content.spans.append(TextSpan(text.strip(), sb, size, font, int(span.get("flags", 0)), rotation, scol,
-                                              line_no, tp(span.get("origin", (sb[0], sb[3])))))
+                                              line_no, tp(span.get("origin", (sb[0], sb[3]))), hidden))
                 # words: split at whitespace and at large gaps between glyphs
                 word: list[tuple[str, tuple[float, float, float, float]]] = []
                 for c in chars + [None]:
@@ -382,14 +522,17 @@ def read_page(page: "pymupdf.Page") -> PageContent:
                             y0 = min(w[1][1] for w in word)
                             x1 = max(w[1][2] for w in word)
                             y1 = max(w[1][3] for w in word)
-                            content.words.append(TextWord(wt, (x0, y0, x1, y1), size, font, rotation, scol, line_no,
-                                                          (x0, y1)))
+                            if not _disjoint((x0, y0, x1, y1), page_box, 0.0):
+                                content.words.append(TextWord(wt, (x0, y0, x1, y1), size, font, rotation, scol, line_no,
+                                                              (x0, y1), hidden))
                         word = []
                         if c is None or c["c"].isspace():
                             continue
                     word.append((c["c"], cb))
             line_no += 1
     content.n_chars = n_chars
+    content.n_hidden_chars = n_hidden
+    content.words = _dedupe_words(content.words)
 
     # ---- raster images
     try:
@@ -409,6 +552,19 @@ def read_page(page: "pymupdf.Page") -> PageContent:
         if boxes:
             content.image_coverage = float(unary_union(boxes).area / max(1.0, content.width * content.height))
     return content
+
+
+def _dedupe_words(words: list[TextWord]) -> list[TextWord]:
+    """Drop a word drawn twice at the same place (duplicated CAD text entities)."""
+    seen: set[tuple] = set()
+    out = []
+    for w in words:
+        key = (w.text, w.rotation, w.hidden) + tuple(int(round(v * 10)) for v in w.bbox)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(w)
+    return out
 
 
 def _tbox(b, tp) -> tuple[float, float, float, float]:

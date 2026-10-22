@@ -6,8 +6,10 @@ line). Symbol strokes are short, diagonal, curved, closed or filled. The rules
 below are deliberately geometric and relative to the drawing's symbol unit so
 they hold across CAD styles:
 
-1. open axis-aligned strokes lying inside a closed outline (inner lines of
-   plate coolers, separators, instrument bubbles...) belong to that symbol;
+1. open axis-aligned strokes lying inside a closed outline of symbol size (inner
+   lines of plate coolers, separators, instrument bubbles...) belong to that symbol;
+   inside a larger outline (a big tank, a package boundary, a hull outline) only
+   divider lines running edge to edge do -- pipes drawn inside stay pipes;
 2. collinear pieces are merged (touching pieces, crossing gaps, hop arcs,
    exploded dash patterns) into :class:`MLine` s;
 3. merged lines longer than ``seed_units`` symbol units are pipes;
@@ -116,8 +118,9 @@ def _majority_color(prims: list[Prim]):
     return max(cnt, key=cnt.get) if cnt else None
 
 
-def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2) -> Separation:
+def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2, contain_units: float = 4.5) -> Separation:
     prims = ps.prims
+    max_size = contain_units * unit
     touch = max(0.6, min(tol, 0.06 * unit))
     work = [p.id for p in prims if p.role == ""]
 
@@ -175,12 +178,14 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2) -> S
 
     # ---- containers: closed outlines and circles that can hold inner symbol lines
     cont_geoms = []
+    big_geoms = []  # outlines larger than a symbol: only edge-to-edge dividers are theirs
     for ring in ps.rings.values():
         if not ring.dashed and all(prims[i].role == "" for i in ring.prim_ids):
-            cont_geoms.append(ring.polygon)
+            bb = ring.bbox
+            (cont_geoms if max(bb[2] - bb[0], bb[3] - bb[1]) <= max_size else big_geoms).append(ring.polygon)
     for p in prims:
         if p.role == "" and p.kind == "circle" and p.r > 0.15 * unit:
-            cont_geoms.append(shapely.Point(p.cx, p.cy).buffer(p.r, quad_segs=8))
+            (cont_geoms if 2 * p.r <= max_size else big_geoms).append(shapely.Point(p.cx, p.cy).buffer(p.r, quad_segs=8))
     open_axis = [i for i in work if prims[i].role == "" and prims[i].kind == "seg" and not prims[i].closed
                  and not prims[i].curve and prims[i].axis is not None]
     if cont_geoms and open_axis:
@@ -194,6 +199,19 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2) -> S
             g = cont_geoms[c]
             if shapely.distance(g, shapely.Point(p.x0, p.y0)) <= touch and shapely.distance(g, shapely.Point(p.x1, p.y1)) <= touch:
                 p.role = "inner"
+    if big_geoms and open_axis:
+        tree = shapely.STRtree([g.exterior for g in big_geoms])
+        for i in open_axis:
+            p = prims[i]
+            if p.role != "":
+                continue
+            a, b = shapely.Point(p.x0, p.y0), shapely.Point(p.x1, p.y1)
+            for c in tree.query(shapely.box(*p.bbox).buffer(touch)).tolist():
+                ext = big_geoms[c].exterior
+                if shapely.distance(ext, a) <= touch and shapely.distance(ext, b) <= touch and \
+                        big_geoms[c].buffer(touch).contains(shapely.LineString([(p.x0, p.y0), (p.x1, p.y1)])):
+                    p.role = "inner"
+                    break
 
     # ---- core clusters (symbol-only strokes), used to know where symbol bodies are
     core = [i for i in work if prims[i].role == "" and prims[i].is_core and not prims[i].dashed]
@@ -204,8 +222,11 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2) -> S
     core_boxes = []
     for g in dsu.groups(core).values():
         bb = bbox_union(prims[m].bbox for m in g)
-        if all(prims[m].filled for m in g) and max(bb[2] - bb[0], bb[3] - bb[1]) <= 0.35 * unit:
+        size = max(bb[2] - bb[0], bb[3] - bb[1])
+        if all(prims[m].filled for m in g) and size <= 0.35 * unit:
             continue  # junction dots and arrow heads are not symbol bodies
+        if size > max_size:
+            continue  # a large outline (boundary, big tank) does not stop pipes inside it
         core_boxes.append(bb)
     core_tree = shapely.STRtree([shapely.box(*b) for b in core_boxes]) if core_boxes else None
 
@@ -414,7 +435,7 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2) -> S
             probe = shapely.Point(cx, cy).buffer(r + 0.15 * unit)
             for k in sym_tree.query(probe).tolist():
                 pid = sym_now[k]
-                if pid in own:
+                if pid in own or _same_dot(prims[pid], ps, cx, cy, r):
                     continue
                 if point_prim_dist(cx, cy, prims[pid]) <= r + 0.15 * unit:
                     isolated = False
@@ -422,7 +443,11 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2) -> S
         if not isolated:
             continue
         if arms >= 3 or len({a for a, _ in dirs}) == 2:
-            dots.append(Dot(cx, cy, r, pids))
+            twin = next((d for d in dots if math.hypot(d.x - cx, d.y - cy) <= 0.3 * max(r, d.r) + 0.05), None)
+            if twin is not None:  # the same dot drawn twice
+                twin.prim_ids.extend(pids)
+            else:
+                dots.append(Dot(cx, cy, r, pids))
             for pid in pids:
                 prims[pid].role = "dot"
 
@@ -475,6 +500,19 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2) -> S
             p.role = "symbol"
             symbol_ids.append(p.id)
     return Separation(lines, dots, arrows, symbol_ids, core_boxes, unit)
+
+
+def _same_dot(p: Prim, ps: PrimSet, cx: float, cy: float, r: float) -> bool:
+    """A circle or closed outline concentric with a junction dot and of about its size:
+    the dot's own outline, or the dot drawn a second time."""
+    if p.kind == "circle":
+        return math.hypot(p.cx - cx, p.cy - cy) <= 0.3 * r + 0.05 and p.r <= 1.6 * r + 0.05
+    ring = ps.rings.get(p.ring) if p.ring >= 0 else None
+    if ring is None:
+        return False
+    bb = ring.bbox
+    size = max(bb[2] - bb[0], bb[3] - bb[1]) / 2
+    return math.hypot((bb[0] + bb[2]) / 2 - cx, (bb[1] + bb[3]) / 2 - cy) <= 0.3 * r + 0.05 and size <= 1.6 * r + 0.05
 
 
 def _merge_axis(pieces, axis: str, dashed: bool, prims: list[Prim], unit: float, touch: float, start_id: int) -> list[MLine]:

@@ -13,7 +13,7 @@ import logging
 import math
 import time
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
@@ -44,7 +44,7 @@ from ..pdf.reader import PageContent, open_pdf, read_page
 from ..symbols import category_of, get_symbol
 from .candidates import Candidate, group_candidates
 from .pipes import MLine, Separation, separate
-from .primitives import PrimSet, bbox_dist, bbox_union, estimate_unit, point_seg_dist
+from .primitives import PrimSet, bbox_dist, bbox_union, estimate_unit, point_prim_dist, point_seg_dist
 from .regions import Regions, detect_regions
 from .symbols_match import (
     CandidateShape,
@@ -72,6 +72,9 @@ class ExtractOptions:
     group_units: float = 0.12  # proximity (symbol units) that still joins strokes into one candidate
     tap_max_units: float = 6.0  # solid runs to an instrument up to this length are instrument taps
     min_unknown_units: float = 0.3  # smaller unmatched stroke groups are dropped as noise
+    contain_units: float = 4.5  # closed outlines up to this size (symbol units) hold their inner strokes
+    boundary_symbols: int = 2  # an outline enclosing this many complete symbols is a boundary, not equipment
+    decompose_budget: int = 600  # match calls per page for splitting accepted candidates into bolted symbols
     propagate_line_numbers: bool = True  # unlabelled runs take the nearest line number along the line
     keep_legend_symbols: bool = False
 
@@ -96,6 +99,8 @@ class Detection:
     score: float = 0.0
     bbox: BBox4 = (0.0, 0.0, 0.0, 0.0)
     body: BBox4 = (0.0, 0.0, 0.0, 0.0)
+    internals: list[int] = field(default_factory=list)  # unmatched strokes drawn inside (tank heating coil ...)
+    n_internal: int = 0  # number of absorbed inner stroke groups
 
     @property
     def best(self) -> Optional[MatchResult]:
@@ -125,10 +130,42 @@ def _shape_for(ps: PrimSet, prim_ids: Sequence[int]) -> CandidateShape:
     return candidate_shape([ps.prims[i] for i in prim_ids], _rings_of(ps, prim_ids))
 
 
-def _detect(ps: PrimSet, prim_ids: list[int], lib: TemplateLibrary, unit: float, cache: MatchCache) -> Detection:
-    cs = _shape_for(ps, prim_ids)
-    res = match_candidate(cs, lib, unit, cache=cache)
-    return Detection(sorted(prim_ids), cs, res)
+def _score(d: Detection) -> float:
+    return d.best.score if d.best else 0.0
+
+
+@dataclass
+class _Matcher:
+    """Matching context of one classification pass over a page."""
+
+    ps: PrimSet
+    lib: TemplateLibrary
+    unit: float
+    cache: MatchCache
+    accept: float
+    prior: bool = False  # size prior of stretchable equipment (the unit is anchored by matched valves)
+    budget: int = 0  # remaining decomposition match calls for accepted candidates
+    no_split: set = field(default_factory=set)  # shape keys whose decomposition found nothing
+    pipe_ends: Optional[np.ndarray] = None  # (n, 2) end points of pipe lines
+    tol: float = 2.5  # snap tolerance (points)
+    group_units: float = 0.12
+
+    def detect(self, prim_ids: Sequence[int]) -> Detection:
+        cs = _shape_for(self.ps, prim_ids)
+        res = match_candidate(cs, self.lib, self.unit, cache=self.cache, size_prior=self.prior)
+        return Detection(sorted(prim_ids), cs, res)
+
+    def piped(self, prim_ids: Sequence[int]) -> bool:
+        """A pipe line ends on these strokes (library symbols take pipes only at their ports
+        on the outline, never on inner decoration: such strokes are piping or equipment)."""
+        if self.pipe_ends is None or not len(self.pipe_ends):
+            return False
+        touch = max(0.6, 0.06 * self.unit)
+        prims = [self.ps.prims[i] for i in prim_ids]
+        bb = bbox_union(p.bbox for p in prims)
+        e = self.pipe_ends
+        sel = e[(e[:, 0] >= bb[0] - touch) & (e[:, 0] <= bb[2] + touch) & (e[:, 1] >= bb[1] - touch) & (e[:, 1] <= bb[3] + touch)]
+        return any(point_prim_dist(float(x), float(y), p) <= touch for x, y in sel for p in prims)
 
 
 def _finalise(d: Detection, accept: float) -> None:
@@ -148,10 +185,15 @@ def _finalise(d: Detection, accept: float) -> None:
 
 
 def classify_candidates(ps: PrimSet, cands: Sequence[Candidate], unit: float, opts: ExtractOptions,
-                        lib: Optional[TemplateLibrary] = None, cache: Optional[MatchCache] = None) -> list[Detection]:
-    lib = lib or get_library()
-    cache = cache if cache is not None else MatchCache()
-    accept = opts.accept_score
+                        lib: Optional[TemplateLibrary] = None, cache: Optional[MatchCache] = None,
+                        size_prior: bool = False, pipes: Sequence[MLine] = (), tol: float = 2.5) -> list[Detection]:
+    """Classify symbol candidates. ``size_prior``: the unit is anchored by matched valves,
+    so stretchable equipment drawn implausibly small is penalised; ``pipes``: the pipe
+    lines found by stroke separation."""
+    ends = np.array([pt for ml in pipes for pt in ml.endpoints()], dtype=float).reshape(-1, 2)
+    m = _Matcher(ps, lib or get_library(), unit, cache if cache is not None else MatchCache(), opts.accept_score,
+                 size_prior, opts.decompose_budget, pipe_ends=ends, tol=tol, group_units=opts.group_units)
+    accept = m.accept
     dets: list[Detection] = []
     for c in cands:
         prims = [ps.prims[i] for i in c.prim_ids]
@@ -159,29 +201,95 @@ def classify_candidates(ps: PrimSet, cands: Sequence[Candidate], unit: float, op
             for p in prims:
                 p.role = "noise"
             continue
-        d = _detect(ps, list(c.prim_ids), lib, unit, cache)
-        if (d.best is None or d.best.score < accept) and len(c.clusters) >= 2:
-            split = _try_split(ps, c, d, lib, unit, cache, accept)
+        if _is_hatching(prims, unit):
+            for p in prims:
+                p.role = "hatch"
+            continue
+        d = m.detect(c.prim_ids)
+        if len(c.parts) >= 2:
+            peeled = _peel(m, c, d)
+            if peeled is not None:
+                dets.extend(peeled)
+                continue
+        if _score(d) < accept and len(c.clusters) >= 2:
+            split = _try_split(m, c, d)
             if split is not None:
                 dets.extend(split)
                 continue
-        if d.best is None or d.best.score < 0.93:
-            parts = _decompose(ps, d, lib, unit, cache, accept)
+        if _worth_decomposing(m, d):
+            parts = _decompose(m, d)
             if parts is not None:
                 dets.extend(parts)
                 continue
+            m.no_split.add(d.shape.signature)
         dets.append(d)
     for d in dets:
         _finalise(d, accept)
-    dets = _absorb_fragments(ps, dets, lib, unit, cache, accept)
+    dets = _absorb_fragments(m, dets)
     _size_prior(dets, accept)
-    return dets
+    return _resolve_containers(m, dets, opts)
 
 
-def _try_split(ps: PrimSet, c: Candidate, whole: Detection, lib, unit, cache, accept) -> Optional[list[Detection]]:
+def _is_hatching(prims: Sequence, unit: float) -> bool:
+    """A group dominated by many parallel strokes at different offsets (section /
+    insulation hatching, shaded areas): not a symbol."""
+    segs = [p for p in prims if p.kind == "seg" and not p.curve]
+    if len(segs) < 8:
+        return False
+    total = sum(p.length for p in prims)
+    groups: dict[int, list] = defaultdict(list)
+    for p in segs:
+        groups[int(round(math.degrees(math.atan2(p.y1 - p.y0, p.x1 - p.x0)) % 180.0 / 3.0)) % 60].append(p)
+    for ang, grp in groups.items():
+        if len(grp) < 8:
+            continue
+        a = math.radians(ang * 3.0)
+        nx, ny = -math.sin(a), math.cos(a)  # normal of the stroke direction
+        offsets = {int(round((p.x0 * nx + p.y0 * ny) / max(0.04 * unit, 0.3))) for p in grp}
+        if len(offsets) >= 8 and sum(p.length for p in grp) >= 0.5 * total:
+            return True
+    return False
+
+
+def _peel(m: _Matcher, c: Candidate, whole: Detection) -> Optional[list[Detection]]:
+    """A closed outline that took in the strokes inside it (``c.parts[0]`` the outline's
+    group, the rest the inner groups): keep the union when it is the better symbol, else
+    match the outline and its contents separately (a tank with a level switch or a
+    heating coil inside; an instrument drawn inside a package outline)."""
+    outer = m.detect(c.parts[0])
+    so, sw = _score(outer), _score(whole)
+    if so < m.accept:
+        return None
+    inners = [m.detect(g) for g in c.parts[1:]]
+    if outer.best.variant.stretchable and (sw < m.accept or any(m.piped(g) for g in c.parts[1:])):
+        # no symbol as a whole, or piping inside the outline (a heating coil fed through the tank top):
+        # unmatched contents become the outline's internals later
+        return [outer] + inners
+    if all(_score(d) >= m.accept for d in inners) and min([so] + [_score(d) for d in inners]) >= sw + 0.03:
+        return [outer] + inners
+    return None
+
+
+def _worth_decomposing(m: _Matcher, d: Detection) -> bool:
+    """Try to split a candidate into symbols bolted flange-to-flange? Not for a confident
+    match, a shape already known not to split, or an accepted rigid symbol at the drawing's
+    symbol scale (the expensive search is reserved for poor matches and oversized ones)."""
+    s = _score(d)
+    if s >= 0.93 or d.shape.signature in m.no_split:
+        return False
+    if s >= m.accept:
+        b = d.best
+        if not b.variant.stretchable and 0.7 * m.unit <= b.scale <= 1.45 * m.unit:
+            return False
+        if m.budget <= 0:
+            return False
+    return True
+
+
+def _try_split(m: _Matcher, c: Candidate, whole: Detection) -> Optional[list[Detection]]:
     """Split a poorly matching group into its touch clusters (two symbols drawn
     flange-to-flange); small clusters go with their nearest big neighbour."""
-    prims = ps.prims
+    prims, unit = m.ps.prims, m.unit
     infos = []
     for cl in c.clusters:
         bb = bbox_union(prims[i].bbox for i in cl)
@@ -194,21 +302,21 @@ def _try_split(ps: PrimSet, c: Candidate, whole: Detection, lib, unit, cache, ac
     for cl, bb, _ in small:
         k = min(range(len(big)), key=lambda j: bbox_dist(bb, big[j][1]))
         groups[k].extend(cl)
-    parts = [_detect(ps, g, lib, unit, cache) for g in groups]
-    scores = [p.best.score if p.best else 0.0 for p in parts]
-    whole_score = whole.best.score if whole.best else 0.0
-    if min(scores) >= 0.9 * accept and sum(scores) / len(scores) > whole_score + 0.05:
+    parts = [m.detect(g) for g in groups]
+    scores = [_score(p) for p in parts]
+    if min(scores) >= 0.9 * m.accept and sum(scores) / len(scores) > _score(whole) + 0.05:
         return parts
     return None
 
 
-def _decompose(ps: PrimSet, whole: Detection, lib, unit, cache, accept) -> Optional[list[Detection]]:
+def _decompose(m: _Matcher, whole: Detection) -> Optional[list[Detection]]:
     """Symbols bolted flange-to-flange form one touching candidate. The candidate is
     cut into 'atoms' (closed outlines with their contents, other strokes); cuts
     across either axis that do not pass through a closed outline are ranked by
     coarse score, the best are fine-matched, and a split is kept when the
     point-weighted score improves by a margin. Parts are split recursively
     (chains of three or more symbols) within a small match budget."""
+    ps, unit, accept = m.ps, m.unit, m.accept
     prims = ps.prims
     atoms: list[tuple[list[int], tuple[float, float, float, float], bool]] = []  # (prim ids, bbox, solid)
     in_ring: set[int] = set()
@@ -222,7 +330,7 @@ def _decompose(ps: PrimSet, whole: Detection, lib, unit, cache, accept) -> Optio
             p = prims[i]
             atoms.append(([i], p.bbox, p.kind == "circle" and not p.filled and p.r >= 0.12 * unit))
     # strokes well inside a closed outline can never be cut away from it: merge them in
-    m = 0.06 * unit
+    mg = 0.06 * unit
     solid_idx = [k for k, a in enumerate(atoms) if a[2]]
     absorbed: set[int] = set()
     for k, a in enumerate(atoms):
@@ -231,7 +339,7 @@ def _decompose(ps: PrimSet, whole: Detection, lib, unit, cache, accept) -> Optio
         cx, cy = (a[1][0] + a[1][2]) / 2, (a[1][1] + a[1][3]) / 2
         for s_ in solid_idx:
             b = atoms[s_][1]
-            if b[0] + m < cx < b[2] - m and b[1] + m < cy < b[3] - m:
+            if b[0] + mg < cx < b[2] - mg and b[1] + mg < cy < b[3] - mg:
                 atoms[s_][0].extend(a[0])
                 absorbed.add(k)
                 break
@@ -239,16 +347,13 @@ def _decompose(ps: PrimSet, whole: Detection, lib, unit, cache, accept) -> Optio
     if len(atoms) < 2 or len(atoms) > 80:
         return None
 
-    def score(d: Detection) -> float:
-        return d.best.score if d.best else 0.0
-
     coarse_memo: dict[tuple[int, ...], tuple[float, float]] = {}
 
     def coarse(group: list[int]) -> tuple[float, float]:
         key = tuple(sorted(group))
         if key not in coarse_memo:
             cs = _shape_for(ps, [i for a in group for i in atoms[a][0]])
-            sc, _, _ = coarse_scores(lib, cs, unit)
+            sc, _, _ = coarse_scores(m.lib, cs, unit, size_prior=m.prior)
             coarse_memo[key] = (float(sc.max()) if len(sc) else 0.0, float(len(cs.pts)))
         return coarse_memo[key]
 
@@ -275,17 +380,18 @@ def _decompose(ps: PrimSet, whole: Detection, lib, unit, cache, accept) -> Optio
 
     def weighted(parts: list[Detection]) -> float:
         w = [float(len(p.shape.pts)) for p in parts]
-        return sum(score(p) * wi for p, wi in zip(parts, w)) / max(sum(w), 1e-9)
+        return sum(_score(p) * wi for p, wi in zip(parts, w)) / max(sum(w), 1e-9)
 
     budget = [24]  # match calls allowed for this candidate
 
     def detect(side: list[int]) -> Detection:
         budget[0] -= 1
-        return _detect(ps, [i for a in side for i in atoms[a][0]], lib, unit, cache)
+        m.budget -= 1
+        return m.detect([i for a in side for i in atoms[a][0]])
 
     def splittable(side: list[int], d: Detection) -> bool:
         """Worth splitting further: poorly matched and large enough for two symbols."""
-        if score(d) >= 0.85 or budget[0] <= 0 or sum(1 for a in side if atoms[a][2]) < 1:
+        if _score(d) >= 0.85 or budget[0] <= 0 or sum(1 for a in side if atoms[a][2]) < 1:
             return False
         b = bbox_union(atoms[a][1] for a in side)
         return max(b[2] - b[0], b[3] - b[1]) >= 1.1 * unit
@@ -296,7 +402,7 @@ def _decompose(ps: PrimSet, whole: Detection, lib, unit, cache, accept) -> Optio
             return [current]
         gb = bbox_union(atoms[a][1] for a in group)
         main = 0 if (gb[2] - gb[0]) >= (gb[3] - gb[1]) else 1
-        best_parts, best_val = [current], score(current) + 0.06
+        best_parts, best_val = [current], _score(current) + 0.06
         for axis in (main, 1 - main):
             ranked = []
             for left, right in partitions(group, axis):
@@ -311,7 +417,7 @@ def _decompose(ps: PrimSet, whole: Detection, lib, unit, cache, accept) -> Optio
                     d = detect(side)
                     # a part that is itself several symbols is split further (chains of three or more)
                     leaves.extend(split_group(side, d, depth + 1) if splittable(side, d) else [d])
-                if min(score(p) for p in leaves) < accept:
+                if min(_score(p) for p in leaves) < accept:
                     continue
                 val = weighted(leaves)
                 if val > best_val:
@@ -324,9 +430,10 @@ def _decompose(ps: PrimSet, whole: Detection, lib, unit, cache, accept) -> Optio
     return parts if len(parts) > 1 else None
 
 
-def _absorb_fragments(ps: PrimSet, dets: list[Detection], lib, unit, cache, accept) -> list[Detection]:
+def _absorb_fragments(m: _Matcher, dets: list[Detection]) -> list[Detection]:
     """Merge an unmatched small fragment into a neighbour when the union matches
     better (e.g. an actuator drawn with a gap to its valve body)."""
+    unit, accept = m.unit, m.accept
     out = list(dets)
     changed = True
     rounds = 0
@@ -341,17 +448,17 @@ def _absorb_fragments(ps: PrimSet, dets: list[Detection], lib, unit, cache, acce
             for o in out:
                 if o is d or bbox_dist(o.shape.bbox, d.shape.bbox) > 0.4 * unit:
                     continue
-                m = _detect(ps, o.prim_ids + d.prim_ids, lib, unit, cache)
-                _finalise(m, accept)
-                if m.cls == SymbolClass.UNKNOWN or m.score < max(o.score - 0.03, accept):
+                mm = m.detect(o.prim_ids + d.prim_ids)
+                _finalise(mm, accept)
+                if mm.cls == SymbolClass.UNKNOWN or mm.score < max(o.score - 0.03, accept):
                     continue
-                if best is None or m.score > best[0].score:
-                    best = (m, o)
+                if best is None or mm.score > best[0].score:
+                    best = (mm, o)
             if best is not None:
-                m, o = best
+                mm, o = best
                 out.remove(o)
                 out.remove(d)
-                out.append(m)
+                out.append(mm)
                 changed = True
     return out
 
@@ -378,6 +485,87 @@ def _size_prior(dets: list[Detection], accept: float) -> None:
             winner = ranked[0].variant.cls
             d.results = [r for r in d.results if r.variant.cls == winner] + [r for r in d.results if r.variant.cls != winner]
             _finalise(d, accept)
+
+
+def _inside(inner: BBox4, outer: BBox4, margin: float) -> bool:
+    return (inner[0] >= outer[0] + margin and inner[1] >= outer[1] + margin and inner[2] <= outer[2] - margin
+            and inner[3] <= outer[3] - margin)
+
+
+def _free_boundary(m: _Matcher, d: Detection) -> list[Detection]:
+    """Drop the outline of a boundary detection (its largest ring) and classify whatever
+    else was grouped with it (symbols touching the outline) on its own."""
+    rings = _rings_of(m.ps, d.prim_ids)
+    outline = max(rings, key=lambda r: r.polygon.area) if rings else None
+    ring_ids = set(outline.prim_ids) if outline is not None else set(d.prim_ids)
+    for i in ring_ids:
+        m.ps.prims[i].role = "boundary"
+    rest = [i for i in d.prim_ids if i not in ring_ids]
+    out: list[Detection] = []
+    for c in group_candidates(m.ps, rest, m.unit, m.tol, m.group_units):
+        prims = [m.ps.prims[i] for i in c.prim_ids]
+        if c.size < 0.3 * m.unit and not any(p.is_core for p in prims):
+            continue
+        nd = m.detect(c.prim_ids)
+        _finalise(nd, m.accept)
+        out.append(nd)
+    return out
+
+
+def _resolve_containers(m: _Matcher, dets: list[Detection], opts: ExtractOptions) -> list[Detection]:
+    """Large closed outlines and what is drawn inside them.
+
+    * An outline (unmatched, or matched as box-like stretchable equipment) enclosing
+      ``opts.boundary_symbols`` or more complete symbols (valves, fittings, equipment) is
+      a package / skid boundary or a hull or plan outline drawn behind the diagram: it is
+      dropped (its strokes become ``boundary``) and the symbols inside stand on their own.
+    * Unmatched strokes inside accepted box-like equipment are its internals (heating
+      coil, baffles): when outline + contents match a library symbol (a large sea chest
+      or BWTS unit drawn as a box with its insert), that symbol is taken, otherwise the
+      contents are kept as the equipment's internals.
+    """
+    unit, accept = m.unit, m.accept
+    margin = 0.02 * unit
+
+    def boxy(d: Detection) -> bool:
+        if d.cls == SymbolClass.UNKNOWN:
+            return bool(_rings_of(m.ps, d.prim_ids)) and d.size >= 1.5 * unit
+        return get_symbol(d.cls).stretchable
+
+    solid = [d for d in dets if d.cls != SymbolClass.UNKNOWN and category_of(d.cls) != Category.INSTRUMENT]
+    drop: set[int] = set()
+    freed: list[Detection] = []
+    for d in sorted((d for d in dets if boxy(d)), key=lambda d: -d.size):
+        n_inside = sum(1 for o in solid if o is not d and id(o) not in drop and _inside(o.bbox, d.body, margin))
+        if n_inside >= opts.boundary_symbols:
+            drop.add(id(d))
+            freed.extend(_free_boundary(m, d))
+    out = [d for d in dets if id(d) not in drop] + freed
+    taken: set[int] = set()
+    result: list[Detection] = []
+    for d in sorted(out, key=lambda d: -d.size):
+        if id(d) in taken:
+            continue
+        if d.cls == SymbolClass.UNKNOWN or not get_symbol(d.cls).stretchable:
+            continue
+        inner = [o for o in out if o is not d and id(o) not in taken and o.cls == SymbolClass.UNKNOWN
+                 and _inside(o.shape.bbox, d.body, margin)]
+        if not inner:
+            continue
+        for o in inner:
+            taken.add(id(o))
+        union = None
+        if not any(m.piped(o.prim_ids) for o in inner):  # piping inside is never part of a symbol
+            union = m.detect(d.prim_ids + [i for o in inner for i in o.prim_ids])
+            _finalise(union, accept)
+        if union is not None and union.cls != SymbolClass.UNKNOWN and union.score >= accept and union.cls != SymbolClass.TANK:
+            taken.add(id(d))
+            result.append(union)
+        else:
+            d.internals.extend(i for o in inner for i in o.prim_ids)
+            d.n_internal += len(inner)
+    result.extend(d for d in out if id(d) not in taken)
+    return result
 
 
 def _straight_unknowns_to_pipes(ps: PrimSet, dets: list[Detection], unit: float, tol: float, start_id: int) -> tuple[list[Detection], list[MLine]]:
@@ -438,10 +626,11 @@ class _Stage:
     dets: list[Detection]
     diag_lines: list[MLine]
     unit: float
+    anchored: bool  # the unit comes from matched valve-like symbols (not from the stroke-cluster median)
 
 
 def _analyse(pc: PageContent, lines: list[TextLine], cfg: Config, opts: ExtractOptions, lib: TemplateLibrary,
-             cache: MatchCache, unit: Optional[float], timing: dict[str, float]) -> _Stage:
+             cache: MatchCache, unit: Optional[float], timing: dict[str, float], anchored: bool = False) -> _Stage:
     """Regions, stroke separation and symbol classification for one symbol unit."""
     tol = cfg.snap_tol
     t = time.perf_counter()
@@ -453,22 +642,22 @@ def _analyse(pc: PageContent, lines: list[TextLine], cfg: Config, opts: ExtractO
         unit = estimate_unit(ps.prims, free_ids, max(0.6, 0.5 * tol), default=unit0)
         probed = _probe_unit(ps, free_ids, unit, tol, lib, cache)
         if probed is not None:
-            unit = probed
+            unit, anchored = probed, True
     timing["regions"] = timing.get("regions", 0.0) + time.perf_counter() - t
 
     t = time.perf_counter()
-    sep = separate(ps, unit, tol, opts.seed_units)
+    sep = separate(ps, unit, tol, opts.seed_units, opts.contain_units)
     timing["separate"] = timing.get("separate", 0.0) + time.perf_counter() - t
 
     t = time.perf_counter()
-    cands = group_candidates(ps, sep.symbol_ids, unit, tol, opts.group_units)
-    dets = classify_candidates(ps, cands, unit, opts, lib, cache)
+    cands = group_candidates(ps, sep.symbol_ids, unit, tol, opts.group_units, opts.contain_units)
+    dets = classify_candidates(ps, cands, unit, opts, lib, cache, size_prior=anchored, pipes=sep.pipe_lines, tol=tol)
     dets, diag_lines = _straight_unknowns_to_pipes(ps, dets, unit, tol, len(sep.lines))
     if not opts.keep_legend_symbols:
         dets = [d for d in dets if regions.kind_at(d.bbox, tol) is None]
     dets.sort(key=lambda d: (round(d.bbox[1], 1), round(d.bbox[0], 1)))
     timing["symbols"] = timing.get("symbols", 0.0) + time.perf_counter() - t
-    return _Stage(ps, regions, sep, cands, dets, diag_lines, unit)
+    return _Stage(ps, regions, sep, cands, dets, diag_lines, unit, anchored)
 
 
 def _probe_unit(ps: PrimSet, ids: Sequence[int], unit: float, tol: float, lib: TemplateLibrary,
@@ -509,15 +698,15 @@ def _probe_unit(ps: PrimSet, ids: Sequence[int], unit: float, tol: float, lib: T
     return float(np.median(scales))
 
 
-def _valve_unit(dets: Sequence[Detection]) -> Optional[float]:
+def _valve_unit(dets: Sequence[Detection], min_n: int = 3) -> Optional[float]:
     """Median matched scale of confidently classified valves (else other rigid symbols)."""
     valves = [d.best.scale for d in dets if d.best is not None and d.cls != SymbolClass.UNKNOWN and d.score >= 0.85
               and d.best.variant.spec.category == Category.VALVE]
-    if len(valves) >= 3:
+    if len(valves) >= min_n:
         return float(np.median(valves))
     rigid = [d.best.scale for d in dets if d.best is not None and d.cls != SymbolClass.UNKNOWN and d.score >= 0.85
              and not d.best.variant.stretchable and d.best.variant.spec.category != Category.EQUIPMENT]
-    if len(rigid) >= 3:
+    if len(rigid) >= min_n:
         return float(np.median(rigid))
     return None
 
@@ -536,13 +725,19 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
     pc = content or read_page(page)
     timing["read"] = time.perf_counter() - t0
     doc = PIDDocument(source=str(getattr(getattr(page, "parent", None), "name", "") or ""))
-    doc.pages.append(PageInfo(index=page_index, width=pc.width, height=pc.height))
-    page_meta: dict = {"image_coverage": round(pc.image_coverage, 4), "layers": pc.layers, "readable": pc.readable}
+    doc.pages.append(PageInfo(index=page_index, width=pc.width, height=pc.height, rotation=pc.rotation))
+    page_meta: dict = {"image_coverage": round(pc.image_coverage, 4), "layers": pc.layers, "readable": pc.readable,
+                       "empty": pc.empty, "vector_paths": pc.n_paths, "chars": pc.n_chars,
+                       "hidden_chars": pc.n_hidden_chars, "clipped_paths": pc.n_clipped_paths}
     doc.meta["pages"] = {str(page_index): page_meta}
     doc.meta["extractor"] = "vector"
+    if pc.empty:
+        log.info("page %d is empty; skipped", page_index)
+        doc.meta["empty_pages"] = [page_index]
+        return doc
     if not pc.readable:
-        log.warning("page %d looks scanned/raster-only (image coverage %.2f, %d chars); skipped",
-                    page_index, pc.image_coverage, pc.n_chars)
+        log.warning("page %d looks scanned/raster-only (image coverage %.2f, %d vector paths, %d visible / %d hidden "
+                    "chars); skipped", page_index, pc.image_coverage, pc.n_paths, pc.n_chars, pc.n_hidden_chars)
         doc.meta["unreadable_pages"] = [page_index]
         return doc
 
@@ -555,7 +750,14 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
         # the first estimate (median size of symbol-only stroke clusters) is biased by the mix of
         # symbols on the sheet; matched valve scales are the reliable symbol unit -> redo with it
         log.debug("page %d: symbol unit %.2f -> %.2f (from matched valves)", page_index, st.unit, ref)
-        st = _analyse(pc, lines, cfg, opts, lib, cache, ref, timing)
+        st = _analyse(pc, lines, cfg, opts, lib, cache, ref, timing, anchored=True)
+    elif not st.anchored:
+        # too few repeated valve drawings to probe the unit: one or two confidently matched
+        # valves still anchor it, and the size prior of stretchable equipment then applies
+        few = _valve_unit(st.dets, min_n=1)
+        if few is not None:
+            unit_a = st.unit if abs(few / st.unit - 1.0) <= 0.15 else few
+            st = _analyse(pc, lines, cfg, opts, lib, cache, unit_a, timing, anchored=True)
     ps, regions, sep, cands, dets, diag_lines, unit = st.ps, st.regions, st.sep, st.cands, st.dets, st.diag_lines, st.unit
 
     # ---- network
@@ -564,7 +766,7 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
     for k, d in enumerate(dets):
         spec = get_symbol(d.cls) if d.cls != SymbolClass.UNKNOWN else None
         ports = d.best.ports() if (d.best is not None and spec is not None) else []
-        bodies.append(Body(k, d.bbox, d.body, [ps.prims[i] for i in d.prim_ids], ports,
+        bodies.append(Body(k, d.bbox, d.body, [ps.prims[i] for i in d.prim_ids + d.internals], ports,
                            boundary_ports=(spec is None or spec.boundary_ports),
                            is_valve=spec is not None and spec.category == Category.VALVE))
     pipe_lines = sep.pipe_lines + diag_lines
@@ -601,6 +803,8 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
         }
         if best is not None:
             attrs["scale"] = round(best.scale, 3)
+        if d.n_internal:
+            attrs["internals"] = d.n_internal  # unmatched stroke groups drawn inside (heating coil, baffles ...)
         if accepted and best is not None and best.variant.stretchable:
             attrs["stretch"] = [round(best.sx / best.scale, 3), round(best.sy / best.scale, 3)]
         obj = PIDObject(
@@ -754,16 +958,24 @@ def _incidence(pipes: list[PipeRun]) -> dict[str, list[tuple[int, str, tuple[flo
     return out
 
 
-def _straight_pairs_at(inc: list[tuple[int, str, tuple[float, float]]], pipes: list[PipeRun]) -> list[tuple[int, int]]:
-    """Pairs of process runs leaving a junction in opposite directions (the run continues through)."""
-    proc = [(k, d) for k, _, d in inc if pipes[k].kind == PipeKind.PROCESS]
+def _straight_pairs_at(inc: list[tuple[int, str, tuple[float, float]]],
+                       pipes: list[PipeRun]) -> list[tuple[tuple[int, str], tuple[int, str]]]:
+    """Pairs of (run, end) of two different process runs leaving a junction in opposite
+    directions (the line continues straight through)."""
+    proc = [(k, w, d) for k, w, d in inc if pipes[k].kind == PipeKind.PROCESS]
     pairs = []
     for i in range(len(proc)):
         for j in range(i + 1, len(proc)):
-            (a, da), (b, db) = proc[i], proc[j]
-            if da[0] * db[0] + da[1] * db[1] < -0.97:
-                pairs.append((a, b))
+            (a, wa, da), (b, wb, db) = proc[i], proc[j]
+            if a != b and da[0] * db[0] + da[1] * db[1] < -0.97:
+                pairs.append(((a, wa), (b, wb)))
     return pairs
+
+
+def _two_runs(proc: list) -> bool:
+    """Exactly two incident entries that belong to two different runs (a run with both
+    ends on the same node -- a loop -- does not pass anything through that node)."""
+    return len(proc) == 2 and proc[0][0] != proc[1][0]
 
 
 def _propagate_line_numbers(pipes: list[PipeRun], objects: list[PIDObject], labels: dict[int, tuple[float, float]]) -> None:
@@ -786,13 +998,12 @@ def _propagate_line_numbers(pipes: list[PipeRun], objects: list[PIDObject], labe
         o = by_id.get(node)
         proc = [(k, w) for k, w, _ in lst if pipes[k].kind == PipeKind.PROCESS]
         if o is not None:
-            if o.category in (Category.VALVE, Category.FITTING) and len({k for k, _ in proc}) == 2:
+            if o.category in (Category.VALVE, Category.FITTING) and _two_runs(proc):
                 (a, wa), (b, wb) = proc
                 link(a, wa, b, wb)
             continue
-        ends = {k: w for k, w, _ in lst}
-        for a, b in _straight_pairs_at(lst, pipes):
-            link(a, ends[a], b, ends[b])
+        for (a, wa), (b, wb) in _straight_pairs_at(lst, pipes):
+            link(a, wa, b, wb)
 
     dist: dict[tuple[int, str], float] = {}
     best_mid: dict[int, tuple[float, str]] = {}
@@ -908,7 +1119,7 @@ def _flow_directions(pipes: list[PipeRun], runs, net: Network, sep: Separation, 
             proc = [(k, w, d) for k, w, d in lst if pipes[k].kind == PipeKind.PROCESS]
             o = by_id.get(node)
             if o is not None:
-                if len(proc) != 2 or o.category == Category.INSTRUMENT or o.cls == SymbolClass.TANK:
+                if not _two_runs(proc) or o.category == Category.INSTRUMENT or o.cls == SymbolClass.TANK:
                     continue
                 (a, wa, _), (b, wb, _) = proc
                 ia, ib = into(a, wa), into(b, wb)
@@ -917,7 +1128,7 @@ def _flow_directions(pipes: list[PipeRun], runs, net: Network, sep: Separation, 
                 elif ib is not None and ia is None:
                     changed |= set_into(a, wa, not ib)
                 continue
-            if len(proc) == 2 and len(lst) > 2:  # tee whose branch is not a process line (instrument tap)
+            if _two_runs(proc) and len(lst) > 2:  # tee whose branch is not a process line (instrument tap)
                 (a, wa, _), (b, wb, _) = proc
                 ia, ib = into(a, wa), into(b, wb)
                 if ia is not None and ib is None:
@@ -927,7 +1138,7 @@ def _flow_directions(pipes: list[PipeRun], runs, net: Network, sep: Separation, 
                 continue
             known = [into(k, w) for k, w, _ in proc]
             unknown = [(k, w) for (k, w, _), v in zip(proc, known) if v is None]
-            if len(proc) >= 3 and len(unknown) == 1:
+            if len(proc) >= 3 and len(unknown) == 1 and len({k for k, _, _ in proc}) == len(proc):
                 vals = [v for v in known if v is not None]
                 if all(vals):
                     changed |= set_into(*unknown[0], False)
@@ -1001,8 +1212,9 @@ def _merge_into(doc: PIDDocument, part: PIDDocument) -> None:
     doc.pipes.extend(part.pipes)
     doc.texts.extend(part.texts)
     doc.meta.setdefault("pages", {}).update(part.meta.get("pages", {}))
-    if part.meta.get("unreadable_pages"):
-        doc.meta.setdefault("unreadable_pages", []).extend(part.meta["unreadable_pages"])
+    for key in ("unreadable_pages", "empty_pages"):
+        if part.meta.get(key):
+            doc.meta.setdefault(key, []).extend(part.meta[key])
 
 
 def _merge_info(infos: list[DrawingInfo]) -> DrawingInfo:

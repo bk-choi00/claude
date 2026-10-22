@@ -592,6 +592,8 @@ def _nozzles_with_access(doc: PIDDocument, plan: LayoutPlan, room: EngineRoom, p
     moved: set[str] = set()
     for attempt in range(2):
         blocked: list[NozzleBlock] = []
+        for pl in placements.values():
+            pl.nozzles = {}
         for oid, pl in placements.items():
             noz, blk = compute_nozzles_detailed(doc, objs[oid], pl, placements, room, zone_of=zone_of)
             pl.nozzles = noz
@@ -754,6 +756,33 @@ def _neighbor_targets(doc: PIDDocument, obj: PIDObject, placements: dict[str, Pl
 
 NOZZLE_PROBE = 0.4  # m: the space just outside a nozzle must be free for the pipe stub
 _PROBE_STEPS = (0.1, 0.25, NOZZLE_PROBE)
+NOZZLE_STUB = 0.5  # m of pipe stub assumed straight out of a nozzle
+NOZZLE_SPACING = 0.55  # m between the stubs of nozzles of different objects where possible (> one routing cell)
+
+
+def _seg_dist(p1: Sequence[float], q1: Sequence[float], p2: Sequence[float], q2: Sequence[float]) -> float:
+    """Closest distance between two 3D segments."""
+    a0, a1, b0, b1 = (np.asarray(x, dtype=float) for x in (p1, q1, p2, q2))
+    d1, d2, r = a1 - a0, b1 - b0, a0 - b0
+    a, e, f = float(d1 @ d1), float(d2 @ d2), float(d2 @ r)
+    if a < 1e-12 and e < 1e-12:
+        return float(np.linalg.norm(r))
+    if a < 1e-12:
+        s_, t = 0.0, min(max(f / e, 0.0), 1.0)
+    else:
+        c = float(d1 @ r)
+        if e < 1e-12:
+            t, s_ = 0.0, min(max(-c / a, 0.0), 1.0)
+        else:
+            b = float(d1 @ d2)
+            den = a * e - b * b
+            s_ = min(max((b * f - c * e) / den, 0.0), 1.0) if den > 1e-12 else 0.0
+            t = (b * s_ + f) / e
+            if t < 0.0:
+                t, s_ = 0.0, min(max(-c / a, 0.0), 1.0)
+            elif t > 1.0:
+                t, s_ = 1.0, min(max((b - c) / a, 0.0), 1.0)
+    return float(np.linalg.norm((a0 + d1 * s_) - (b0 + d2 * t)))
 _LOCAL_NORMALS = {"+x": (1, 0, 0), "-x": (-1, 0, 0), "+y": (0, 1, 0), "-y": (0, -1, 0), "top": (0, 0, 1)}
 
 
@@ -832,9 +861,11 @@ def compute_nozzles_detailed(doc: PIDDocument, obj: PIDObject, pl: Placement3D, 
     Fixed symbol ports keep their mapped face. Boundary nozzles go on the face pointing to the
     connected equipment (top face for double-bottom tanks / sea chests, then the upper part of
     their side faces), at the point closest to it, moved along the face (or to the next best
-    face) until the space just outside the nozzle is free of other equipment and at least 0.3 m
-    from the object's other nozzles. Every nozzle is probe-checked (0.1 / 0.25 / 0.4 m out along
-    its normal); a covered one is returned as a :class:`NozzleBlock` naming the covering item.
+    face) until the space just outside the nozzle is free of other equipment, at least 0.3 m
+    from the object's other nozzles and, where possible, its stub (NOZZLE_STUB out along the
+    normal) NOZZLE_SPACING from the stubs of nozzles already placed on other objects. Every
+    nozzle is probe-checked (0.1 / 0.25 / 0.4 m out along its normal); a covered one is returned
+    as a :class:`NozzleBlock` naming the covering item.
     """
     keys: list[str] = [p.name for p in obj.ports]
     for p in process_pipes(doc):
@@ -851,6 +882,16 @@ def compute_nozzles_detailed(doc: PIDDocument, obj: PIDObject, pl: Placement3D, 
     box = placement_box(pl)
     cx, cy, cz = box.center
     others = [(oid, placement_box(q).expand(0.05)) for oid, q in placements.items() if oid != obj.id]
+    near = box.expand(NOZZLE_STUB + NOZZLE_SPACING + 0.5)
+    stubs = []  # stubs of nozzles of nearby objects
+    for oid, q in placements.items():
+        if oid == obj.id:
+            continue
+        for nz in q.nozzles.values():
+            if near.contains(nz.x, nz.y, nz.z):
+                nn = nozzle_normal(q, nz)
+                a = nz.as_tuple()
+                stubs.append((a, (a[0] + NOZZLE_STUB * nn[0], a[1] + NOZZLE_STUB * nn[1], a[2] + NOZZLE_STUB * nn[2])))
     bounds = room.bounds
     l, w, h = pl.size.as_tuple()
     out: dict[str, tuple[float, float, float]] = {}
@@ -867,6 +908,10 @@ def compute_nozzles_detailed(doc: PIDDocument, obj: PIDObject, pl: Placement3D, 
                 if b.contains(*probe):
                     return oid
         return None
+
+    def crowded(pt: tuple[float, float, float], n: tuple[float, float, float]) -> bool:
+        tip = (pt[0] + NOZZLE_STUB * n[0], pt[1] + NOZZLE_STUB * n[1], pt[2] + NOZZLE_STUB * n[2])
+        return any(_seg_dist(pt, tip, a, b) < NOZZLE_SPACING for a, b in stubs)
 
     for k in keys:
         spec_face = None if low else _spec_face(obj.cls, k)
@@ -894,6 +939,7 @@ def compute_nozzles_detailed(doc: PIDDocument, obj: PIDObject, pl: Placement3D, 
                 faces = [inboard] + [f for f in faces if f != inboard]
             order = [(f, False) for f in faces]
         chosen = None
+        spare = None  # free but close to another object's nozzle stub
         first_block: Optional[NozzleBlock] = None
         for face, high in order:
             n = _world_normal(pl, face)
@@ -903,12 +949,16 @@ def compute_nozzles_detailed(doc: PIDDocument, obj: PIDObject, pl: Placement3D, 
                     continue
                 who = blocker(wpt, n)
                 if who is None:
-                    chosen = wpt
-                    break
-                if first_block is None:
+                    if not stubs or not crowded(wpt, n):
+                        chosen = wpt
+                        break
+                    spare = spare or wpt
+                elif first_block is None:
                     first_block = NozzleBlock(obj.id, k, wpt, n, who)
             if chosen is not None:
                 break
+        if chosen is None and spare is not None:
+            chosen = spare
         if chosen is None:  # every face is covered: closest point on the preferred face, reported
             face = order[0][0]
             chosen = local_to_world(pl, *_face_candidates(pl, face, lx, ly, lz, order[0][1])[0])

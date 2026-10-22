@@ -33,6 +33,9 @@ GENERIC_TAG_RE = re.compile(r"^[A-Z]{1,4}(?:-[A-Z]{1,3})?-?\d{1,4}[A-Z]?$")
 LOOSE_LINE_RE = re.compile(
     r"^(?P<size>DN\s?\d{2,4}|\d{1,4}(?:A|B|\"|MM)?)[-\s](?P<sys>[A-Z]{2,3})[-\s](?P<n>\d{2,5})(?:[-\s](?P<spec>[0-9A-Z]{1,6}))*$"
 )
+# a reference to a sheet note written next to a symbol: "NOTE 2", "(NOTE 3)", "SEE NOTE 4", "NOTES 1,2"
+CALLOUT_RE = re.compile(r"^\(?\s*(?:SEE\s+)?NOTES?\s*(?:NO\.?\s*)?\d{1,2}[A-Z]?(?:\s*[,&]\s*\d{1,2}[A-Z]?)*\s*\)?\.?$",
+                        re.I)
 INSTR_LETTERS_RE = re.compile(r"^[A-Z]{1,5}$")
 INSTR_NUMBER_RE = re.compile(r"^\d{1,5}[A-Z]?$")
 SHIP_TYPE_RE = re.compile(
@@ -180,6 +183,15 @@ def assign_texts(lines: Sequence[TextLine], regions: Regions, objects: Sequence[
             if o.category == Category.CONNECTOR and _inside_obj(t, o, 0.1 * unit):
                 host = o
                 break
+        if host is None and CALLOUT_RE.match(t.text.strip()):
+            # note callout: a NOTE text (never owned); the nearest symbol records the reference
+            results[k].role = TextRole.NOTE
+            near = min(objects, key=lambda o: text_distance(t, o.bbox), default=None)
+            if near is not None and text_distance(t, near.bbox) <= 1.5 * unit:
+                attrs = out.object_attrs.setdefault(near.index, {})
+                ref = normalize(t.text).strip("().")
+                attrs["notes"] = ref if "notes" not in attrs else attrs["notes"] + "; " + ref
+            continue
         kind = tag_kind(t.text)
         if host is None and kind in (None, "generic"):
             # free text right next to an off-page connector (and closer to it than to anything else)

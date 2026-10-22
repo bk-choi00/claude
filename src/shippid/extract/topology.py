@@ -407,6 +407,10 @@ def build_network(lines: Sequence[MLine], bodies: Sequence[Body], dots: Sequence
         if p.alive and i not in used:
             n = nodes[node_of[(i, 0)]]
             runs.append(walk(n, (i, 0)))
+    # a line drawn a little past a symbol's last flange leaves a stub whose both ends attach to that
+    # symbol: it carries no connection (and would make the symbol its own neighbour)
+    runs = [r for r in runs if not _self_stub(r, bodies, attach_tol)]
+    live = {i for r in runs for i in r.pieces}
 
     # ---- 8. port names per symbol
     ports: dict[int, list[tuple[str, tuple[float, float], tuple[float, float]]]] = defaultdict(list)
@@ -417,7 +421,7 @@ def build_network(lines: Sequence[MLine], bodies: Sequence[Body], dots: Sequence
         if n.fixed_port:
             by_body[n.body].append((n, (0.0, 0.0)))
             continue
-        if not n.ends:
+        if not n.ends or not any(i in live for i, _ in n.ends):
             continue
         i, e = n.ends[0]
         d = pieces[i].direction_from(e)
@@ -502,6 +506,14 @@ def _direct_links(bodies: Sequence[Body], nodes: list[Node], node_tol: float, un
                 out.append(Run([(px, py), (px, py)], na, nb, [], False, 0.0, None))
                 break
     return out
+
+
+def _self_stub(r: Run, bodies: Sequence[Body], tol: float) -> bool:
+    """A traced run that starts and ends on the same symbol without leaving its drawn box."""
+    if r.start.body is None or r.start.body != r.end.body or not r.pieces:
+        return False
+    b = bodies[r.start.body].bbox
+    return all(b[0] - tol <= x <= b[2] + tol and b[1] - tol <= y <= b[3] + tol for x, y in r.points)
 
 
 def _outward(b: Body, n: Node, toward_pipe: tuple[float, float]) -> tuple[float, float]:
