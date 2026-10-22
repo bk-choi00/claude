@@ -27,11 +27,23 @@ snippets because the primary host was unreachable from the build sandbox.
   ```
   vllm serve google/gemma-4-31B-it --max-model-len 32768 \
     --reasoning-parser gemma4 --tool-call-parser gemma4 --enable-auto-tool-choice \
-    --limit-mm-per-prompt '{"image": 8, "audio": 0}' --mm-processor-kwargs '{"max_soft_tokens": 1120}'
+    --limit-mm-per-prompt '{"image": 8, "video": 0}' --mm-processor-kwargs '{"max_soft_tokens": 1120}'
   ```
   Memory: BF16 ≈ 70–75 GB (one 80 GB GPU), FP8 ≈ 38 GB (`RedHatAI/gemma-4-31B-it-FP8-dynamic`),
-  INT4 ≈ 20 GB (`google/gemma-4-31B-it-qat-w4a16-ct`). Ollama: `gemma4:31b` (Q4_K_M, data-URL images
-  only, fixed ~280-token image budget *(unverified)*). llama.cpp: `ggml-org/gemma-4-31B-it-GGUF`.
+  INT4 ≈ 20 GB (`google/gemma-4-31B-it-qat-w4a16-ct`). vLLM ≤ 0.31.0 / SGLang ≤ 0.5.21 are the
+  last releases installable on Python 3.10.
+* Ollama: `gemma4:31b`; `/v1` accepts only base64 data-URL images, maps `response_format`
+  json_object/json_schema to its native `format`, thinking via `reasoning_effort` (`"none"` = off),
+  reasoning returned in `message.reasoning`; send `temperature`/`top_p` explicitly (it otherwise
+  forces top_p = 1.0); no `top_k` on `/v1`. Image budget in current builds is dynamic (70–1120
+  tokens via llama-server) — older reports of a fixed 280 are unverified.
+* llama.cpp: `llama-server -hf ggml-org/gemma-4-31B-it-GGUF` reads the schema from the OpenAI nested
+  form `response_format.json_schema.schema`; thinking via `chat_template_kwargs`; reasoning in
+  `reasoning_content`; `--image-min-tokens/--image-max-tokens`.
+* Reported vLLM issue (#39130): with the gemma4 reasoning parser and thinking off, guided decoding
+  may be bypassed → always validate JSON client-side (shippid does, with repair rounds).
+* Gemini API: thinking via `generationConfig.thinkingConfig.thinkingLevel` ("high");
+  JSON-schema output for Gemma models is not officially documented → fall back to prompt-only JSON.
 
 ## Readable-PDF extraction
 
