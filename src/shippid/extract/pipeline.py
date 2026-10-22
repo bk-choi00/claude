@@ -766,7 +766,7 @@ def _analyse(pc: PageContent, lines: list[TextLine], cfg: Config, opts: ExtractO
                     p.role = "excluded"
     if unit is None:
         free_ids = [p.id for p in ps.prims if p.role == ""]
-        unit = estimate_unit(ps.prims, free_ids, max(0.6, 0.5 * tol), default=unit0)
+        unit = estimate_unit(ps.prims, free_ids, max(0.6, 0.5 * tol), default=unit0, page_size=(pc.width, pc.height))
         probed = _probe_unit(ps, free_ids, unit, tol, lib, cache)
         if probed is not None:
             unit, anchored = probed, True

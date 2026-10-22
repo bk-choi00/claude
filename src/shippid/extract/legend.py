@@ -49,7 +49,8 @@ from ..config import Config
 from ..model import ActuatorType, Category, SymbolClass
 from ..pdf.reader import PageContent, read_page
 from ..symbols import ACTUATOR_PRIMS, Circle, Line, Poly, PortSpec, Primitive, Rect, SymbolSpec, get_symbol, sample_outline
-from .primitives import DSU, PrimSet, bbox_inside, bbox_union, estimate_unit, prim_distance
+from .lettering import Lettering
+from .primitives import DSU, PrimSet, bbox_inside, bbox_union, prim_distance
 from .regions import LEGEND_RE, NOTES_RE, Regions, _enclosing_box, _grow_block, detect_regions
 from .symbols_match import (
     INK_TOL,
@@ -281,6 +282,7 @@ class PageGeometry:
     regions: Regions
     unit: float
     tol: float
+    lettering: Optional[Lettering] = None  # stroke lettering without a text carrier (marked 'text')
 
 
 def page_lines(pc: PageContent) -> list[TextLine]:
@@ -301,17 +303,16 @@ def prepare_page(pc: PageContent, config: Optional[Config] = None,
     """Primitives, text lines (SHX stroke text marked), symbol unit and sheet regions -- the same
     computation as the first steps of :func:`shippid.extract.pipeline.extract_page` (which can
     reuse the result)."""
-    from .pipeline import _mark_text_strokes  # the extractor's own helper (imported late: no cycle)
+    from .pipeline import page_text_strokes  # the extractor's own first step (imported late: no cycle)
 
     cfg = config or Config()
     tol = cfg.snap_tol
     ps = PrimSet.from_page(pc)
     if lines is None:
         lines = page_lines(pc)
-    _mark_text_strokes(ps, lines)
-    unit = estimate_unit(ps.prims, [p.id for p in ps.prims if p.role != "text"], max(0.6, 0.5 * tol))
+    unit, lettering = page_text_strokes(ps, lines, tol, None, (pc.width, pc.height))
     regions = detect_regions(ps, lines, pc.width, pc.height, tol, unit)
-    return PageGeometry(pc, ps, lines, regions, unit, tol)
+    return PageGeometry(pc, ps, lines, regions, unit, tol, lettering)
 
 
 def page_has_heading(pc_or_text: Union[PageContent, str]) -> bool:

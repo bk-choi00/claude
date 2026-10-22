@@ -587,15 +587,13 @@ def page_scale(page_size: Optional[tuple[float, float]]) -> float:
     return max(1.0, min(page_size) / A0_SHORT_SIDE)
 
 
-def estimate_unit(prims: list[Prim], ids: Sequence[int], tol: float, default: Optional[float] = 18.0,
+def estimate_unit(prims: list[Prim], ids: Sequence[int], tol: float, default: Optional[float] = None,
                   page_size: Optional[tuple[float, float]] = None) -> float:
     """Typical symbol size (points per symbol unit) from clusters of symbol-only strokes: the median
-    size of the clusters between 5 and 80 points, on a page larger than A0 between 5 and 80 times
-    :func:`page_scale` (``default``, also scaled, with fewer than three clusters)."""
+    size of the clusters between 5 and 80 points -- on a page larger than A0 between 5 and 80 times
+    :func:`page_scale` -- or ``default`` (18 points times the page scale) with fewer than three."""
     s = page_scale(page_size)
     default = 18.0 * s if default is None else default
-    if page_size is not None and default == 18.0:
-        default = 18.0 * s
     core = [i for i in ids if prims[i].is_core and not prims[i].dashed]
     if not core:
         return default
