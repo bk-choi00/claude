@@ -346,7 +346,7 @@ def find_loose_rects(prims: list[Prim], ids: Sequence[int], tol: float) -> list[
                     ends[(k[0] + dx, k[1] + dy)].append(i)
 
     def at(x: float, y: float) -> set[int]:
-        return set(ends.get(key(x, y), ()))
+        return {i for i in ends.get(key(x, y), ()) if min(math.hypot(x - a, y - b) for a, b in prims[i].endpoints()) <= 1.5 * q}
 
     out: list[list[int]] = []
     used: set[int] = set()
@@ -381,6 +381,54 @@ def find_loose_rects(prims: list[Prim], ids: Sequence[int], tol: float) -> list[
                     break
             if h in used:
                 break
+    return out
+
+
+def find_loose_polygons(prims: list[Prim], ids: Sequence[int], tol: float, max_size: float, max_edges: int = 64) -> list[list[int]]:
+    """Small closed polygons assembled from separate straight segments (CAD exports
+    that explode polylines: a valve triangle drawn as three lines)."""
+    import networkx as nx
+
+    q = max(tol, 1e-3)
+    g = nx.MultiGraph()
+    node_at: dict[tuple[int, int], list[tuple[int, float, float]]] = defaultdict(list)
+    n_nodes = 0
+
+    def node(x: float, y: float) -> int:
+        nonlocal n_nodes
+        k = (int(round(x / q)), int(round(y / q)))
+        best = None
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for n, nx_, ny_ in node_at.get((k[0] + dx, k[1] + dy), ()):
+                    d = math.hypot(x - nx_, y - ny_)
+                    if d <= q and (best is None or d < best[0]):
+                        best = (d, n)
+        if best is not None:
+            return best[1]
+        n = n_nodes
+        n_nodes += 1
+        node_at[k].append((n, x, y))
+        return n
+
+    for i in ids:
+        p = prims[i]
+        a, b = node(p.x0, p.y0), node(p.x1, p.y1)
+        if a != b:
+            g.add_edge(a, b, pid=i)
+    out: list[list[int]] = []
+    simple = nx.Graph()
+    for a, b, d in g.edges(data=True):
+        if not simple.has_edge(a, b):
+            simple.add_edge(a, b, pid=d["pid"])
+    for cyc in nx.cycle_basis(simple):
+        if not (3 <= len(cyc) <= max_edges):
+            continue
+        pids = [simple.edges[cyc[k], cyc[(k + 1) % len(cyc)]]["pid"] for k in range(len(cyc))]
+        bb = bbox_union(prims[i].bbox for i in pids)
+        if max(bb[2] - bb[0], bb[3] - bb[1]) > max_size:
+            continue
+        out.append(pids)
     return out
 
 

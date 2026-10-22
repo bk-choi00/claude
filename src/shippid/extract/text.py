@@ -174,14 +174,19 @@ def assign_texts(lines: Sequence[TextLine], regions: Regions, objects: Sequence[
             inside_instr.setdefault(host.index, []).append(k)
             continue
         for o in objects:
-            if o.category == Category.CONNECTOR and (_inside_obj(t, o, 0.1 * unit) or _beside_connector(t, o, unit)):
+            if o.category == Category.CONNECTOR and _inside_obj(t, o, 0.1 * unit):
                 host = o
                 break
+        kind = tag_kind(t.text)
+        if host is None and kind in (None, "generic"):
+            # free text right next to an off-page connector (and closer to it than to anything else)
+            near = min(objects, key=lambda o: text_distance(t, o.bbox), default=None)
+            if near is not None and near.category == Category.CONNECTOR and text_distance(t, near.bbox) <= 0.8 * unit:
+                host = near
         if host is not None:
             results[k] = TextResult(TextRole.CONNECTOR, ("obj", host.index))
             inside_conn.setdefault(host.index, []).append(k)
             continue
-        kind = tag_kind(t.text)
         if kind == "line_number":
             results[k].role = TextRole.LINE_NUMBER
         elif kind is not None:
@@ -217,7 +222,11 @@ def assign_texts(lines: Sequence[TextLine], regions: Regions, objects: Sequence[
                 comp = _compat(kind, o.category)
                 if comp is None:
                     continue
-                C[a, b] = d + comp + _side_penalty(t, o)
+                # tags are written centred on their symbol: the centre offset breaks ties between
+                # neighbours that are equally close (symbols bolted flange-to-flange)
+                oc = ((o.body[0] + o.body[2]) / 2, (o.body[1] + o.body[3]) / 2)
+                centre = math.hypot(t.cx - oc[0], t.cy - oc[1]) / unit
+                C[a, b] = d + 0.3 * centre + comp + _side_penalty(t, o)
         rows, cols = linear_sum_assignment(C)
         for a, b in zip(rows.tolist(), cols.tolist()):
             if C[a, b] >= big:
@@ -281,14 +290,6 @@ def assign_texts(lines: Sequence[TextLine], regions: Regions, objects: Sequence[
             results[k].owner = ("pipe", best[1])
             out.pipe_line_numbers.setdefault(best[1], normalize(t.text))
     return out
-
-
-def _beside_connector(t: TextLine, o: ObjRef, unit: float) -> bool:
-    """Text written right next to a connector (outside its outline), on its axis."""
-    b = o.bbox
-    if t.vertical:
-        return b[0] - 0.2 * unit <= t.cx <= b[2] + 0.2 * unit and min(abs(t.bbox[1] - b[3]), abs(b[1] - t.bbox[3])) <= 0.35 * unit
-    return b[1] - 0.2 * unit <= t.cy <= b[3] + 0.2 * unit and min(abs(t.bbox[0] - b[2]), abs(b[0] - t.bbox[2])) <= 0.35 * unit
 
 
 def _compat(kind: Optional[str], cat: Category) -> Optional[float]:

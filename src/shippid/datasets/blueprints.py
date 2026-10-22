@@ -151,6 +151,16 @@ class ReturnLine:
 
 
 @dataclass
+class Drain:
+    """Drain / overflow line dropped from the top train of ``stage`` to an off-page connector below
+    the stage (it crosses the trains underneath). Optional: skipped if no free route exists."""
+
+    stage: "Stage"
+    connector: Item
+    valve: Optional[Item] = None
+
+
+@dataclass
 class ShipIdentity:
     hull_no: str
     ship_type: str
@@ -171,6 +181,7 @@ class SystemTopology:
     side_links: list[SideLink] = field(default_factory=list)
     attachments: list[Attachment] = field(default_factory=list)
     returns: list[ReturnLine] = field(default_factory=list)
+    drains: list[Drain] = field(default_factory=list)
     sizes: dict[str, int] = field(default_factory=dict)  # size class -> nominal size (mm, 'A')
     notes: list[str] = field(default_factory=list)
     namer: Optional["Namer"] = None
@@ -193,6 +204,8 @@ class SystemTopology:
         out += [b.valve for b in self.bypasses] + [r.valve for r in self.reliefs]
         out += [s.connector for s in self.side_links] + [a.obj for a in self.attachments]
         out += [r.valve for r in self.returns if r.valve]
+        for d in self.drains:
+            out += [d.connector] + ([d.valve] if d.valve else [])
         return out
 
     def train_count(self) -> int:
@@ -299,9 +312,11 @@ class _Builder:
 
     # -- counts ----------------------------------------------------------------
     def count(self, lo: int, hi: int) -> int:
-        """Random count in [lo, hi], shrunk by the complexity factor (never below lo)."""
+        """Random count in [lo, hi] biased towards the upper end (real installations are mostly
+        duplicated / triplicated); the upper bound shrinks with the complexity factor."""
         hi = max(lo, int(round(lo + (hi - lo) * self.c)))
-        return self.rng.randint(lo, hi)
+        values = list(range(lo, hi + 1))
+        return self.rng.choices(values, weights=[1 + 2 * i for i in range(len(values))])[0]
 
     def chance(self, p: float) -> bool:
         return self.rng.random() < p
@@ -453,6 +468,13 @@ class _Builder:
         self.topo.returns.append(ReturnLine(target=tank.key, train=train.key,
                                             valve=self.valve(S.GLOBE_VALVE, A.HANDWHEEL) if valve else None))
 
+    def drain(self, stage: Stage, labels: tuple[str, ...], p: float = 0.65) -> None:
+        """Maybe add a drain line from the top train of ``stage`` (needs >= 2 rows to cross)."""
+        if len(stage.trains) >= 2 and self.chance(p):
+            valve = self.valve(self.rng.choice([S.GLOBE_VALVE, S.GATE_VALVE]), A.HANDWHEEL,
+                               tagged=self.chance(0.7))
+            self.topo.drains.append(Drain(stage, self.connector(self.rng.choice(labels)), valve))
+
     def level_gauge(self, tank: Item, letters: str = "LT") -> None:
         if self.chance(0.6):
             self.topo.attachments.append(Attachment(tank.key, self.instr(letters, self.remote_cls, "tank level")))
@@ -487,8 +509,9 @@ def _ballast(b: _Builder) -> None:
     if b.chance(0.35):
         b.train(s0, [b.valve(*hyd)], source=b.connector("FROM DEBALLAST MAIN"))
     n = b.count(1, 3)
-    b.pump_stage(n, "NO.{n} BALLAST PUMP", S.PUMP_CENTRIFUGAL,
-                 _cap(r, (1500, 2000, 2500, 3000, 3500), "M3/H x 30 MTH"), hyd, hyd, strainer=False, check=None)
+    st = b.pump_stage(n, "NO.{n} BALLAST PUMP", S.PUMP_CENTRIFUGAL,
+                      _cap(r, (1500, 2000, 2500, 3000, 3500), "M3/H x 30 MTH"), hyd, hyd, strainer=False, check=None)
+    b.drain(st, ("TO BILGE WELL", "TO EDUCTOR SUCTION", "DRAIN TO BILGE"))
     s2 = b.stage()
     for k in range(2 if n >= 2 and b.chance(0.3) else 1):
         b0, b1 = b.branch(), b.branch()
@@ -553,6 +576,7 @@ def _bilge(b: _Builder) -> None:
     els = b.pump_elements(feed, (S.GATE_VALVE, A.HANDWHEEL), (S.GATE_VALVE, A.HANDWHEEL), strainer=True,
                           check=True, gauges=True, transmitter=False, relief=b.chance(0.7), gauge_side=1)
     b.train(s1, els, group=1, size_class="branch")
+    b.drain(s1, ("TO SLUDGE TK", "TO OILY BILGE TK", "TO SLUDGE PUMP"))
     s2 = b.stage()
     b.train(s2, [b.check(S.SDNR_VALVE, tagged=True)], sink=b.equip(S.OVERBOARD, "OVERBOARD"), group=0)
     if b.chance(0.6):
@@ -594,9 +618,10 @@ def _fo_transfer(b: _Builder) -> None:
         b.train(s0, [b.valve(*qc)], source=t, template="stor")
     if b.chance(0.4):
         b.train(s0, [b.valve(S.GATE_VALVE, A.HANDWHEEL)], source=b.connector("FROM BUNKER STATION (P&S)"))
-    b.pump_stage(b.count(1, 2), "NO.{n} H.F.O. TRANSFER PUMP", S.PUMP_SCREW,
-                 _cap(r, (50, 80, 100, 150), "M3/H x 4.0 BAR"), (S.GATE_VALVE, A.HANDWHEEL),
-                 (S.GLOBE_VALVE, A.HANDWHEEL), strainer=True)
+    st = b.pump_stage(b.count(1, 2), "NO.{n} H.F.O. TRANSFER PUMP", S.PUMP_SCREW,
+                      _cap(r, (50, 80, 100, 150), "M3/H x 4.0 BAR"), (S.GATE_VALVE, A.HANDWHEEL),
+                      (S.GLOBE_VALVE, A.HANDWHEEL), strainer=True)
+    b.drain(st, ("TO F.O. OVERFLOW TK", "TO SLUDGE TK", "TO F.O. DRAIN TK"))
     if b.chance(0.5):
         mid = b.stage()
         el: list[Element] = [b.equip(S.FLOW_METER, "F.O. FLOW METER" if b.chance(0.4) else ""),
@@ -643,8 +668,9 @@ def _fo_supply(b: _Builder) -> None:
         b.topo.bypasses.append(Bypass(b0.key, b1.key, b.valve(S.GATE_VALVE, A.HANDWHEEL), side=1))
         b.train(st, [b0, b.equip(S.FLOW_METER, "F.O. FLOW METER" if b.chance(0.5) else ""), b1,
                      b.tap("FQI", side=-1, service="F.O. consumption")])
-    b.pump_stage(b.count(1, 2), "NO.{n} F.O. CIRC. PUMP", S.PUMP_SCREW, _cap(r, (10, 14, 18), "M3/H x 10 BAR"),
-                 (S.GATE_VALVE, A.HANDWHEEL), (S.GATE_VALVE, A.HANDWHEEL), strainer=False)
+    st = b.pump_stage(b.count(1, 2), "NO.{n} F.O. CIRC. PUMP", S.PUMP_SCREW, _cap(r, (10, 14, 18), "M3/H x 10 BAR"),
+                      (S.GATE_VALVE, A.HANDWHEEL), (S.GATE_VALVE, A.HANDWHEEL), strainer=False)
+    b.drain(st, ("TO F.O. DRAIN TK", "TO SLUDGE TK", "TO F.O. OVERFLOW TK"))
     st = b.stage()
     nh = b.count(1, 2)
     for k in range(nh):
@@ -689,6 +715,7 @@ def _lube_oil(b: _Builder) -> None:
     s1 = b.pump_stage(b.count(1, 2), "NO.{n} M/E L.O. PUMP", r.choice([S.PUMP_SCREW, S.PUMP_CENTRIFUGAL]),
                       _cap(r, (400, 600, 800, 1000), "M3/H x 4.5 BAR"), (S.BUTTERFLY_VALVE, A.HANDWHEEL),
                       (S.BUTTERFLY_VALVE, A.HANDWHEEL), strainer=False)
+    b.drain(s1, ("TO L.O. DRAIN TK", "TO SLUDGE TK", "TO L.O. SETT. TK"))
     purifier = b.chance(0.6)
     if purifier:
         pump = b.equip(S.PUMP_SCREW, "L.O. PURIFIER FEED PUMP" if b.chance(0.5) else "")
@@ -740,9 +767,10 @@ def _sw_cooling(b: _Builder) -> None:
     for name in ["HIGH SEA CHEST", "LOW SEA CHEST"][: b.count(1, 2)]:
         b.train(s0, [b.valve(S.BUTTERFLY_VALVE, act), b.equip(S.STRAINER, "S.W. STRAINER" if b.chance(0.5) else "")],
                 source=b.equip(S.SEA_CHEST, name, size=(r.uniform(1.6, 2.4), r.uniform(1.0, 1.4))), template="chest")
-    b.pump_stage(b.count(1, 3), "NO.{n} MAIN C.S.W. PUMP", S.PUMP_CENTRIFUGAL,
-                 _cap(r, (600, 900, 1200, 1500), "M3/H x 25 MTH"), (S.BUTTERFLY_VALVE, A.HANDWHEEL),
-                 (S.BUTTERFLY_VALVE, A.HANDWHEEL), strainer=False)
+    st = b.pump_stage(b.count(1, 3), "NO.{n} MAIN C.S.W. PUMP", S.PUMP_CENTRIFUGAL,
+                      _cap(r, (600, 900, 1200, 1500), "M3/H x 25 MTH"), (S.BUTTERFLY_VALVE, A.HANDWHEEL),
+                      (S.BUTTERFLY_VALVE, A.HANDWHEEL), strainer=False)
+    b.drain(st, ("TO BILGE WELL", "DRAIN TO BILGE", "TO OVERBOARD"))
     st = b.stage()
     nc = b.count(1, 2)
     for k in range(nc):
@@ -778,9 +806,10 @@ def _fw_cooling(b: _Builder) -> None:
     exp = b.tank("C.F.W. EXPANSION TK", _cap(r, (3, 5, 8), "M3"), size=(r.uniform(2.0, 2.8), r.uniform(1.2, 1.6)))
     b.level_gauge(exp, "LAL")
     b.train(s0, [b.valve(S.GATE_VALVE, A.HANDWHEEL)], source=exp, size_class="small")
-    b.pump_stage(b.count(1, 3), "NO.{n} CENTRAL C.F.W. PUMP", S.PUMP_CENTRIFUGAL,
-                 _cap(r, (500, 700, 900, 1100), "M3/H x 30 MTH"), (S.BUTTERFLY_VALVE, A.HANDWHEEL),
-                 (S.BUTTERFLY_VALVE, A.HANDWHEEL), strainer=False)
+    st = b.pump_stage(b.count(1, 3), "NO.{n} CENTRAL C.F.W. PUMP", S.PUMP_CENTRIFUGAL,
+                      _cap(r, (500, 700, 900, 1100), "M3/H x 30 MTH"), (S.BUTTERFLY_VALVE, A.HANDWHEEL),
+                      (S.BUTTERFLY_VALVE, A.HANDWHEEL), strainer=False)
+    b.drain(st, ("TO C.F.W. DRAIN TK", "TO DRAIN TK", "DRAIN TO BILGE"))
     st = b.stage()
     cooler = b.equip(S.PLATE_HEAT_EXCHANGER, "CENTRAL F.W. COOLER" if b.chance(0.6) else "CENTRAL COOLER")
     cooler.in_port, cooler.out_port = "b_in", "b_out"
@@ -812,9 +841,11 @@ def _fire_main(b: _Builder) -> None:
     if b.chance(0.4):
         b.train(s0, [b.valve(S.GATE_VALVE, A.HANDWHEEL)], source=b.connector("FROM S.W. CROSS-OVER MAIN"))
     n = b.count(1, 2)
-    b.pump_stage(n, "NO.{n} FIRE & G/S PUMP" if b.chance(0.6) else "NO.{n} FIRE PUMP", S.PUMP_CENTRIFUGAL,
-                 _cap(r, (72, 100, 150, 200), "M3/H x 90 MTH"), (S.GATE_VALVE, A.HANDWHEEL),
-                 (S.GLOBE_VALVE, A.HANDWHEEL), strainer=False, check_cls=r.choice([S.CHECK_VALVE, S.SDNR_VALVE]))
+    st = b.pump_stage(n, "NO.{n} FIRE & G/S PUMP" if b.chance(0.6) else "NO.{n} FIRE PUMP", S.PUMP_CENTRIFUGAL,
+                      _cap(r, (72, 100, 150, 200), "M3/H x 90 MTH"), (S.GATE_VALVE, A.HANDWHEEL),
+                      (S.GLOBE_VALVE, A.HANDWHEEL), strainer=False,
+                      check_cls=r.choice([S.CHECK_VALVE, S.SDNR_VALVE]))
+    b.drain(st, ("TO BILGE WELL", "DRAIN TO BILGE", "TO DECK SCUPPER"))
     if b.chance(0.5):
         st = b.stage()
         b.train(st, [b.valve(S.GATE_VALVE, A.HANDWHEEL), b.tap("PI", side=-1, service="fire main")])
@@ -846,6 +877,7 @@ def _compressed_air(b: _Builder) -> None:
         el: list[Element] = [b.tap("TI", side=-1, service="compressor discharge")] if b.chance(0.5) else []
         el += [b.check(), b.valve(S.GLOBE_VALVE, A.HANDWHEEL)]
         b.train(s0, el, source=comp, template="comp")
+    b.drain(s0, ("DRAIN TO BILGE", "TO OILY BILGE TK", "TO BILGE WELL"))
     st = b.stage()
     nr = b.count(1, 2)
     for i in range(nr):
@@ -895,6 +927,7 @@ def _steam(b: _Builder) -> None:
             el.append(b.tap("TI", side=-1, service="condensate"))
         el += [b.equip(S.STRAINER), b.check(), b.valve(S.GATE_VALVE, A.HANDWHEEL)]
         b.train(st, el, template="heat", size_class="branch")
+    b.drain(st, ("TO DRAIN COOLER", "TO OBSERVATION TK", "TO HOT WELL"))
     st = b.stage()
     cascade = b.equip(S.TANK, "CASCADE TK" if b.chance(0.5) else "HOT WELL", _cap(r, (3, 4, 6), "M3"),
                       size=(r.uniform(2.2, 3.0), r.uniform(1.4, 1.8)), inside=True)

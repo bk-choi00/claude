@@ -90,6 +90,8 @@ class _SheetBuilder:
         h = line_height(font, size)
         if anchor == "c":
             x0, y0 = x - w / 2, y - h / 2
+        elif anchor == "tc":
+            x0, y0 = x - w / 2, y
         elif anchor == "tl":
             x0, y0 = x, y
         elif anchor == "r":
@@ -163,9 +165,21 @@ class _SheetBuilder:
         title_lines = list(topo.title)
         if r.random() < 0.5:
             title_lines.append(r.choice(["PIPING DIAGRAM", "P & I DIAGRAM", "DIAGRAMMATIC PIPING"]))
-        rev_h = 10.5 * k
-        h_dwg, h_scale, h_title = 24 * k, 17 * k, (14 + 11 * len(title_lines)) * k
-        h_proj, h_yard, h_appr = 28 * k, 26 * k, 17 * k
+        rev_h = max(10.5 * k, line_height(f, val * 0.85) + 2.5)
+        lab_h = line_height(f, lab)
+
+        def cell_h(size: float, font: str) -> float:  # field label on top, value below it
+            return 2.0 + lab_h + 1.5 + line_height(font, size) + 2.5
+
+        def value_y(y: float, size: float, font: str) -> float:  # centre line of the value
+            return y + 2.0 + lab_h + 1.5 + line_height(font, size) / 2
+
+        t_size = 11.0 * k
+        t_lh = line_height(fb, t_size) * 1.05
+        h_dwg, h_scale = cell_h(11 * k, fb), cell_h(val, f)
+        h_title = 2.0 + lab_h + 2.0 + t_lh * len(title_lines) + 3.0
+        h_proj, h_appr = cell_h(9.5 * k, fb), cell_h(val * 0.9, f)
+        h_yard = line_height(fb, 10.5 * k) + line_height(f, lab * 1.1) + 7.0
         total = h_dwg + h_scale + h_title + h_proj + h_yard + h_appr + rev_h * (n_rev + 1)
         y0 = y1 - total
         self.rect(x0, y0, x1, y1, w=self.st.frame_width)
@@ -197,34 +211,33 @@ class _SheetBuilder:
             if j:
                 self.line(xa, y, xa, y + h_appr)
             self.text(labt, xa + 2, y + 2, lab, TextRole.TITLE_BLOCK, f, "tl")
-            self.text(v, xa + 4, y + h_appr * 0.66, self.fit(v, val * 0.9, third - 8), TextRole.TITLE_BLOCK, f, "l")
+            vs = self.fit(v, val * 0.9, third - 8)
+            self.text(v, xa + 4, value_y(y, vs, f), vs, TextRole.TITLE_BLOCK, f, "l")
         y += h_appr
         self.line(x0, y, x1, y)
         # yard
         yard_size = self.fit(ship.yard, 10.5 * k, tw - 10, fb)
-        self.text(ship.yard, x0 + tw / 2, y + h_yard * 0.42, yard_size, TextRole.TITLE_BLOCK, fb, "c")
+        yb = self.text(ship.yard, x0 + tw / 2, y + 3.0, yard_size, TextRole.TITLE_BLOCK, fb, "tc")
         owner = f"OWNER : {ship.owner}"
-        self.text(owner, x0 + tw / 2, y + h_yard * 0.82, self.fit(owner, lab * 1.1, tw - 10), TextRole.TITLE_BLOCK,
-                  f, "c")
+        self.text(owner, x0 + tw / 2, yb[3] + 1.5, self.fit(owner, lab * 1.1, tw - 10), TextRole.TITLE_BLOCK, f, "tc")
         y += h_yard
         self.line(x0, y, x1, y)
         # project
         half = tw * 0.38
         self.line(x0 + half, y, x0 + half, y + h_proj)
         self.text("HULL NO.", x0 + 2, y + 2, lab, TextRole.TITLE_BLOCK, f, "tl")
-        self.text(ship.hull_no, x0 + half / 2, y + h_proj * 0.6, self.fit(ship.hull_no, 9.5 * k, half - 8, fb),
-                  TextRole.TITLE_BLOCK, fb, "c")
+        hs = self.fit(ship.hull_no, 9.5 * k, half - 8, fb)
+        self.text(ship.hull_no, x0 + half / 2, value_y(y, hs, fb), hs, TextRole.TITLE_BLOCK, fb, "c")
         self.text("SHIP TYPE", x0 + half + 2, y + 2, lab, TextRole.TITLE_BLOCK, f, "tl")
-        self.text(ship.ship_type, x0 + half + (tw - half) / 2, y + h_proj * 0.6,
-                  self.fit(ship.ship_type, 8.5 * k, tw - half - 8, fb), TextRole.TITLE_BLOCK, fb, "c")
+        ss = self.fit(ship.ship_type, 8.5 * k, tw - half - 8, fb)
+        self.text(ship.ship_type, x0 + half + (tw - half) / 2, value_y(y, ss, fb), ss, TextRole.TITLE_BLOCK, fb, "c")
         y += h_proj
         self.line(x0, y, x1, y)
         # title
         self.text("TITLE", x0 + 2, y + 2, lab, TextRole.TITLE_BLOCK, f, "tl")
-        ts = 11.0 * k
         for i, ln in enumerate(title_lines):
-            size = self.fit(ln, ts, tw - 20, fb)
-            self.text(ln, x0 + tw / 2, y + (12 + 11 * i) * k + 1, size, TextRole.TITLE_BLOCK, fb, "c")
+            size = self.fit(ln, t_size, tw - 20, fb)
+            self.text(ln, x0 + tw / 2, y + 2.0 + lab_h + 2.0 + t_lh * (i + 0.5), size, TextRole.TITLE_BLOCK, fb, "c")
         y += h_title
         self.line(x0, y, x1, y)
         # scale / sheet / size
@@ -236,18 +249,18 @@ class _SheetBuilder:
             if j:
                 self.line(xa, y, xa, y + h_scale)
             self.text(labt, xa + 2, y + 2, lab, TextRole.TITLE_BLOCK, f, "tl")
-            self.text(v, xa + fourth / 2, y + h_scale * 0.65, val, TextRole.TITLE_BLOCK, f, "c")
+            self.text(v, xa + fourth / 2, value_y(y, val, f), val, TextRole.TITLE_BLOCK, f, "c")
         y += h_scale
         self.line(x0, y, x1, y)
         # drawing number + revision
         split = tw * 0.8
         self.line(x0 + split, y, x0 + split, y1)
         self.text("DWG. NO.", x0 + 2, y + 2, lab, TextRole.TITLE_BLOCK, f, "tl")
-        self.text(dwg, x0 + split / 2, y + h_dwg * 0.6, self.fit(dwg, 11 * k, split - 10, fb), TextRole.TITLE_BLOCK,
-                  fb, "c")
+        ds = self.fit(dwg, 11 * k, split - 10, fb)
+        self.text(dwg, x0 + split / 2, value_y(y, ds, fb), ds, TextRole.TITLE_BLOCK, fb, "c")
         self.text("REV.", x0 + split + 2, y + 2, lab, TextRole.TITLE_BLOCK, f, "tl")
-        self.text(revs[n_rev - 1], x0 + split + (tw - split) / 2, y + h_dwg * 0.6, 11 * k, TextRole.TITLE_BLOCK, fb,
-                  "c")
+        self.text(revs[n_rev - 1], x0 + split + (tw - split) / 2, value_y(y, 11 * k, fb), 11 * k, TextRole.TITLE_BLOCK,
+                  fb, "c")
         info = DrawingInfo(drawing_no=dwg, title=" ".join(title_lines), system=topo.system, systems=[topo.system],
                            hull_no=ship.hull_no, ship_type=ship.ship_type, revision=revs[n_rev - 1], sheet=sheet_txt,
                            scale="NONE",

@@ -147,6 +147,11 @@ def classify_candidates(ps: PrimSet, cands: Sequence[Candidate], unit: float, op
             if split is not None:
                 dets.extend(split)
                 continue
+        if d.best is None or d.best.score < 0.93:
+            parts = _decompose(ps, d, lib, unit, cache, accept)
+            if parts is not None:
+                dets.extend(parts)
+                continue
         dets.append(d)
     for d in dets:
         _finalise(d, accept)
@@ -177,6 +182,70 @@ def _try_split(ps: PrimSet, c: Candidate, whole: Detection, lib, unit, cache, ac
     if min(scores) >= 0.9 * accept and sum(scores) / len(scores) > whole_score + 0.05:
         return parts
     return None
+
+
+def _decompose(ps: PrimSet, whole: Detection, lib, unit, cache, accept) -> Optional[list[Detection]]:
+    """Symbols bolted flange-to-flange form one touching candidate. Try cuts across
+    the candidate's main axis (never through a closed outline, which stays whole)
+    and keep a split when the point-weighted match score improves."""
+    import shapely
+
+    prims = ps.prims
+    ids = set(whole.prim_ids)
+    atoms: list[tuple[list[int], tuple[float, float, float, float], bool]] = []  # (prim ids, bbox, closed outline)
+    in_ring: set[int] = set()
+    for ring in ps.rings.values():
+        if ring.prim_ids and all(i in ids for i in ring.prim_ids):
+            atoms.append((list(ring.prim_ids), ring.bbox, not ring.filled))
+            in_ring.update(ring.prim_ids)
+    for i in whole.prim_ids:
+        if i not in in_ring:
+            p = prims[i]
+            atoms.append(([i], p.bbox, p.kind == "circle" and not p.filled and p.r >= 0.12 * unit))
+    if len(atoms) < 2 or len(atoms) > 80:
+        return None
+    bb = whole.shape.bbox
+
+    def score(d: Detection) -> float:
+        return d.best.score if d.best else 0.0
+
+    def split_group(group: list[int], current: Detection, depth: int) -> list[Detection]:
+        if len(group) < 2 or depth > 3:
+            return [current]
+        best = None
+        tried: set[tuple] = set()
+        solid = [atoms[a][1] for a in group if atoms[a][2]]
+        splits = []
+        for axis in (0, 1):
+            centre = {a: (atoms[a][1][axis] + atoms[a][1][axis + 2]) / 2 for a in group}
+            cuts = sorted({v for a in group for v in (atoms[a][1][axis], atoms[a][1][axis + 2], centre[a])})
+            eps = 0.02 * unit
+            for c in cuts:
+                if any(b[axis] + 0.05 * unit < c < b[axis + 2] - 0.05 * unit for b in solid):
+                    continue  # never cut through a closed outline
+                left = [a for a in group if centre[a] <= c + eps]
+                right = [a for a in group if centre[a] > c + eps]
+                key = tuple(sorted(left))
+                if not left or not right or key in tried or tuple(sorted(right)) in tried:
+                    continue
+                tried.add(key)
+                splits.append((left, right))
+        for left, right in splits:
+            pa = _detect(ps, [i for a in left for i in atoms[a][0]], lib, unit, cache)
+            pb = _detect(ps, [i for a in right for i in atoms[a][0]], lib, unit, cache)
+            wa, wb = float(len(pa.shape.pts)), float(len(pb.shape.pts))
+            val = (score(pa) * wa + score(pb) * wb) / max(wa + wb, 1e-9)
+            if best is None or val > best[0]:
+                best = (val, left, right, pa, pb)
+        if best is None:
+            return [current]
+        val, left, right, pa, pb = best
+        if val < score(current) + 0.06 or min(score(pa), score(pb)) < accept:
+            return [current]
+        return split_group(left, pa, depth + 1) + split_group(right, pb, depth + 1)
+
+    parts = split_group(list(range(len(atoms))), whole, 0)
+    return parts if len(parts) > 1 else None
 
 
 def _absorb_fragments(ps: PrimSet, dets: list[Detection], lib, unit, cache, accept) -> list[Detection]:
@@ -227,8 +296,11 @@ def _size_prior(dets: list[Detection], accept: float) -> None:
             z = math.log(max(r.scale, 1e-6) / ref)
             return r.score * (0.9 + 0.1 * math.exp(-z * z / (2 * 0.6 ** 2)))
         ranked = sorted(d.results, key=lambda r: -adj(r))
-        if ranked[0] is not d.results[0] and ranked[0].score >= d.results[0].score - 0.03:
-            d.results = ranked
+        top = d.results[0]
+        if ranked[0].variant.cls != top.variant.cls and ranked[0].score >= top.score - 0.03:
+            # switch class only; keep the canonical orientation chosen by the matcher
+            winner = ranked[0].variant.cls
+            d.results = [r for r in d.results if r.variant.cls == winner] + [r for r in d.results if r.variant.cls != winner]
             _finalise(d, accept)
 
 
@@ -281,6 +353,58 @@ def _ports_dir(d: tuple[float, float]) -> Point:
     return Point(x=round(d[0], 4), y=round(d[1], 4))
 
 
+@dataclass
+class _Stage:
+    ps: PrimSet
+    regions: Regions
+    sep: Separation
+    cands: list[Candidate]
+    dets: list[Detection]
+    diag_lines: list[MLine]
+    unit: float
+
+
+def _analyse(pc: PageContent, lines: list[TextLine], cfg: Config, opts: ExtractOptions, lib: TemplateLibrary,
+             cache: MatchCache, unit: Optional[float], timing: dict[str, float]) -> _Stage:
+    """Regions, stroke separation and symbol classification for one symbol unit."""
+    tol = cfg.snap_tol
+    t = time.perf_counter()
+    ps = PrimSet.from_page(pc)
+    unit0 = unit or estimate_unit(ps.prims, range(len(ps.prims)), max(0.6, 0.5 * tol))
+    regions = detect_regions(ps, lines, pc.width, pc.height, tol, unit0)
+    if unit is None:
+        free_ids = [p.id for p in ps.prims if p.role == ""]
+        unit = estimate_unit(ps.prims, free_ids, max(0.6, 0.5 * tol), default=unit0)
+    timing["regions"] = timing.get("regions", 0.0) + time.perf_counter() - t
+
+    t = time.perf_counter()
+    sep = separate(ps, unit, tol, opts.seed_units)
+    timing["separate"] = timing.get("separate", 0.0) + time.perf_counter() - t
+
+    t = time.perf_counter()
+    cands = group_candidates(ps, sep.symbol_ids, unit, tol, opts.group_units)
+    dets = classify_candidates(ps, cands, unit, opts, lib, cache)
+    dets, diag_lines = _straight_unknowns_to_pipes(ps, dets, unit, tol, len(sep.lines))
+    if not opts.keep_legend_symbols:
+        dets = [d for d in dets if regions.kind_at(d.bbox, tol) is None]
+    dets.sort(key=lambda d: (round(d.bbox[1], 1), round(d.bbox[0], 1)))
+    timing["symbols"] = timing.get("symbols", 0.0) + time.perf_counter() - t
+    return _Stage(ps, regions, sep, cands, dets, diag_lines, unit)
+
+
+def _valve_unit(dets: Sequence[Detection]) -> Optional[float]:
+    """Median matched scale of confidently classified valves (else other rigid symbols)."""
+    valves = [d.best.scale for d in dets if d.best is not None and d.cls != SymbolClass.UNKNOWN and d.score >= 0.85
+              and d.best.variant.spec.category == Category.VALVE]
+    if len(valves) >= 3:
+        return float(np.median(valves))
+    rigid = [d.best.scale for d in dets if d.best is not None and d.cls != SymbolClass.UNKNOWN and d.score >= 0.85
+             and not d.best.variant.stretchable and d.best.variant.spec.category != Category.EQUIPMENT]
+    if len(rigid) >= 3:
+        return float(np.median(rigid))
+    return None
+
+
 def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids: Optional[IdAllocator] = None,
                  options: Optional[ExtractOptions] = None, cache: Optional[MatchCache] = None,
                  content: Optional[PageContent] = None) -> PIDDocument:
@@ -306,28 +430,16 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
         return doc
 
     tol = cfg.snap_tol
-    t = time.perf_counter()
-    ps = PrimSet.from_page(pc)
-    lines = build_lines(pc.words)
-    unit0 = estimate_unit(ps.prims, range(len(ps.prims)), max(0.6, 0.5 * tol))
-    regions = detect_regions(ps, lines, pc.width, pc.height, tol, unit0)
-    free_ids = [p.id for p in ps.prims if p.role == ""]
-    unit = estimate_unit(ps.prims, free_ids, max(0.6, 0.5 * tol), default=unit0)
-    timing["regions"] = time.perf_counter() - t
-
-    t = time.perf_counter()
-    sep = separate(ps, unit, tol, opts.seed_units)
-    timing["separate"] = time.perf_counter() - t
-
-    t = time.perf_counter()
-    cands = group_candidates(ps, sep.symbol_ids, unit, tol, opts.group_units)
     lib = get_library()
-    dets = classify_candidates(ps, cands, unit, opts, lib, cache)
-    dets, diag_lines = _straight_unknowns_to_pipes(ps, dets, unit, tol, len(sep.lines))
-    if not opts.keep_legend_symbols:
-        dets = [d for d in dets if regions.kind_at(d.bbox, tol) is None]
-    dets.sort(key=lambda d: (round(d.bbox[1], 1), round(d.bbox[0], 1)))
-    timing["symbols"] = time.perf_counter() - t
+    lines = build_lines(pc.words)
+    st = _analyse(pc, lines, cfg, opts, lib, cache, None, timing)
+    ref = _valve_unit(st.dets)
+    if ref is not None and abs(ref / st.unit - 1.0) > 0.15:
+        # the first estimate (median size of symbol-only stroke clusters) is biased by the mix of
+        # symbols on the sheet; matched valve scales are the reliable symbol unit -> redo with it
+        log.debug("page %d: symbol unit %.2f -> %.2f (from matched valves)", page_index, st.unit, ref)
+        st = _analyse(pc, lines, cfg, opts, lib, cache, ref, timing)
+    ps, regions, sep, cands, dets, diag_lines, unit = st.ps, st.regions, st.sep, st.cands, st.dets, st.diag_lines, st.unit
 
     # ---- network
     t = time.perf_counter()

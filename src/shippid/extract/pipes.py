@@ -28,7 +28,19 @@ from typing import Optional
 import numpy as np
 import shapely
 
-from .primitives import DSU, Prim, PrimSet, Ring, bbox_union, find_loose_rects, point_seg_dist, prim_distance, seg_param
+from .primitives import (
+    DSU,
+    Prim,
+    PrimSet,
+    Ring,
+    bbox_union,
+    find_loose_polygons,
+    find_loose_rects,
+    point_prim_dist,
+    point_seg_dist,
+    prim_distance,
+    seg_param,
+)
 
 BBox4 = tuple[float, float, float, float]
 
@@ -131,6 +143,34 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2) -> S
         pts = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
         ps.rings[rid] = Ring(rid, list(rect), pts, synthetic=True)
         for i in rect:
+            prims[i].closed = True
+            prims[i].ring = rid
+
+    # ---- small polygons assembled from exploded edges (triangles, diamonds, pentagons...)
+    polys = []
+    for ptol in (0.05, touch):  # exact vertex matches first (exploded polylines share vertices exactly)
+        loose = [i for i in work if prims[i].role == "" and prims[i].kind == "seg" and not prims[i].closed
+                 and not prims[i].curve and not prims[i].dashed and prims[i].length <= 2.5 * unit
+                 and not any(i in pg for pg in polys)]
+        polys.extend(find_loose_polygons(prims, loose, ptol, 3.5 * unit))
+    for poly in polys:
+        if any(prims[i].closed for i in poly):
+            continue
+        rid = max(ps.rings, default=-1) + 1
+        pts = [(prims[poly[0]].x0, prims[poly[0]].y0)]
+        cur = poly[0]
+        last = (prims[cur].x1, prims[cur].y1)
+        # order the ring vertices by walking the edges
+        remaining = list(poly[1:])
+        while remaining:
+            nxt = min(remaining, key=lambda i: min(math.dist(last, (prims[i].x0, prims[i].y0)),
+                                                    math.dist(last, (prims[i].x1, prims[i].y1))))
+            remaining.remove(nxt)
+            pts.append(last)
+            a, b = (prims[nxt].x0, prims[nxt].y0), (prims[nxt].x1, prims[nxt].y1)
+            last = b if math.dist(last, a) <= math.dist(last, b) else a
+        ps.rings[rid] = Ring(rid, list(poly), pts, synthetic=True)
+        for i in poly:
             prims[i].closed = True
             prims[i].ring = rid
 
@@ -304,8 +344,6 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2) -> S
             om = line_prims.get(pid)
             if om is not None and om.pipe and om.dashed != m.dashed:
                 continue
-            from .primitives import point_prim_dist
-
             if point_prim_dist(x, y, prims[pid]) <= touch:
                 return True
         return False
@@ -429,8 +467,6 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2) -> S
 
 
 def prim_distance_point(p: Prim, x: float, y: float) -> float:
-    from .primitives import point_prim_dist
-
     return point_prim_dist(x, y, p)
 
 

@@ -82,6 +82,8 @@ class Node:
     cut: bool = False  # created by cutting at a body
     junction: Optional[int] = None
     passthrough: dict[tuple[int, int], tuple[int, int]] = field(default_factory=dict)
+    fixed_port: bool = False  # port name decided when the node was created (direct flange connection)
+    direction: Optional[tuple[float, float]] = None
 
 
 @dataclass
@@ -355,6 +357,7 @@ def build_network(lines: Sequence[MLine], bodies: Sequence[Body], dots: Sequence
     # ---- 7. trace runs between terminal nodes
     runs: list[Run] = []
     used: set[int] = set()
+    runs.extend(_direct_links(bodies, nodes, node_tol, unit))
 
     def terminal(n: Node) -> bool:
         return n.body is not None or n.junction is not None or len(n.ends) == 1
@@ -402,11 +405,16 @@ def build_network(lines: Sequence[MLine], bodies: Sequence[Body], dots: Sequence
     ports: dict[int, list[tuple[str, tuple[float, float], tuple[float, float]]]] = defaultdict(list)
     by_body: dict[int, list[tuple[Node, tuple[float, float]]]] = defaultdict(list)
     for n in nodes:
-        if n.body is None or not n.ends:
+        if n.body is None:
+            continue
+        if n.fixed_port:
+            by_body[n.body].append((n, (0.0, 0.0)))
+            continue
+        if not n.ends:
             continue
         i, e = n.ends[0]
         d = pieces[i].direction_from(e)
-        by_body[n.body].append((n, (-d[0], -d[1])))  # outward = opposite of the pipe direction... towards the pipe
+        by_body[n.body].append((n, (-d[0], -d[1])))  # pointing from the pipe towards the symbol
     for bi, lst in by_body.items():
         b = bodies[bi]
         lst.sort(key=lambda t: (round(t[0].y, 1), round(t[0].x, 1)))
@@ -417,7 +425,7 @@ def build_network(lines: Sequence[MLine], bodies: Sequence[Body], dots: Sequence
         # greedy nearest assignment of attachment points to library ports
         cand = []
         for k, (n, _) in enumerate(lst):
-            if n.port == "actuator":
+            if n.port == "actuator" or n.fixed_port:
                 continue
             for name, (px, py), _ in named_ports:
                 cand.append((math.hypot(n.x - px, n.y - py), k, name))
@@ -430,6 +438,8 @@ def build_network(lines: Sequence[MLine], bodies: Sequence[Body], dots: Sequence
         for k, (n, inward) in enumerate(lst):
             if n.port == "actuator":
                 name = "actuator"
+            elif n.fixed_port and n.port:
+                name = n.port
             elif k in assigned:
                 name = assigned[k]
             else:
@@ -438,11 +448,53 @@ def build_network(lines: Sequence[MLine], bodies: Sequence[Body], dots: Sequence
                 name = f"n{counter}"
                 counter += 1
             n.port = name
-            outward = _outward(b, n, inward)
+            outward = n.direction if n.direction is not None else _outward(b, n, inward)
             if name not in taken:
                 taken[name] = (n.x, n.y)
                 ports[bi].append((name, (n.x, n.y), outward))
     return Network(runs, junctions, nodes, dict(ports), pieces)
+
+
+def _direct_links(bodies: Sequence[Body], nodes: list[Node], node_tol: float, unit: float) -> list[Run]:
+    """Symbols bolted flange-to-flange: a named port of one symbol lying on the
+    outline of another with no pipe attached there becomes a zero-length run."""
+    out: list[Run] = []
+    if len(bodies) < 2:
+        return out
+    tol = max(node_tol, 0.06 * unit)
+    tree = shapely.STRtree([shapely.box(*b.bbox).buffer(tol) for b in bodies])
+    attached = [(n.body, n.x, n.y) for n in nodes if n.body is not None]
+    linked: set[tuple[int, int]] = set()
+
+    def has_pipe(bi: int, x: float, y: float) -> bool:
+        return any(b == bi and math.hypot(x - nx, y - ny) <= 2 * tol for b, nx, ny in attached)
+
+    for a in bodies:
+        for name, (px, py), d in a.ports:
+            if has_pipe(a.index, px, py):
+                continue
+            for bi in tree.query(shapely.Point(px, py)).tolist():
+                b = bodies[bi]
+                if bi == a.index or (min(a.index, bi), max(a.index, bi)) in linked:
+                    continue
+                if min((point_prim_dist(px, py, q) for q in b.prims), default=1e9) > tol:
+                    continue
+                if has_pipe(bi, px, py):
+                    continue
+                other = None
+                if b.ports and not b.boundary_ports:
+                    nm, (qx, qy), qd = min(b.ports, key=lambda t: math.hypot(t[1][0] - px, t[1][1] - py))
+                    if math.hypot(qx - px, qy - py) <= 3 * tol:
+                        other = (nm, qd)
+                na = Node(len(nodes), px, py, [], a.index, name, fixed_port=True, direction=d)
+                nodes.append(na)
+                nb = Node(len(nodes), px, py, [], bi, other[0] if other else None, fixed_port=other is not None,
+                          direction=other[1] if other else (-d[0], -d[1]))
+                nodes.append(nb)
+                linked.add((min(a.index, bi), max(a.index, bi)))
+                out.append(Run([(px, py), (px, py)], na, nb, [], False, 0.0, None))
+                break
+    return out
 
 
 def _outward(b: Body, n: Node, toward_pipe: tuple[float, float]) -> tuple[float, float]:

@@ -65,6 +65,7 @@ class Variant:
     body: tuple[float, float, float, float]  # bbox without actuator, relative to the bbox centre
     ports: list[tuple[str, float, float, float, float]]  # name, x, y, dx, dy (relative to bbox centre)
     stripped: bool = False
+    full: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)  # drawn bbox incl. stripped stubs, rel. to centre
     tree: Optional[cKDTree] = None
     fill_tree: Optional[cKDTree] = None
     n_circles: int = 0
@@ -102,8 +103,9 @@ class MatchResult:
         return math.sqrt(abs(self.sx * self.sy))
 
     def bbox(self) -> tuple[float, float, float, float]:
-        v = self.variant
-        return (self.cx - self.sx * v.w / 2, self.cy - self.sy * v.h / 2, self.cx + self.sx * v.w / 2, self.cy + self.sy * v.h / 2)
+        """Page bbox of the complete symbol as drawn (incl. actuator and port stubs)."""
+        f = self.variant.full
+        return (self.cx + self.sx * f[0], self.cy + self.sy * f[1], self.cx + self.sx * f[2], self.cy + self.sy * f[3])
 
     def body_bbox(self) -> tuple[float, float, float, float]:
         b = self.variant.body
@@ -238,15 +240,16 @@ class TemplateLibrary:
         w, h = x1 - x0, y1 - y0
         D = max(w, h)
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-        step = D / N_SAMPLES
+        step = D / (N_SAMPLES * (2.5 if orig.stretchable else 1.0))  # stretched templates get sparse otherwise
         pts = np.asarray(sample_outline(prims, step), dtype=float) - (cx, cy)
         fill = _fill_samples(prims, step)
         fill_pts = np.asarray(fill, dtype=float).reshape(-1, 2) - (cx, cy) if fill else np.zeros((0, 2))
         bx0, by0, bx1, by1 = placed_bbox(orig, pl, ActuatorType.NONE)
         ports = [(n, px - cx, py - cy, dx, dy) for n, (px, py), (dx, dy) in placed_ports(orig, pl)]
         n_circ = sum(1 for p in prims if isinstance(p, Circle))
+        fx0, fy0, fx1, fy1 = placed_bbox(orig, pl, act)
         v = Variant(-1, orig, rot, mir, act, pts, fill_pts, w, h, (cx, cy), (bx0 - cx, by0 - cy, bx1 - cx, by1 - cy),
-                    ports, stripped, n_circles=n_circ)
+                    ports, stripped, (fx0 - cx, fy0 - cy, fx1 - cx, fy1 - cy), n_circles=n_circ)
         v.tree = cKDTree(pts)
         v.fill_tree = cKDTree(fill_pts) if len(fill_pts) else None
         return v
@@ -568,6 +571,16 @@ def match_candidate(cs: CandidateShape, lib: Optional[TemplateLibrary] = None, u
             break
     results = [fine_match(lib.variants[k], cs, float(sx[k]), float(sy[k])) for k in picked]
     results.sort(key=lambda r: (-round(r.score, 4), r.variant.idx))
+    if results:
+        # among near-equal variants of the winning class prefer the canonical one (rotation 0, not mirrored):
+        # e.g. a stretched rectangle fits rotation 0 and 90 equally
+        top = results[0]
+        slack = 0.02 if top.variant.stretchable else 0.01
+        same = [r for r in results if r.variant.cls == top.variant.cls and r.score >= top.score - slack]
+        canon = min(same, key=lambda r: r.variant.idx)
+        if canon is not top:
+            results.remove(canon)
+            results.insert(0, canon)
     if cache is not None and key is not None:
         cache.put(key, cs, results)
     return results
