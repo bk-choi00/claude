@@ -392,7 +392,7 @@ def candidate_shape(prims, rings) -> CandidateShape:
     return cs
 
 
-ASPECT_STEP = 0.12  # log-aspect bucket of the cache key (~13 % proportion steps)
+ASPECT_STEP = 0.35  # log-aspect bucket of the cache key; rigid hits are re-validated at the new proportions
 
 
 def _norm_axes(w: float, h: float, D: float) -> tuple[float, float]:
@@ -581,10 +581,15 @@ def fine_match(v: Variant, cs: CandidateShape, sx: float, sy: float, iters: int 
         fill = 2 * fr * fp / max(fr + fp, 1e-9)
     score = f1 * (0.45 + 0.55 * fill)
     if uniform:
-        score *= 1.0 - ANISO_PENALTY * min(1.0, abs(math.log(sx / sy)) / math.log(ANISO_MAX))
+        score *= _aniso_factor(sx / sy)
     if min(precision, recall) < MIN_PR:
         score *= STRUCT_PENALTY
     return MatchResult(v, float(score), sx, sy, cx, cy, precision, recall, fill)
+
+
+def _aniso_factor(ratio: float) -> float:
+    """Score factor of a rigid symbol drawn with per-axis scale ratio ``ratio``."""
+    return 1.0 - ANISO_PENALTY * min(1.0, abs(math.log(max(ratio, 1e-9))) / math.log(ANISO_MAX))
 
 
 class MatchCache:
@@ -595,15 +600,15 @@ class MatchCache:
 
     def __init__(self, max_rigid: Optional[float] = None) -> None:
         self.max_rigid = max_rigid  # candidates larger than this (points) can only be stretchable equipment
-        self._store: dict[bytes, list[tuple[int, float, float, float, float, float, float, float, float]]] = {}
+        self._store: dict[bytes, list[tuple]] = {}
         self.hits = 0
         self.misses = 0
 
-    def key(self, cs: CandidateShape, unit: Optional[float] = None, size_prior: bool = False) -> bytes:
+    def key(self, cs: CandidateShape, unit: Optional[float] = None) -> bytes:
         """Normalised geometry signature (primitives relative to the bbox, quantised), plus
         a half-octave size bucket relative to the symbol unit when one is known (the
         unit-dependent gates and priors pick different variants for a tiny and a large drawing)."""
-        bucket = b"" if not unit else b"|%d%s" % (round(2 * math.log2(max(cs.D, 1e-6) / unit)), b"p" if size_prior else b"")
+        bucket = b"" if not unit else b"|%d" % round(2 * math.log2(max(cs.D, 1e-6) / unit))
         if cs.signature is not None:
             return cs.signature + bucket
         D = cs.D
@@ -621,15 +626,30 @@ class MatchCache:
         return aspect.tobytes() + np.packbits(occ).tobytes() + np.packbits(fo).tobytes() + bucket
 
     def get(self, k: bytes, cs: CandidateShape, lib: "TemplateLibrary") -> Optional[list[MatchResult]]:
+        """Stored results re-aligned to this candidate. A key covers a range of proportions:
+        rigid variants are re-checked at the new anisotropy (penalty updated, variants
+        beyond ``ANISO_MAX`` dropped); if that removes the stored best, it is a miss."""
         rows = self._store.get(k)
         if rows is None:
             self.misses += 1
             return None
-        self.hits += 1
         nx, ny = _norm_axes(cs.w, cs.h, cs.D)
         c = cs.center
-        return [MatchResult(lib.variants[vi], sc, rsx * nx, rsy * ny, c[0] + rcx * nx, c[1] + rcy * ny, p, r, f)
-                for vi, sc, rsx, rsy, rcx, rcy, p, r, f in rows]
+        out = []
+        for n, (vi, sc, rsx, rsy, rcx, rcy, p, r, f, ratio0) in enumerate(rows):
+            v = lib.variants[vi]
+            sx, sy = rsx * nx, rsy * ny
+            if not v.stretchable:
+                ratio = sx / sy if sy else math.inf
+                if not (1.0 / (ANISO_MAX * 1.01) <= ratio <= ANISO_MAX * 1.01):
+                    if n == 0:
+                        self.misses += 1
+                        return None
+                    continue
+                sc = sc * _aniso_factor(ratio) / _aniso_factor(ratio0)
+            out.append(MatchResult(v, sc, sx, sy, c[0] + rcx * nx, c[1] + rcy * ny, p, r, f))
+        self.hits += 1
+        return out
 
     def put(self, k: bytes, cs: CandidateShape, results: list[MatchResult]) -> None:
         """Store the alignments per axis relative to the bbox, so a hit with slightly
@@ -637,7 +657,8 @@ class MatchCache:
         nx, ny = _norm_axes(cs.w, cs.h, cs.D)
         c = cs.center
         self._store[k] = [(m.variant.idx, m.score, m.sx / nx, m.sy / ny, (m.cx - c[0]) / nx, (m.cy - c[1]) / ny,
-                           m.precision, m.recall, m.fill) for m in results]
+                           m.precision, m.recall, m.fill, m.sx / m.sy if m.sy else 1.0)
+                          for m in sorted(results, key=lambda m: -m.score)]
 
 
 def match_candidate(cs: CandidateShape, lib: Optional[TemplateLibrary] = None, unit: Optional[float] = None,
@@ -654,19 +675,27 @@ def match_candidate(cs: CandidateShape, lib: Optional[TemplateLibrary] = None, u
     key = None
     results = None
     if cache is not None:
-        key = cache.key(cs, unit, prior)
+        key = cache.key(cs, unit)
         results = cache.get(key, cs, lib)
     if results is None:
-        score, sx, sy = coarse_scores(lib, cs, unit, max_rigid, prior)
+        # picks are made without the size prior and the results are cached size-independent; box-like
+        # (stretchable) classes get at most 2 of the ``top`` picks each and 4 together, so rigid
+        # look-alikes are always evaluated and the size prior (below) can fall back on them
+        score, sx, sy = coarse_scores(lib, cs, unit, max_rigid)
         order = np.argsort(-score)
         picked: list[int] = []
         per_cls: dict[int, int] = {}
+        n_stretch = 0
         floor = max(0.05, 0.6 * float(score[order[0]])) if len(order) else 0.05
-        for k in order:  # the best variants of up to ``top`` classes (at most 4 orientations each)
+        for k in order:
             if score[k] <= floor:
                 break
             c = int(lib.cls_idx[k])
-            if per_cls.get(c, 0) >= 4:
+            if lib.stretch[k]:
+                if per_cls.get(c, 0) >= 2 or n_stretch >= 4:
+                    continue
+                n_stretch += 1
+            elif per_cls.get(c, 0) >= 4:
                 continue
             per_cls[c] = per_cls.get(c, 0) + 1
             picked.append(int(k))

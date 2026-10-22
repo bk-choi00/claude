@@ -116,9 +116,8 @@ def group_candidates(ps: PrimSet, ids: Sequence[int], unit: float, tol: float, g
         parts: list[list[int]] = []
         if len(bg) >= 2:
             # the outline group: holds the largest container and is itself inside none
-            hosts = [holder[b][1] for b in bg if b in holder]
             outer_b = None
-            if hosts:
+            if any(b in holder for b in bg):
                 best_owner = max((holder[b] for b in bg if b in holder), key=lambda t: t[0])[1]
                 outer_b = base.find(best_owner)
                 if outer_b in holder:  # nested outlines: walk up to the outermost

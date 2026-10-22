@@ -9,6 +9,7 @@ pipe network and finally assign texts. Every object and pipe carries
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import math
 import time
@@ -74,7 +75,9 @@ class ExtractOptions:
     min_unknown_units: float = 0.3  # smaller unmatched stroke groups are dropped as noise
     contain_units: float = 4.5  # closed outlines up to this size (symbol units) hold their inner strokes
     boundary_symbols: int = 2  # an outline enclosing this many complete symbols is a boundary, not equipment
-    decompose_budget: int = 600  # match calls per page for splitting accepted candidates into bolted symbols
+    decompose_budget: float = 1.0  # per candidate on the page (at least 100), for splitting candidates into
+    # symbols bolted together (fine match = 1, coarse scoring = 0.2); measured use: <= 0.4 per candidate
+    # on dense sheets, random clutter would use ~10x more. The search stops when the budget is spent.
     propagate_line_numbers: bool = True  # unlabelled runs take the nearest line number along the line
     keep_legend_symbols: bool = False
 
@@ -144,7 +147,7 @@ class _Matcher:
     cache: MatchCache
     accept: float
     prior: bool = False  # size prior of stretchable equipment (the unit is anchored by matched valves)
-    budget: int = 0  # remaining decomposition match calls for accepted candidates
+    budget: float = 0.0  # remaining decomposition budget of the page (see ExtractOptions.decompose_budget)
     no_split: set = field(default_factory=set)  # shape keys whose decomposition found nothing
     pipe_ends: Optional[np.ndarray] = None  # (n, 2) end points of pipe lines
     tol: float = 2.5  # snap tolerance (points)
@@ -186,13 +189,15 @@ def _finalise(d: Detection, accept: float) -> None:
 
 def classify_candidates(ps: PrimSet, cands: Sequence[Candidate], unit: float, opts: ExtractOptions,
                         lib: Optional[TemplateLibrary] = None, cache: Optional[MatchCache] = None,
-                        size_prior: bool = False, pipes: Sequence[MLine] = (), tol: float = 2.5) -> list[Detection]:
+                        size_prior: bool = False, pipes: Sequence[MLine] = (), tol: float = 2.5,
+                        stats: Optional[dict] = None) -> list[Detection]:
     """Classify symbol candidates. ``size_prior``: the unit is anchored by matched valves,
     so stretchable equipment drawn implausibly small is penalised; ``pipes``: the pipe
-    lines found by stroke separation."""
+    lines found by stroke separation; ``stats`` receives bookkeeping (budget use)."""
     ends = np.array([pt for ml in pipes for pt in ml.endpoints()], dtype=float).reshape(-1, 2)
+    budget = max(100.0, opts.decompose_budget * len(cands))
     m = _Matcher(ps, lib or get_library(), unit, cache if cache is not None else MatchCache(), opts.accept_score,
-                 size_prior, opts.decompose_budget, pipe_ends=ends, tol=tol, group_units=opts.group_units)
+                 size_prior, budget, pipe_ends=ends, tol=tol, group_units=opts.group_units)
     accept = m.accept
     dets: list[Detection] = []
     for c in cands:
@@ -227,6 +232,9 @@ def classify_candidates(ps: PrimSet, cands: Sequence[Candidate], unit: float, op
         _finalise(d, accept)
     dets = _absorb_fragments(m, dets)
     _size_prior(dets, accept)
+    if stats is not None:
+        stats["decompose_budget_exhausted"] = m.budget <= 0
+        stats["decompose_budget_used"] = round(budget - m.budget, 1)
     return _resolve_containers(m, dets, opts)
 
 
@@ -275,13 +283,11 @@ def _worth_decomposing(m: _Matcher, d: Detection) -> bool:
     match, a shape already known not to split, or an accepted rigid symbol at the drawing's
     symbol scale (the expensive search is reserved for poor matches and oversized ones)."""
     s = _score(d)
-    if s >= 0.93 or d.shape.signature in m.no_split:
+    if s >= 0.93 or m.budget <= 0 or d.shape.signature in m.no_split:
         return False
     if s >= m.accept:
         b = d.best
         if not b.variant.stretchable and 0.7 * m.unit <= b.scale <= 1.45 * m.unit:
-            return False
-        if m.budget <= 0:
             return False
     return True
 
@@ -352,6 +358,7 @@ def _decompose(m: _Matcher, whole: Detection) -> Optional[list[Detection]]:
     def coarse(group: list[int]) -> tuple[float, float]:
         key = tuple(sorted(group))
         if key not in coarse_memo:
+            m.budget -= 0.2
             cs = _shape_for(ps, [i for a in group for i in atoms[a][0]])
             sc, _, _ = coarse_scores(m.lib, cs, unit, size_prior=m.prior)
             coarse_memo[key] = (float(sc.max()) if len(sc) else 0.0, float(len(cs.pts)))
@@ -398,7 +405,7 @@ def _decompose(m: _Matcher, whole: Detection) -> Optional[list[Detection]]:
 
     def split_group(group: list[int], current: Detection, depth: int) -> list[Detection]:
         """Best decomposition of ``group`` (``[current]`` when no split helps)."""
-        if len(group) < 2 or depth > 3 or budget[0] <= 0:
+        if len(group) < 2 or depth > 3 or budget[0] <= 0 or m.budget <= 0:
             return [current]
         gb = bbox_union(atoms[a][1] for a in group)
         main = 0 if (gb[2] - gb[0]) >= (gb[3] - gb[1]) else 1
@@ -410,7 +417,7 @@ def _decompose(m: _Matcher, whole: Detection) -> Optional[list[Detection]]:
                 ranked.append(((sa * wa + sb * wb) / max(wa + wb, 1e-9), left, right))
             ranked.sort(key=lambda r: -r[0])
             for _, left, right in ranked[: (3 if depth == 0 else 2)]:
-                if budget[0] <= 1:
+                if budget[0] <= 1 or m.budget <= 0:
                     break
                 leaves = []
                 for side in (left, right):
@@ -558,7 +565,9 @@ def _resolve_containers(m: _Matcher, dets: list[Detection], opts: ExtractOptions
         if not any(m.piped(o.prim_ids) for o in inner):  # piping inside is never part of a symbol
             union = m.detect(d.prim_ids + [i for o in inner for i in o.prim_ids])
             _finalise(union, accept)
-        if union is not None and union.cls != SymbolClass.UNKNOWN and union.score >= accept and union.cls != SymbolClass.TANK:
+        # only box-like equipment is re-joined here (symbol-size outlines were merged during grouping)
+        if union is not None and union.cls not in (SymbolClass.UNKNOWN, SymbolClass.TANK) and union.score >= accept \
+                and union.best.variant.stretchable:
             taken.add(id(d))
             result.append(union)
         else:
@@ -627,6 +636,7 @@ class _Stage:
     diag_lines: list[MLine]
     unit: float
     anchored: bool  # the unit comes from matched valve-like symbols (not from the stroke-cluster median)
+    stats: dict = field(default_factory=dict)
 
 
 def _analyse(pc: PageContent, lines: list[TextLine], cfg: Config, opts: ExtractOptions, lib: TemplateLibrary,
@@ -651,17 +661,28 @@ def _analyse(pc: PageContent, lines: list[TextLine], cfg: Config, opts: ExtractO
 
     t = time.perf_counter()
     cands = group_candidates(ps, sep.symbol_ids, unit, tol, opts.group_units, opts.contain_units)
-    dets = classify_candidates(ps, cands, unit, opts, lib, cache, size_prior=anchored, pipes=sep.pipe_lines, tol=tol)
-    dets, diag_lines = _straight_unknowns_to_pipes(ps, dets, unit, tol, len(sep.lines))
+    timing["symbols"] = timing.get("symbols", 0.0) + time.perf_counter() - t
+    return _classify_stage(_Stage(ps, regions, sep, cands, [], [], unit, anchored), cfg, opts, lib, cache, timing)
+
+
+def _classify_stage(st: _Stage, cfg: Config, opts: ExtractOptions, lib: TemplateLibrary, cache: MatchCache,
+                    timing: dict[str, float]) -> _Stage:
+    """Classify the stage's candidates (again, e.g. once the unit is anchored)."""
+    t = time.perf_counter()
+    tol = cfg.snap_tol
+    stats: dict = {}
+    dets = classify_candidates(st.ps, st.cands, st.unit, opts, lib, cache, size_prior=st.anchored,
+                               pipes=st.sep.pipe_lines, tol=tol, stats=stats)
+    dets, diag_lines = _straight_unknowns_to_pipes(st.ps, dets, st.unit, tol, len(st.sep.lines))
     if not opts.keep_legend_symbols:
-        dets = [d for d in dets if regions.kind_at(d.bbox, tol) is None]
+        dets = [d for d in dets if st.regions.kind_at(d.bbox, tol) is None]
     dets.sort(key=lambda d: (round(d.bbox[1], 1), round(d.bbox[0], 1)))
     timing["symbols"] = timing.get("symbols", 0.0) + time.perf_counter() - t
-    return _Stage(ps, regions, sep, cands, dets, diag_lines, unit, anchored)
+    return _Stage(st.ps, st.regions, st.sep, st.cands, dets, diag_lines, st.unit, st.anchored, stats)
 
 
 def _probe_unit(ps: PrimSet, ids: Sequence[int], unit: float, tol: float, lib: TemplateLibrary,
-                cache: MatchCache, top: int = 6) -> Optional[float]:
+                cache: MatchCache, top: int = 12) -> Optional[float]:
     """Symbol unit from the most frequent symbol-only stroke clusters (valve bodies:
     bow-ties, discs) matched against the library; None when nothing valve-like repeats."""
     from collections import Counter
@@ -755,9 +776,10 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
         # too few repeated valve drawings to probe the unit: one or two confidently matched
         # valves still anchor it, and the size prior of stretchable equipment then applies
         few = _valve_unit(st.dets, min_n=1)
-        if few is not None:
-            unit_a = st.unit if abs(few / st.unit - 1.0) <= 0.15 else few
-            st = _analyse(pc, lines, cfg, opts, lib, cache, unit_a, timing, anchored=True)
+        if few is not None and abs(few / st.unit - 1.0) <= 0.15:  # same unit: only the classification changes
+            st = _classify_stage(dataclasses.replace(st, anchored=True), cfg, opts, lib, cache, timing)
+        elif few is not None:
+            st = _analyse(pc, lines, cfg, opts, lib, cache, few, timing, anchored=True)
     ps, regions, sep, cands, dets, diag_lines, unit = st.ps, st.regions, st.sep, st.cands, st.dets, st.diag_lines, st.unit
 
     # ---- network
@@ -918,6 +940,9 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
     timing["total"] = time.perf_counter() - t0
     page_meta.update({
         "unit": round(unit, 3),
+        "unit_anchored": st.anchored,
+        "decompose_budget_exhausted": bool(st.stats.get("decompose_budget_exhausted")),
+        "decompose_budget_used": st.stats.get("decompose_budget_used", 0.0),
         "regions": {
             "drawing_area": [round(v, 2) for v in regions.drawing_area],
             "title_blocks": [[round(v, 2) for v in b] for b in regions.title_blocks],

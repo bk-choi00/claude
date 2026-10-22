@@ -435,6 +435,22 @@ def test_distorted_symbol_proportions():
         sh = random_sheet(seed, style=st)
         tot.add(evaluate(sh, extract_page(sh.page, 0)))
     assert tot.cls_acc >= 0.95, tot.summary()
+    # an A1 sheet (~330 symbols) of distorted symbols stays within the page budget: every
+    # instance has its own proportions, so matches are not simply reused from the cache
+    get_library()
+    st = random_style(random.Random(2))
+    st.distort = 0.1
+    sh = random_sheet(2, n_rows=14, width=2384, height=1684, style=st, n_el=(16, 20))
+    best = math.inf
+    for _ in range(2):  # the second attempt only guards against a busy machine
+        t = time.perf_counter()
+        doc = extract_page(sh.page, 0, Config())
+        best = min(best, time.perf_counter() - t)
+        if best < 5.0:
+            break
+    r = evaluate(sh, doc)
+    assert len(sh.objects) >= 300 and r.recall >= 0.98 and r.cls_acc >= 0.98, r.summary()
+    assert best < 5.0, f"{best:.2f} s"
 
 
 def test_performance_a1_sheet():

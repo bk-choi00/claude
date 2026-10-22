@@ -149,6 +149,7 @@ def build_network(lines: Sequence[MLine], bodies: Sequence[Body], dots: Sequence
     # ---- 1. cut pieces where they run through symbol bodies
     if bodies:
         btree = shapely.STRtree([shapely.box(*b.body) for b in bodies])
+        nested = _nested_bodies(bodies)
         k = 0
         while k < len(pieces):
             p = pieces[k]
@@ -161,6 +162,8 @@ def build_network(lines: Sequence[MLine], bodies: Sequence[Body], dots: Sequence
                 iv = _clip_interval(p, bodies[bi].body, 0.25)
                 if iv is None or (iv[1] - iv[0]) * p.length < 0.3:
                     continue
+                if nested.get(bi) and _ends_on_inner(p, iv, [bodies[j] for j in nested[bi]], attach_tol):
+                    continue  # a line into an outline to a symbol drawn inside it (valve / instrument in a tank)
                 if best is None or iv[0] < best[1][0]:
                     best = (bi, iv)
             if best is None:
@@ -190,6 +193,7 @@ def build_network(lines: Sequence[MLine], bodies: Sequence[Body], dots: Sequence
     attach_dist: dict[tuple[int, int], float] = {}
     if bodies:
         bb_tree = shapely.STRtree([shapely.box(*b.bbox).buffer(attach_tol) for b in bodies])
+        nested = _nested_bodies(bodies)
     for i in alive:
         p = pieces[i]
         for e in (0, 1):
@@ -205,7 +209,8 @@ def build_network(lines: Sequence[MLine], bodies: Sequence[Body], dots: Sequence
                 d = min((point_prim_dist(x, y, q) for q in b.prims), default=1e9)
                 inside = b.body[0] < x < b.body[2] and b.body[1] < y < b.body[3]
                 if inside:
-                    d = min(d, 0.0)
+                    # inside an outline that holds other symbols, touching one of those wins
+                    d = min(d, 0.5 * attach_tol if bi in nested else 0.0)
                 if d <= attach_tol and (best is None or d < best[0]):
                     on_act = not (b.body[0] - attach_tol <= x <= b.body[2] + attach_tol and
                                   b.body[1] - attach_tol <= y <= b.body[3] + attach_tol)
@@ -506,6 +511,36 @@ def _direct_links(bodies: Sequence[Body], nodes: list[Node], node_tol: float, un
                 out.append(Run([(px, py), (px, py)], na, nb, [], False, 0.0, None))
                 break
     return out
+
+
+def _nested_bodies(bodies: Sequence[Body]) -> dict[int, list[int]]:
+    """body index -> indices of the bodies drawn entirely inside its body box."""
+    out: dict[int, list[int]] = {}
+    if len(bodies) < 2:
+        return out
+    tree = shapely.STRtree([shapely.box(*b.bbox) for b in bodies])
+    for i, b in enumerate(bodies):
+        x0, y0, x1, y1 = b.body
+        inner = [j for j in tree.query(shapely.box(*b.body)).tolist() if j != i
+                 and x0 < bodies[j].bbox[0] and bodies[j].bbox[2] < x1 and y0 < bodies[j].bbox[1] and bodies[j].bbox[3] < y1]
+        if inner:
+            out[i] = inner
+    return out
+
+
+def _ends_on_inner(p: Piece, iv: tuple[float, float], inner: Sequence[Body], tol: float) -> bool:
+    """The piece ends inside the clipped interval (on the interior of the outer body) on one
+    of the bodies drawn inside it."""
+    for t in (0.0, 1.0):
+        if not (iv[0] - 1e-9 <= t <= iv[1] + 1e-9):
+            continue
+        x, y = p.point(t)
+        for b in inner:
+            if b.body[0] - tol <= x <= b.body[2] + tol and b.body[1] - tol <= y <= b.body[3] + tol:
+                if min((point_prim_dist(x, y, q) for q in b.prims), default=1e9) <= tol or \
+                        (b.body[0] < x < b.body[2] and b.body[1] < y < b.body[3]):
+                    return True
+    return False
 
 
 def _self_stub(r: Run, bodies: Sequence[Body], tol: float) -> bool:

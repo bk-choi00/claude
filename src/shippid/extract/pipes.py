@@ -447,7 +447,18 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2, cont
             if twin is not None:  # the same dot drawn twice
                 twin.prim_ids.extend(pids)
             else:
-                dots.append(Dot(cx, cy, r, pids))
+                twin = Dot(cx, cy, r, pids)
+                dots.append(twin)
+            # the dot's own outline (a concentric circle / ring of about its size) belongs to it
+            if sym_tree is not None:
+                for k in sym_tree.query(shapely.Point(cx, cy).buffer(1.7 * r + 0.1)).tolist():
+                    q = prims[sym_now[k]]
+                    if q.id not in own and q.role == "" and _same_dot(q, ps, cx, cy, r):
+                        ring = ps.rings.get(q.ring) if q.ring >= 0 else None
+                        extra = list(ring.prim_ids) if ring is not None else [q.id]
+                        twin.prim_ids.extend(extra)
+                        for pid in extra:
+                            prims[pid].role = "dot"
             for pid in pids:
                 prims[pid].role = "dot"
 

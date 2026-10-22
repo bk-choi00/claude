@@ -41,7 +41,7 @@ S = SymbolClass
 
 STRUCTURAL: frozenset[SymbolClass] = frozenset({S.TANK, S.SEA_CHEST})  # may share bulkheads
 MARKERS: frozenset[SymbolClass] = frozenset({S.OFF_PAGE_CONNECTOR, S.OVERBOARD})
-MARKER_CLEARANCE = 0.2
+MARKER_CLEARANCE = 0.5  # m around off-page connector / overboard markers (room for their pipe stubs)
 BOUNDARY_FACE_CLASSES: frozenset[SymbolClass] = frozenset({S.OVERBOARD, S.OFF_PAGE_CONNECTOR})
 _SCALED_BY_PIPE = frozenset({S.PUMP_CENTRIFUGAL, S.PUMP_SCREW, S.HEAT_EXCHANGER, S.PLATE_HEAT_EXCHANGER, S.HEATER,
                              S.DUPLEX_FILTER, S.FILTER, S.STRAINER, S.FLOW_METER, S.BWTS_UNIT, S.PURIFIER,
@@ -584,13 +584,14 @@ def solve_detailed(plan: LayoutPlan, doc: PIDDocument, room: EngineRoom, step: f
 def _nozzles_with_access(doc: PIDDocument, plan: LayoutPlan, room: EngineRoom, placements: dict[str, Placement3D],
                          boxes: dict[str, Box3], diags: dict[str, ItemDiag], item_ctx: dict[str, _ItemCtx],
                          notes: list[str], step: float) -> None:
-    """Compute every nozzle; when one is covered by other equipment, move the covering item (or,
-    if that is structural, the item itself) once with the nozzle's access column kept clear, then
-    recompute. Nozzles still covered are recorded as diagnostics issues."""
+    """Compute every nozzle; when one is covered by other equipment (or its stub runs into another
+    item's nozzle stub), move the covering item (or, if that cannot move, the item itself) with the
+    nozzle's access column kept clear, then recompute; a conflict that persists gets one more move
+    of the other item of the pair. Nozzles still covered are recorded as diagnostics issues."""
     objs = doc.object_by_id()
     zone_of = plan.item_by_id()
     moved: set[str] = set()
-    for attempt in range(2):
+    for attempt in range(3):
         blocked: list[NozzleBlock] = []
         for pl in placements.values():
             pl.nozzles = {}
@@ -600,7 +601,7 @@ def _nozzles_with_access(doc: PIDDocument, plan: LayoutPlan, room: EngineRoom, p
             blocked += blk
         if not blocked:
             return
-        if attempt == 1:
+        if attempt == 2:
             break
         any_moved = False
         def movable(oid: str) -> bool:  # double-bottom tanks / sea chests are packed in the hull: never moved
@@ -615,20 +616,26 @@ def _nozzles_with_access(doc: PIDDocument, plan: LayoutPlan, room: EngineRoom, p
             if not cands:
                 continue
             mover = cands[0]
-            keep_out = b.access_box(0.2)
+            # a crowded stub needs the neighbour's whole stub kept away, a covered one just its access column
+            keep_out = b.access_box(NOZZLE_SPACING + 0.3 if b.crowded else 0.2)
             if _relocate(room, step, placements, boxes, diags, item_ctx, mover, keep_out, b):
                 moved.add(mover)
                 any_moved = True
         if not any_moved:
             break
-    for b in blocked:
+    covered = [b for b in blocked if not b.crowded]
+    for b in covered:
         what = f"by {b.blocker}" if b.blocker != "room" else "by the room boundary"
         diags[b.object_id].nozzle_issues.append(
             f"nozzle {b.key} is covered {what}: no free face point for the pipe connection; "
             f"move {b.blocker if b.blocker in placements else b.object_id} or give it another zone / side")
-    if blocked:
-        notes.append(f"solver: {len(blocked)} nozzle(s) without free access: "
-                     + ", ".join(f"{b.object_id}.{b.key} ({b.blocker})" for b in blocked[:10]))
+    if covered:
+        notes.append(f"solver: {len(covered)} nozzle(s) without free access: "
+                     + ", ".join(f"{b.object_id}.{b.key} ({b.blocker})" for b in covered[:10]))
+    crowded = [b for b in blocked if b.crowded]
+    if crowded:
+        notes.append(f"solver: {len(crowded)} nozzle(s) whose pipe stub runs close to another item's nozzle: "
+                     + ", ".join(f"{b.object_id}.{b.key} ({b.blocker})" for b in crowded[:10]))
 
 
 def _relocate(room: EngineRoom, step: float, placements: dict[str, Placement3D], boxes: dict[str, Box3],
@@ -655,8 +662,10 @@ def _relocate(room: EngineRoom, step: float, placements: dict[str, Placement3D],
     diag = _diagnose(it, room, res, status, zone_used)
     if diag.status == "ok":
         diag.status = "relocated"
-    what = (f"moved to keep nozzle {why.key} of {why.object_id} accessible (it was covering it)"
-            if mover != why.object_id else f"moved so that its nozzle {why.key} is not covered by {why.blocker}")
+    cause = "its own nozzle stub ran into" if why.crowded else "it was covering"
+    what = (f"moved to keep nozzle {why.key} of {why.object_id} accessible ({cause} it)"
+            if mover != why.object_id else
+            f"moved so that its nozzle {why.key} is not {'crowded' if why.crowded else 'covered'} by {why.blocker}")
     diag.message = ((diag.message + "; ") if diag.message else "") + what
     diags[mover] = diag
     pl.position = Vec3(x=round(cx, 4), y=round(cy, 4), z=round(z0, 4))
@@ -795,6 +804,7 @@ class NozzleBlock:
     point: tuple[float, float, float]
     normal: tuple[float, float, float]
     blocker: str  # object id, or "room"
+    crowded: bool = False  # free, but its stub runs within NOZZLE_SPACING of the blocker's nozzle stub
 
     def access_box(self, half: float = 0.2) -> Box3:
         """Column in front of the nozzle that must stay free (pipe stub + elbow)."""
@@ -891,7 +901,8 @@ def compute_nozzles_detailed(doc: PIDDocument, obj: PIDObject, pl: Placement3D, 
             if near.contains(nz.x, nz.y, nz.z):
                 nn = nozzle_normal(q, nz)
                 a = nz.as_tuple()
-                stubs.append((a, (a[0] + NOZZLE_STUB * nn[0], a[1] + NOZZLE_STUB * nn[1], a[2] + NOZZLE_STUB * nn[2])))
+                stubs.append((oid, a, (a[0] + NOZZLE_STUB * nn[0], a[1] + NOZZLE_STUB * nn[1],
+                                       a[2] + NOZZLE_STUB * nn[2])))
     bounds = room.bounds
     l, w, h = pl.size.as_tuple()
     out: dict[str, tuple[float, float, float]] = {}
@@ -909,9 +920,9 @@ def compute_nozzles_detailed(doc: PIDDocument, obj: PIDObject, pl: Placement3D, 
                     return oid
         return None
 
-    def crowded(pt: tuple[float, float, float], n: tuple[float, float, float]) -> bool:
+    def crowded(pt: tuple[float, float, float], n: tuple[float, float, float]) -> Optional[str]:
         tip = (pt[0] + NOZZLE_STUB * n[0], pt[1] + NOZZLE_STUB * n[1], pt[2] + NOZZLE_STUB * n[2])
-        return any(_seg_dist(pt, tip, a, b) < NOZZLE_SPACING for a, b in stubs)
+        return next((oid for oid, a, b in stubs if _seg_dist(pt, tip, a, b) < NOZZLE_SPACING), None)
 
     for k in keys:
         spec_face = None if low else _spec_face(obj.cls, k)
@@ -949,16 +960,18 @@ def compute_nozzles_detailed(doc: PIDDocument, obj: PIDObject, pl: Placement3D, 
                     continue
                 who = blocker(wpt, n)
                 if who is None:
-                    if not stubs or not crowded(wpt, n):
+                    near_by = crowded(wpt, n) if stubs else None
+                    if near_by is None:
                         chosen = wpt
                         break
-                    spare = spare or wpt
+                    spare = spare or (wpt, n, near_by)
                 elif first_block is None:
                     first_block = NozzleBlock(obj.id, k, wpt, n, who)
             if chosen is not None:
                 break
         if chosen is None and spare is not None:
-            chosen = spare
+            chosen = spare[0]
+            blocked.append(NozzleBlock(obj.id, k, spare[0], spare[1], spare[2], crowded=True))
         if chosen is None:  # every face is covered: closest point on the preferred face, reported
             face = order[0][0]
             chosen = local_to_world(pl, *_face_candidates(pl, face, lx, ly, lz, order[0][1])[0])

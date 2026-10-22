@@ -64,6 +64,7 @@ PIPE_GAP = 0.05  # m between the walls of two pipes that share no terminal
 SOFT_PIPE = 6.0  # cost of entering a cell that is only soft-blocked (see _search)
 SOFT_BODY = 40.0  # relaxed mode: cost of entering an item body or another chain's terminal cell
 SOFT_NEAR = 0.6  # cost of running close to equipment (outside the hard inflation)
+SOFT_UNDER = 2.0  # chains carrying valves: cost of a cell with pipes / bodies within the stem headroom above
 MODES = ("clean", "rings", "relaxed")
 _DIRS = ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
 _TOL = 0.02  # m of overlap below which bodies only touch
@@ -739,10 +740,24 @@ def _mark_term(g: VoxelGrid, key: str, cells: Sequence[Cell]) -> None:
         g.term_owner[c].add(key)
 
 
-def _node_term(ctx: _Ctx, n: str, pos: Pt, inflate: float, margin: float) -> _Term:
-    """Snap a junction / hub / free end to a free cell; its cell is a terminal, its neighbours reserved."""
+def _node_term(ctx: _Ctx, n: str, pos: Pt, inflate: float, margin: float,
+               needs: Sequence[tuple[Pt, float]] = ()) -> _Term:
+    """Snap a junction / hub / free end to a free cell (the nearest one keeping a Manhattan
+    distance of ``need`` to each given point, if any does); its cell is a terminal, its
+    neighbours reserved."""
     g = ctx.grid
-    c = g.nearest_free(g.cell(pos), inflate, radius=8, owner=n)
+    c = None
+    for k, q in enumerate(g.free_cells(g.cell(pos), inflate, radius=8, owner=n)):
+        if c is None:
+            c = q
+        p = g.center(q)
+        if all(sum(abs(p[i] - t[i]) for i in range(3)) >= need - 1e-6 for t, need in needs):
+            c = q
+            break
+        if k > 150:
+            break
+    if c is None:
+        c = g.nearest_free(g.cell(pos), inflate, radius=8, owner=n)
     hard = g.blocked(0.25)
     ring = [q for q in ((c[0] + di, c[1] + dj, c[2] + dk) for di, dj, dk in _DIRS)
             if g.inside(q) and not hard[q] and not g.term[q]]
@@ -765,8 +780,6 @@ def _nozzle_term(ctx: _Ctx, key: str, pl: Placement3D, nz_key: str, od: float) -
         pl.nozzles[nz_key] = nz
     n = nozzle_normal(pl, nz)
     a = nz.as_tuple()
-    stub = max(0.2, od / 2 + 0.15)
-    sa = _add(a, n, stub)
 
     def plan(c: Cell) -> tuple[list[Pt], list[Cell]]:
         approach = _simplify([a, sa] + _join(ctx, sa, g.center(c)))
@@ -794,14 +807,20 @@ def _nozzle_term(ctx: _Ctx, key: str, pl: Placement3D, nz_key: str, od: float) -
 
     first = None
     chosen = None
-    for k, c in enumerate(g.free_cells(g.cell(sa), od / 2 + PIPE_CLEARANCE, prefer=n, owner=key)):
-        cand = (c, *plan(c))
-        first = first or cand
-        if clear(cand[1], cand[2]):
-            chosen = cand
+    base = max(0.2, od / 2 + 0.15)
+    for stub in (base, base + 0.25, max(0.1, od / 2 + 0.05)):  # other stub lengths reach other cells
+        sa = _add(a, n, stub)
+        for k, c in enumerate(g.free_cells(g.cell(sa), od / 2 + PIPE_CLEARANCE, prefer=n, owner=key)):
+            cand = (c, *plan(c))
+            first = first or cand
+            if clear(cand[1], cand[2]):
+                chosen = cand
+                break
+            if k > 40:
+                break
+        if chosen is not None:
             break
-        if k > 60:
-            break
+    sa = _add(a, n, base)
     if chosen is None:
         chosen = first if first is not None else (g.nearest_free(g.cell(sa), od / 2 + PIPE_CLEARANCE, prefer=n,
                                                                  owner=key),)
@@ -881,18 +900,21 @@ def _obstacles(ctx: _Ctx, sl: tuple[slice, slice, slice], od: float, inflate: fl
 
 
 def _search(ctx: _Ctx, cc: _ChainCtx, ca: Cell, cb: Cell, od: float, zb: float, start_dir: int, wide: bool,
-            mode: str, strict: bool = False, block: Sequence[Cell] = ()) -> Optional[tuple[list[Pt], list[Cell]]]:
+            mode: str, strict: bool = False, block: Sequence[Cell] = (), headroom: float = 0.0,
+            headroom_hard: bool = False) -> Optional[tuple[list[Pt], list[Cell]]]:
     """A* between two cells in a sub-box (or the whole grid); returns (points, global cells).
 
     ``mode="clean"``: equipment (inflated by OD/2 + clearance), item bodies, other pipes, other
     terminals' cells and the reserved neighbours of other nodes are hard; pipes of chains sharing
-    a terminal (the same junction / hub, or the same nozzle) are soft (SOFT_PIPE) only next to that
-    terminal (its cells, its ring and the neighbours of its search cell).
+    a terminal (the same junction / hub, or the same nozzle) are passable (SOFT_BODY) only next to
+    that terminal (its cells, its ring and the neighbours of its search cell).
     ``mode="rings"``: as clean, but other nodes' reserved neighbours are soft.
     ``mode="relaxed"``: only equipment is hard; pipes and reserved cells cost SOFT_PIPE, item
     bodies and other terminals' cells SOFT_BODY.
-    Unless ``strict``, equipment-only hard cells next to the terminals are softened, so a terminal
-    squeezed between equipment never becomes an unreachable pocket. ``block``: extra hard cells.
+    Unless ``strict``, equipment-only hard cells next to the terminals are softened (SOFT_BODY), so a
+    terminal squeezed between equipment never becomes an unreachable pocket. ``block``: extra hard cells.
+    ``headroom``: metres above the pipe its inline items need (stems, handwheels, actuators): cells
+    with other pipes or bodies that close above cost SOFT_UNDER (are hard if ``headroom_hard``).
     """
     g = ctx.grid
     inflate = od / 2 + PIPE_CLEARANCE
@@ -945,18 +967,36 @@ def _search(ctx: _Ctx, cc: _ChainCtx, ca: Cell, cb: Cell, od: float, zb: float, 
     ring_other = g.reserved[sl] & ~own
     if mode in ("clean", "rings"):
         obst = items | other | (shared_any & ~shared_soft) | term_other
-        soft = shared_soft.copy()
+        soft = np.zeros(shape, dtype=bool)
         if mode == "clean":
             obst |= ring_other
         else:
             soft |= ring_other
         cost[soft] = np.maximum(cost[soft], SOFT_PIPE)
+        cost[shared_soft] = np.maximum(cost[shared_soft], SOFT_BODY)  # run along a sibling: last resort
     else:
         obst = np.zeros(shape, dtype=bool)
         soft = other | shared_any | ring_other
         cost[soft] = np.maximum(cost[soft], SOFT_PIPE)
         body = items | term_other
         cost[body] = np.maximum(cost[body], SOFT_BODY)
+    if headroom > 0:
+        above = other | shared_any | items
+        under = np.zeros(shape, dtype=bool)
+        for k in range(1, int(math.ceil(headroom / g.res)) + 1):
+            if k < shape[2]:
+                under[:, :, :-k] |= above[:, :, k:]
+        zone = own.copy()  # no headroom asked right at the terminals (pipes converge there)
+        for t in (la, lb):
+            for di, dj, dk in _DIRS + ((0, 0, 0),):
+                q = (t[0] + di, t[1] + dj, t[2] + dk)
+                if all(0 <= q[i] < shape[i] for i in range(3)):
+                    zone[q] = True
+        under &= ~zone
+        if headroom_hard:
+            obst = obst | under
+        else:
+            cost[under] += SOFT_UNDER
     hard = eq | obst
     cost[hard] = -1.0
     for t in (la, lb):
@@ -966,7 +1006,7 @@ def _search(ctx: _Ctx, cc: _ChainCtx, ca: Cell, cb: Cell, od: float, zb: float, 
         for di, dj, dk in _DIRS:
             q = (t[0] + di, t[1] + dj, t[2] + dk)
             if all(0 <= q[i] < shape[i] for i in range(3)) and eq[q] and not obst[q]:
-                cost[q] = SOFT_PIPE
+                cost[q] = SOFT_BODY  # a last resort: it may graze the equipment next to the terminal
     for c in block:
         q = local(c)
         if q is not None and q != la and q != lb:
@@ -998,14 +1038,18 @@ def _clashes(ctx: _Ctx, pts: Sequence[Pt]) -> int:
 
 
 def _route_between(ctx: _Ctx, cc: _ChainCtx, ta: _Term, tb: _Term, od: float, zb: float, label: str,
-                   modes: Sequence[str] = MODES) -> tuple[list[Pt], str]:
+                   modes: Sequence[str] = MODES, headroom: float = 0.0, headroom_hard: bool = False
+                   ) -> tuple[list[Pt], str]:
     """Polyline ta -> tb (orthogonal) and the mode that produced it: clean search, rings soft, all
-    obstacles soft (noted), then a Manhattan fallback ("fallback", noted)."""
+    obstacles soft (noted), then a Manhattan fallback ("fallback", noted). A path that still grazes
+    equipment (through a softened cell next to a terminal) makes the search go on to the next mode;
+    the first equipment-clean path wins, else the one with the fewest equipment clashes."""
     g = ctx.grid
     ca, cb = ta.cell, tb.cell
     if ca == cb:
         return _compose(ta, [g.center(ca)], tb), "clean"
     sd = _dir_index(ta.normal)
+    best: Optional[tuple[int, list[Pt], str]] = None
     for mode in modes:
         res = None
         for wide in (False, True):
@@ -1013,18 +1057,27 @@ def _route_between(ctx: _Ctx, cc: _ChainCtx, ta: _Term, tb: _Term, od: float, zb
                 break
             if wide:
                 ctx.stats.widened += 1
-            res = _search(ctx, cc, ca, cb, od, zb, sd, wide, mode)
+            res = _search(ctx, cc, ca, cb, od, zb, sd, wide, mode, headroom=headroom, headroom_hard=headroom_hard)
             if res is not None:
                 break
         if res is None:
             continue
         pts = _compose(ta, res[0], tb)
-        if _clashes(ctx, pts) and time.time() < ctx.deadline:
-            strict = _search(ctx, cc, ca, cb, od, zb, sd, False, mode, strict=True)
+        hits = _clashes(ctx, pts)
+        if hits and time.time() < ctx.deadline:
+            strict = _search(ctx, cc, ca, cb, od, zb, sd, False, mode, strict=True, headroom=headroom,
+                             headroom_hard=headroom_hard)
             if strict is not None:
                 spts = _compose(ta, strict[0], tb)
-                if _clashes(ctx, spts) < _clashes(ctx, pts):
-                    pts = spts
+                shits = _clashes(ctx, spts)
+                if shits < hits:
+                    pts, hits = spts, shits
+        if best is None or hits < best[0]:
+            best = (hits, pts, mode)
+        if hits == 0:
+            break
+    if best is not None:
+        _, pts, mode = best
         ctx.stats.astar += 1
         if mode == "relaxed":
             ctx.stats.relaxed += 1
@@ -1042,7 +1095,7 @@ def _route_between(ctx: _Ctx, cc: _ChainCtx, ta: _Term, tb: _Term, od: float, zb
 
 
 def _route_with_leg(ctx: _Ctx, cc: _ChainCtx, ta: _Term, tb: _Term, od: float, zb: float, need: float,
-                    at_start: bool) -> tuple[list[Pt], str]:
+                    at_start: bool, headroom: float = 0.0) -> tuple[list[Pt], str]:
     """Route with a straight leg of at least ``need`` metres out of one terminal (along the nozzle
     normal, or along a free axis at a junction, preferring the direction of the other end), then A*
     from the leg's end: room for the inline items of a chain whose ends are close together."""
@@ -1063,7 +1116,9 @@ def _route_with_leg(ctx: _Ctx, cc: _ChainCtx, ta: _Term, tb: _Term, od: float, z
                    for c in cells):
             continue
         a, w = g.center(t.cell), g.center(cells[-1])
-        if _body_hits(ctx, _segment_box(a, w, od / 2 + PIPE_GAP), cc.keys, cc.nodes):
+        leg_box = _segment_box(a, w, od / 2 + PIPE_GAP)
+        leg_box = Box3(leg_box.x0, leg_box.y0, leg_box.z0, leg_box.x1, leg_box.y1, leg_box.z1 + headroom)
+        if _body_hits(ctx, leg_box, cc.keys, cc.nodes):
             continue
         res = None
         for mode in MODES[:2]:
@@ -1315,12 +1370,6 @@ def _items_along(ctx: _Ctx, cc: _ChainCtx, pts: list[Pt], od: float, line: Optio
     return out, spans, boxes, left
 
 
-def _item_radius(obj: PIDObject, size: tuple[float, float, float]) -> float:
-    """Largest distance of an inline item's body from its pipe axis (flanges, stem, actuator)."""
-    za = axis_height(obj.cls, size)
-    return max(size[1] / 2, size[2] - za, za)
-
-
 def _stub(ctx: _Ctx, cc: _ChainCtx, start: Pt, normal: Optional[Sequence[float]], length: float, od: float,
           tip: float) -> list[Pt]:
     """Dead-end stub (instrument taps, vents, drains): out along the nozzle normal, then up; from a
@@ -1436,6 +1485,11 @@ def route(doc: PIDDocument, placements: Sequence[Placement3D], room: EngineRoom,
     # --- terminals: nodes (hub bodies registered as obstacles), then nozzle approaches
     hub_size: dict[str, tuple[float, float, float]] = {}
     hub_pl: dict[str, Placement3D] = {}
+    chains_by_node: dict[str, list[_Chain]] = defaultdict(list)
+    for ch in chains:
+        if ch.end is not None and ch.items and ch.start.node != ch.end.node:
+            chains_by_node[ch.start.node].append(ch)
+            chains_by_node[ch.end.node].append(ch)
     for n in sorted(nodes):
         inflate, margin = 0.25, 0.0
         if n in hubs:
@@ -1444,7 +1498,14 @@ def route(doc: PIDDocument, placements: Sequence[Placement3D], room: EngineRoom,
             margin = max(hub_size[n]) / 2 + 0.05
         elif not n.startswith("free:"):
             margin = node_od[n] / 2 + PIPE_CLEARANCE + 0.05
-        ctx.terms[n] = _node_term(ctx, n, nodes[n], inflate, margin)
+        needs = []
+        for ch in chains_by_node.get(n, []):
+            other = ch.end if ch.start.node == n else ch.start
+            if other.node in ctx.terms:
+                needs.append((ctx.terms[other.node].point, _chain_need(ctx, ch)))
+            elif other.node in pmap and other.key in pmap[other.node].nozzles:
+                needs.append((pmap[other.node].nozzles[other.key].as_tuple(), _chain_need(ctx, ch)))
+        ctx.terms[n] = _node_term(ctx, n, nodes[n], inflate, margin, needs)
         nodes[n] = ctx.terms[n].point
         if n in hubs:
             o = objs[n]
@@ -1495,6 +1556,9 @@ def route(doc: PIDDocument, placements: Sequence[Placement3D], room: EngineRoom,
         label = f"chain {', '.join(ch.pipes)}"
         a = ta.point
         mode = "clean"
+        item_sizes = [_inline_size(objs[i], od) for i, _, _ in ch.items]
+        headroom = max((sz[2] - axis_height(objs[i].cls, sz) for (i, _, _), sz in zip(ch.items, item_sizes)),
+                       default=0.0)
         if tb is None:
             stats.stubs += 1
             sizes = [_inline_size(objs[i], od) for i, _, _ in ch.items]
@@ -1505,7 +1569,7 @@ def route(doc: PIDDocument, placements: Sequence[Placement3D], room: EngineRoom,
             if ta.key == tb.key:
                 pts = [a, _add(a, (0, 0, 1), 0.5)]
             else:
-                pts, mode = _route_between(ctx, cc, ta, tb, od, zb, label)
+                pts, mode = _route_between(ctx, cc, ta, tb, od, zb, label, headroom=headroom)
         if len(pts) < 2:
             pts = [pts[0], _add(pts[0], (0, 0, 1), 0.05)]
         m_end = tb.margin if tb else 0.0
@@ -1513,20 +1577,21 @@ def route(doc: PIDDocument, placements: Sequence[Placement3D], room: EngineRoom,
         placed_items, spans, bodies, left = _items_along(ctx, cc, pts, od, line, tb is None, ta.margin, m_end)
         if left and tb is not None and ta.key != tb.key and time.time() < ctx.deadline:
             # rip up and retry: keep the items' bodies clear of everything, or give them a straight leg
-            sizes = [_inline_size(objs[i], od) for i, _, _ in ch.items]
-            r_item = max(_item_radius(objs[i], sz) for (i, _, _), sz in zip(ch.items, sizes))
+            sizes = item_sizes
+            half_w = max(sz[1] / 2 for sz in sizes)
             need = sum(sz[0] for sz in sizes) + 0.1 * len(sizes) + od + 0.1
             first_notes = notes[n_notes:]
             del notes[n_notes:]
             saved = (stats.astar, stats.widened)
             attempts: list[tuple[str, Callable[[], tuple[list[Pt], str]]]] = [
-                (f"keeping {r_item:.2f} m around the pipe free",
-                 lambda: _route_between(ctx, cc, ta, tb, max(od, 2 * r_item + 0.05), zb, label, MODES[:2]))]
+                (f"keeping {half_w:.2f} m beside and {headroom:.2f} m above the pipe free",
+                 lambda: _route_between(ctx, cc, ta, tb, max(od, 2 * half_w + 0.05), zb, label, MODES[:2],
+                                        headroom=headroom, headroom_hard=True))]
             for at_start in sorted((True, False), key=lambda st: (ta if st else tb).normal is None):
                 t_leg = ta if at_start else tb
                 attempts.append((f"with a straight {need + t_leg.margin:.1f} m run out of {t_leg.key.split(chr(0))[0]}",
                                  lambda st=at_start, tl=t_leg: _route_with_leg(ctx, cc, ta, tb, od, zb,
-                                                                               need + tl.margin, st)))
+                                                                               need + tl.margin, st, headroom)))
             best = None
             for how, fn in attempts:
                 if time.time() >= ctx.deadline:
@@ -1638,7 +1703,7 @@ def _spread_nodes(ctx: _Ctx, chains: Sequence[_Chain], nodes: dict[str, Pt], pma
     for ch in chains:
         if ch.end is None or not ch.items:
             continue
-        need = _chain_need(ctx, ch)
+        need = _chain_need(ctx, ch) + res  # snapping to cells may take up to one cell back
         a, b = ch.start, ch.end
         for x, y in ((a, b), (b, a)):
             if x.node not in pos:
@@ -1646,7 +1711,7 @@ def _spread_nodes(ctx: _Ctx, chains: Sequence[_Chain], nodes: dict[str, Pt], pma
             if y.node in pos:
                 pairs.append((x.node, y.node, None, need))
             elif y.node in pmap and y.key in pmap[y.node].nozzles:
-                pairs.append((x.node, y.node, pmap[y.node].nozzles[y.key].as_tuple(), need / 2 if False else need))
+                pairs.append((x.node, y.node, pmap[y.node].nozzles[y.key].as_tuple(), need))
     lo = (0.5, -room.breadth / 2 + 0.5)
     hi = (room.length - 0.5, room.breadth / 2 - 0.5)
     names = sorted(pos)
@@ -1662,8 +1727,8 @@ def _spread_nodes(ctx: _Ctx, chains: Sequence[_Chain], nodes: dict[str, Pt], pma
                 continue
             ax = 0 if abs(pa[0] - pb[0]) >= abs(pa[1] - pb[1]) else 1
             sgn = 1.0 if pa[ax] >= pb[ax] else -1.0
-            share = 1.0 if fixed is not None else 0.5  # both ends movable: each moves half (once per side)
-            delta[n][ax] += sgn * (need - d) * share / (1 if fixed is not None else 1)
+            share = 1.0 if fixed is not None else 0.5  # both ends movable: each side moves half
+            delta[n][ax] += sgn * (need - d) * share
         for i, n in enumerate(names):
             for m in names[i + 1:]:
                 pa, pb = pos[n], pos[m]
