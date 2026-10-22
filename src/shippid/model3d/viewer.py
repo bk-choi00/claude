@@ -5,7 +5,8 @@
   the model bounds, click-to-inspect (raycast; hits under hidden ancestors and structure are
   skipped) with the node metadata in a side panel (Korean labels), selection highlight, per
   system / category visibility checkboxes, deck and outline toggles, ISO 14726 colour legend and
-  search by tag / id / name. Needs network access to the CDN for the three.js modules only.
+  search by tag / id / label / line number (the human label is the ``label`` extra:
+  GLTFLoader puts the glTF node name into ``userData.name``). Needs network access to the CDN for the three.js modules only.
 * ``mode="plotly"`` -- fully offline HTML (plotly.js embedded): one Mesh3d per object / pipe
   with hover text, legend groups per system, ``aspectmode="data"``.
 """
@@ -37,7 +38,7 @@ CATEGORY_KO: dict[str, str] = {
     "pipe": "배관",
 }
 FIELD_KO: dict[str, str] = {
-    "id": "ID", "tag": "태그", "name": "명칭", "class": "심볼 분류", "category": "범주", "system": "계통",
+    "id": "ID", "tag": "태그", "label": "명칭", "class": "심볼 분류", "category": "범주", "system": "계통",
     "line_number": "라인 번호", "lines": "연결 라인", "size": "관경", "medium": "유체", "iso14726": "ISO 14726 색상",
     "deck": "데크", "dimensions_m": "치수 L×W×H (m)", "position_m": "위치 x,y,z (m)", "yaw_deg": "방향 (°)",
     "actuator": "구동기", "diameter_m": "외경 (m)", "length_m": "길이 (m)", "from": "시작", "to": "끝",
@@ -66,6 +67,16 @@ def _system_labels() -> dict[str, str]:
     return out
 
 
+def placement_sources(layout: Layout3D) -> dict[str, int]:
+    """Placements per origin tag (``[gemma]`` / ``[mock]`` / ``[heuristic]`` / ``[router]`` rationale prefix)."""
+    out: dict[str, int] = {}
+    for p in layout.placements:
+        m = re.match(r"^\[(\w+)\]", p.rationale or "")
+        key = m.group(1) if m else "untagged"
+        out[key] = out.get(key, 0) + 1
+    return dict(sorted(out.items()))
+
+
 def viewer_data(layout: Layout3D, doc: PIDDocument) -> dict[str, Any]:
     """JSON payload embedded in the viewers (drawing info, planner, legend, labels, notes)."""
     info = doc.info
@@ -74,6 +85,7 @@ def viewer_data(layout: Layout3D, doc: PIDDocument) -> dict[str, Any]:
         "drawing": {"drawing_no": info.drawing_no, "title": info.title, "system": info.system.value,
                     "ship_type": info.ship_type, "hull_no": info.hull_no, "source": doc.source},
         "planner": layout.planner,
+        "sources": placement_sources(layout),
         "llm": {"backend": layout.llm.backend, "model": layout.llm.model, "calls": layout.llm.calls,
                 "errors": layout.llm.errors[:10]},
         "counts": {"placements": len(layout.placements), "routes": len(layout.routes)},
@@ -86,8 +98,19 @@ def viewer_data(layout: Layout3D, doc: PIDDocument) -> dict[str, Any]:
     }
 
 
+_SCRIPT_ESCAPES = {"<": "\\u003c", ">": "\\u003e", "&": "\\u0026", " ": "\\u2028", " ": "\\u2029"}
+_SCRIPT_UNSAFE = re.compile("[<>&  ]")
+
+
 def _json_for_script(data: Any) -> str:
-    return json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+    """JSON for a ``<script type="application/json">`` element.
+
+    Model / PDF strings (titles, notes) may contain ``</script>`` or ``<!--<script>``, which would
+    end the element early or switch the HTML parser into the double-escaped script state and
+    swallow the rest of the page; ``< > &`` and U+2028/2029 are therefore written as ``\\uXXXX``
+    escapes (valid JSON, identical value after ``JSON.parse``).
+    """
+    return _SCRIPT_UNSAFE.sub(lambda m: _SCRIPT_ESCAPES[m.group(0)], json.dumps(data, ensure_ascii=False))
 
 
 def write_viewer_html(glb_path: Optional[str | Path], layout: Layout3D, doc: PIDDocument, out_html: str | Path,
@@ -137,12 +160,12 @@ def _write_plotly(layout: Layout3D, doc: PIDDocument, out: Path) -> Path:
         ex = it.extras
         if it.kind == "deck":
             group, label = "structure", sys_labels["structure"]
-            text = ex.get("name", it.node)
+            text = ex.get("label", it.node)
             opacity = 0.15
         else:
             group, label = it.system, sys_labels.get(it.system, it.system)
             rows = [f"<b>{html.escape(str(ex.get('tag') or ex.get('id')))}</b>"]
-            for k in ("name", "class", "category", "line_number", "size", "medium", "deck", "rationale"):
+            for k in ("label", "class", "category", "line_number", "size", "medium", "deck", "rationale"):
                 if ex.get(k) not in (None, "", []):
                     rows.append(f"{FIELD_KO.get(k, k)}: {html.escape(str(ex[k]))[:120]}")
             text = "<br>".join(rows)
@@ -204,7 +227,7 @@ details summary { cursor:pointer; color:var(--muted); } #notes { font-size:11px;
 <div id="left" class="panel">
   <h1 id="title"></h1>
   <div id="meta" class="muted"></div>
-  <h2>검색 (태그 / ID / 명칭)</h2>
+  <h2>검색 (태그 / ID / 명칭 / 라인)</h2>
   <input id="search" type="search" placeholder="예: BA-P001, o12, PUMP" autocomplete="off">
   <div id="matches"></div>
   <h2>계통 / 범주 표시</h2>
@@ -244,6 +267,7 @@ $('title').textContent = DATA.title;
 const d = DATA.drawing;
 $('meta').innerHTML = [d.drawing_no, d.ship_type, d.hull_no].filter(Boolean).map(esc).join(' · ') +
   `<br>배치: <span class="badge">${esc(DATA.planner)}</span>` +
+  (DATA.sources ? ` <span class="muted">${Object.entries(DATA.sources).map(([k, n]) => esc(k) + ' ' + n).join(', ')}</span>` : '') +
   (DATA.llm && DATA.llm.calls ? ` <span class="muted">(${esc(DATA.llm.backend)} ${esc(DATA.llm.model || '')}, ${DATA.llm.calls} calls)</span>` : '');
 $('legend').innerHTML = DATA.legend.map((m) => `<div><span class="sw" style="background:${m.hex}"></span><b style="white-space:nowrap">${esc(m.ko)}</b> <span class="muted">${esc(m.colour)} – ${esc(m.code)}</span></div>`).join('') || '<span class="muted">배관 없음</span>';
 $('notes').innerHTML = DATA.notes.map((n) => `<li>${esc(n)}</li>`).join('');
@@ -312,7 +336,7 @@ function select(node, frame = false) {
   if (!node) { $('right').style.display = 'none'; return; }
   setHighlight(node, true);
   const u = node.userData;
-  $('sel-title').textContent = u.tag || u.name || u.id;
+  $('sel-title').textContent = u.tag || u.label || u.id;
   const rows = [];
   for (const [k, ko] of Object.entries(DATA.fields)) {
     if (u[k] === undefined || u[k] === null || u[k] === '' || (Array.isArray(u[k]) && !u[k].length)) continue;
@@ -347,8 +371,8 @@ renderer.domElement.addEventListener('pointerup', (e) => {
 function runSearch(q, frame) {
   q = q.trim().toLowerCase();
   if (!q) { $('matches').innerHTML = ''; return; }
-  const hits = owners.filter((o) => ['tag', 'id', 'name', 'line_number'].some((k) => o.userData[k] && String(o.userData[k]).toLowerCase().includes(q)));
-  $('matches').innerHTML = hits.slice(0, 25).map((o, i) => `<div data-i="${i}">${esc(o.userData.tag || o.userData.id)} <span class="muted">${esc(o.userData.name || o.userData.class || '')}</span></div>`).join('') || '<span class="muted">결과 없음</span>';
+  const hits = owners.filter((o) => ['tag', 'id', 'label', 'line_number'].some((k) => o.userData[k] && String(o.userData[k]).toLowerCase().includes(q)));
+  $('matches').innerHTML = hits.slice(0, 25).map((o, i) => `<div data-i="${i}">${esc(o.userData.tag || o.userData.id)} <span class="muted">${esc(o.userData.label || o.userData.class || '')}</span></div>`).join('') || '<span class="muted">결과 없음</span>';
   $('matches').querySelectorAll('div[data-i]').forEach((el) => { el.onclick = () => select(hits[+el.dataset.i], true); });
   if (frame && hits.length) select(hits[0], true);
 }

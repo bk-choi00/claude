@@ -9,8 +9,10 @@ Scene graph (glTF node names are unique and three.js-safe: only ``[A-Za-z0-9_-]`
           <TAG>_<id>                object or pipe node with metadata (extras.kind = "object"/"pipe")
             <TAG>_<id>__<part>      one mesh per part, one PBR material per mesh
 
-Node extras (-> three.js ``userData``): id, tag, name, class, category, system, line_number, size,
-medium, deck, rationale, dimensions_m, source. ``scene.metadata`` (-> glTF scene extras) holds the
+Node extras (-> three.js ``userData``): id, tag, label, class, category, system, line_number, size,
+medium, deck, rationale, dimensions_m, source. The human-readable name is ``label`` (only when it
+differs from the tag), never ``name``: three.js GLTFLoader sets ``userData.name`` to the glTF node
+name before applying the extras, so a ``name`` extra would be missing or shadowed by the node slug. ``scene.metadata`` (-> glTF scene extras) holds the
 drawing information, planner and counts.
 """
 
@@ -145,12 +147,12 @@ def scene_items(layout: Layout3D, doc: PIDDocument, outline: bool = True) -> lis
         tr = _tr((layout.bounds_min.x, (layout.bounds_min.y + layout.bounds_max.y) / 2, 0.0))
         items.append(SceneItem(names.get(f"deck_{d.name}"), "deck", "structure", "deck", tr, parts,
                                {"kind": "structure", "category": "deck", "deck": d.name, "z_m": d.z,
-                                "name": f"deck {d.name} (z = {d.z:.2f} m)"}))
+                                "label": f"deck {d.name} (z = {d.z:.2f} m)"}))
     if outline:
         bmin, bmax = layout.bounds_min, layout.bounds_max
         items.append(SceneItem(names.get("engine_room_outline"), "outline", "structure", "outline", np.eye(4),
                                [outline_part(bmin.x, bmin.y, bmin.z, bmax.x, bmax.y, bmax.z)],
-                               {"kind": "structure", "category": "outline", "name": "engine room envelope"}))
+                               {"kind": "structure", "category": "outline", "label": "engine room envelope"}))
     for p in layout.placements:
         o = objs.get(p.object_id)
         cls = o.cls if o else p.cls
@@ -164,7 +166,7 @@ def scene_items(layout: Layout3D, doc: PIDDocument, outline: bool = True) -> lis
         m = re.match(r"^\[(\w+)\]", rationale)
         extras = {
             "kind": "object", "id": p.object_id, "tag": tag,
-            "name": labels.get(p.object_id) if labels.get(p.object_id) != tag else None, "class": cls.value,
+            "label": labels.get(p.object_id) if labels.get(p.object_id) != tag else None, "class": cls.value,
             "category": cat.value, "system": sys_.value, "line_number": info.get("line_number"),
             "lines": info.get("lines", []), "size": info.get("size"), "medium": info.get("medium"),
             "deck": p.deck, "rationale": rationale,

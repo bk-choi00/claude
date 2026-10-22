@@ -306,9 +306,14 @@ class DrawingInfo(_Base):
 
 
 class PageInfo(_Base):
+    """Page geometry. All coordinates in a PIDDocument are in the *displayed* page space
+    (after the PDF /Rotate is applied), i.e. the space of ``page.rect`` and of rendered
+    images; ``rotation`` records the page's /Rotate value."""
+
     index: int
     width: float
     height: float
+    rotation: int = 0
     drawing_area: Optional[BBox] = None  # area inside the frame, excluding title block
 
 

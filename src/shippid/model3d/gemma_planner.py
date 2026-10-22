@@ -8,10 +8,17 @@ vocabulary and the room size, and returns an ordered :class:`LayoutPlanDraft`.
 
 Each answer is validated (unknown / duplicate ids, anchors not placed earlier, anchor cycles,
 missing items) and solved; structural problems plus the solver's diagnostics (relocations
-because a band is full, size clipping, overlaps, unsatisfied relations) are fed back for up
-to ``max_rounds`` repair rounds; the best round is kept. Items still missing come from
-:func:`heuristic_plan`. Large drawings are planned in chunks of whole graph components
-grouped by system; later chunks see (and may anchor to) the items already planned.
+because a band is full, size clipping, overlaps, covered nozzles, unsatisfied relations) are
+fed back for up to ``max_rounds`` repair rounds. A repair answer that leaves items out is
+treated as a patch of the best plan so far (merged by object id). Rounds are compared by
+coverage first (missing required items), then structural problems, then solver issues; the
+best one is kept, also when a later repair round fails (unparseable output, HTTP error,
+timeout). Repair prompts carry only the system prompt, the original request, the current plan
+and the latest feedback, and ``max_tokens`` is sized so prompt + answer fit the server context
+(``context_tokens``, 32k in the documented vLLM recipe); chunks whose first prompt would not fit
+are split. Items still missing come from :func:`heuristic_plan`. Large drawings are planned in
+chunks of whole graph components grouped by system; later chunks see (and may anchor to) the
+items already planned.
 
 Provenance: items produced by the model carry ``source="gemma"`` (``"mock"`` for the test
 backend, whose output must never pass for Gemma's); ``LayoutPlan.planner`` is that label only
@@ -22,17 +29,19 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from collections import defaultdict
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any, Optional, Sequence
 
 import networkx as nx
 
-from ..llm.base import LLMClient, LLMError, Message
+from ..llm.base import LLMClient, LLMError, Message, schema_for
 from ..model import LLMUsage, PIDDocument
 from .heuristic import (Neighbor, default_routing, doc_system, drawing_positions, equipment_adjacency,
                         flow_order, heuristic_plan, object_labels, object_systems, pipe_medium, process_pipes)
-from .plan import (LayoutPlan, LayoutPlanDraft, PlanItem, RoutingPlan, check_plan, is_optional_planned, is_planned,
-                   sanitize_items)
+from .plan import (LayoutPlan, LayoutPlanDraft, PlanItem, PlanItemDraft, RoutingPlan, check_plan,
+                   is_optional_planned, is_planned, sanitize_items)
 from .solver import object_size, solve_detailed
 from .zones import DECK_NAMES, LONGITUDINALS, SIDES, ZONE_ALLOWED_DECKS, ZONE_DECK, ZONE_NAMES, EngineRoom
 
@@ -103,45 +112,106 @@ def _to_json(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
+def estimate_tokens(text: str) -> int:
+    """Conservative token count of a prompt for Gemma's SentencePiece tokenizer.
+
+    Digits are split into single tokens and non-ASCII characters (Korean titles) cost about one
+    token each; the remaining JSON / English text is counted at 3 characters per token (real
+    English prose is ~4, so this over-estimates on purpose).
+    """
+    digits = sum(1 for c in text if c.isdigit())
+    wide = sum(1 for c in text if ord(c) > 127)
+    return digits + wide + math.ceil((len(text) - digits - wide) / 3.0)
+
+
+@dataclass
+class _Round:
+    """Bookkeeping of the best round of one chunk."""
+
+    key: tuple[int, int, int]  # (missing required items, structural problems, solver issues)
+    rnd: int
+    items: list[PlanItemDraft]  # sanitized, merged
+    draft: LayoutPlanDraft
+
+
+def merge_patch(previous: Sequence[PlanItemDraft], answer: Sequence[PlanItemDraft]) -> list[PlanItemDraft]:
+    """Apply a partial repair answer to the previous plan: items are replaced by object id in the
+    previous order, new ids are appended (first occurrence wins)."""
+    by_id: dict[str, PlanItemDraft] = {}
+    for it in answer:
+        by_id.setdefault(it.object_id, it)
+    prev_ids = {it.object_id for it in previous}
+    out = [by_id.get(it.object_id, it) for it in previous]
+    seen = set(prev_ids)
+    for it in answer:
+        if it.object_id not in seen:
+            out.append(it)
+            seen.add(it.object_id)
+    return out
+
+
 class GemmaLayoutPlanner:
     """Gemma-driven arrangement planner with solver feedback and heuristic fallback."""
 
+    MIN_ANSWER_TOKENS = 600  # routing + notes + JSON overhead of an answer
+    TOKENS_PER_ITEM = 110  # one plan item (~70 tokens) with a generous rationale
+    THINKING_TOKENS = 1500  # minimum room for Gemma's thinking before the JSON
+
     def __init__(self, client: LLMClient, max_rounds: int = 3, chunk_size: int = 60, thinking: bool = True,
-                 max_tokens: Optional[int] = 12000, max_feedback_lines: int = 40):
-        """``max_tokens`` covers thinking plus the JSON plan (~70 tokens per item); a 60-item chunk
-        prompt is ~12k tokens, so prompt + answer stay within a 32k context (vLLM recipe)."""
+                 max_tokens: Optional[int] = 12000, max_feedback_lines: int = 40,
+                 context_tokens: Optional[int] = 32768):
+        """``max_tokens`` caps thinking plus the JSON plan; each call is additionally limited to what
+        is left of ``context_tokens`` (the server's ``--max-model-len``; None = unlimited) after the
+        estimated prompt, so prompt + answer never exceed the context (vLLM rejects that with HTTP
+        400). A chunk whose first prompt leaves too little room for its answer is split in two."""
         self.client = client
         self.max_rounds = max(0, int(max_rounds))
         self.chunk_size = max(4, int(chunk_size))
         self.thinking = thinking
         self.max_tokens = max_tokens
         self.max_feedback_lines = max_feedback_lines
+        self.context_tokens = context_tokens
         # provenance label: output of the test MockBackend must never pass for Gemma output
         self.label = "mock" if client.backend.name == "mock" else "gemma"
         self.log: list[dict[str, Any]] = []  # per chunk / round record (for reports and tests)
+        self._schema_tokens = self._schema_overhead()
 
     # -- public ------------------------------------------------------------------
     def plan(self, doc: PIDDocument, room: EngineRoom) -> tuple[LayoutPlan, LLMUsage]:
         before = self.client.usage.model_copy(deep=True)
         errors: list[str] = []
         required = [o.id for o in doc.objects if is_planned(o)]
+        req_set = set(required)
         optional = [o.id for o in doc.objects if is_optional_planned(o)]
         candidates = required + optional
         adjacency = equipment_adjacency(doc, set(candidates))
         req_adjacency = equipment_adjacency(doc, set(required))
         reference = heuristic_plan(doc, room, adjacency=req_adjacency)
         ref_items = {it.object_id: it for it in reference.items}
-        chunks = self._chunks(doc, candidates, adjacency)
+        queue = self._chunks(doc, candidates, adjacency)
         final: list[PlanItem] = []
         routing: Optional[RoutingPlan] = None
         notes: list[str] = []
-        for ci, chunk in enumerate(chunks):
-            req_chunk = [i for i in chunk if i in set(required)]
+        done = 0
+        while queue:
+            chunk = queue.pop(0)
+            ci, n_chunks = done, done + 1 + len(queue)
+            req_chunk = [i for i in chunk if i in req_set]
+            digest = self._digest(doc, room, chunk, req_chunk, final, adjacency, ref_items)
+            msgs = self._messages(doc, room, digest, ci, n_chunks)
+            budget = self._answer_budget(msgs)
+            if budget is not None and budget < self._min_answer(len(chunk)) and len(chunk) > 4:
+                half = len(chunk) // 2
+                queue[0:0] = [chunk[:half], chunk[half:]]
+                notes.append(f"chunk of {len(chunk)} items split in two: its prompt (~{self._prompt_tokens(msgs)} "
+                             f"tokens) leaves too little of the {self.context_tokens}-token context for the answer")
+                continue
+            done += 1
             try:
-                items, draft_routing, draft_notes = self._plan_chunk(doc, room, chunk, req_chunk, final, adjacency,
-                                                                     ref_items, ci, len(chunks))
+                items, draft_routing, draft_notes = self._plan_chunk(doc, room, chunk, req_chunk, final, ref_items,
+                                                                     msgs, ci, n_chunks, errors)
             except LLMError as exc:
-                msg = f"chunk {ci + 1}/{len(chunks)}: no valid plan from the model ({str(exc)[:200]})"
+                msg = f"chunk {ci + 1}/{n_chunks}: no valid plan from the model ({str(exc)[:200]})"
                 errors.append(msg)
                 notes.append(msg + "; heuristic used for this chunk")
                 items, draft_routing, draft_notes = [], None, []
@@ -157,10 +227,37 @@ class GemmaLayoutPlanner:
         n_model = sum(1 for it in final if it.source == self.label)
         planner = self.label if n_model else "heuristic"
         plan = LayoutPlan(items=final, routing=self._merge_routing(doc, routing), planner=planner,
-                          notes=[f"{self.label} planned {n_model}/{len(final)} items in {len(chunks)} chunk(s)"]
+                          notes=[f"{self.label} planned {n_model}/{len(final)} items in {done} chunk(s)"]
                           + notes)
         usage = self._usage_delta(before, errors)
         return plan, usage
+
+    # -- context budget --------------------------------------------------------------
+    def _schema_overhead(self) -> int:
+        """Tokens LLMClient adds to the last user message (schema in prompt) per call."""
+        if not (self.client.schema_in_prompt or self.client.json_mode != "json_schema"):
+            return 0
+        return estimate_tokens(json.dumps(schema_for(LayoutPlanDraft), ensure_ascii=False)) + 60
+
+    def _prompt_tokens(self, msgs: Sequence[Message]) -> int:
+        return sum(estimate_tokens(m.text()) + 8 for m in msgs) + self._schema_tokens
+
+    def _min_answer(self, n_items: int) -> int:
+        return self.MIN_ANSWER_TOKENS + self.TOKENS_PER_ITEM * n_items + (self.THINKING_TOKENS if self.thinking
+                                                                           else 0)
+
+    def _answer_budget(self, msgs: Sequence[Message]) -> Optional[int]:
+        """Tokens left for the answer (None = no context limit). LLMClient's own validation retry
+        resends the prompt with up to ~8k characters of failed answer and error: reserved too."""
+        if not self.context_tokens:
+            return None
+        reserve = 256 + (estimate_tokens("x" * 8000) if self.client.max_attempts > 1 else 0)
+        return self.context_tokens - self._prompt_tokens(msgs) - reserve
+
+    def _call_tokens(self, budget: Optional[int]) -> Optional[int]:
+        if budget is None:
+            return self.max_tokens
+        return min(self.max_tokens, budget) if self.max_tokens else budget
 
     # -- chunking ------------------------------------------------------------------
     def _chunks(self, doc: PIDDocument, candidates: list[str], adjacency: dict[str, list[Neighbor]]) -> list[list[str]]:
@@ -259,46 +356,99 @@ class GemmaLayoutPlanner:
 
     # -- rounds --------------------------------------------------------------------
     def _plan_chunk(self, doc: PIDDocument, room: EngineRoom, chunk: list[str], required: list[str],
-                    placed: list[PlanItem], adjacency: dict[str, list[Neighbor]], ref_items: dict[str, PlanItem],
-                    ci: int, n_chunks: int) -> tuple[list[PlanItem], Optional[RoutingPlan], list[str]]:
-        digest = self._digest(doc, room, chunk, required, placed, adjacency, ref_items)
-        msgs = self._messages(doc, room, digest, ci, n_chunks)
+                    placed: list[PlanItem], ref_items: dict[str, PlanItem], first: list[Message], ci: int,
+                    n_chunks: int, errors: list[str]) -> tuple[list[PlanItem], Optional[RoutingPlan], list[str]]:
+        """Up to 1 + max_rounds model calls for one chunk; returns the best round's items.
+
+        Raises :class:`LLMError` only if the first call fails; a failing repair round keeps the
+        best plan so far (recorded in the log, the notes and the usage errors).
+        """
         placed_ids = [it.object_id for it in placed]
-        best: Optional[tuple[int, int, list[PlanItem], LayoutPlanDraft]] = None
+        chunk_set = set(chunk)
+        best: Optional[_Round] = None
+        msgs = list(first)
+        notes: list[str] = []
         for rnd in range(self.max_rounds + 1):
-            draft = self.client.generate_json(msgs, LayoutPlanDraft, max_tokens=self.max_tokens,
-                                              thinking=True if self.thinking else None)
-            problems = check_plan(draft.items, chunk, required, placed_ids)
-            items = [PlanItem(**it.model_dump(), source=self.label)
-                     for it in sanitize_items(draft.items, chunk, placed_ids)]
+            budget = self._answer_budget(msgs)
+            if rnd and budget is not None and budget < self._min_answer(len(chunk)):
+                notes.append(f"chunk {ci + 1}: repair round {rnd + 1} skipped: the repair prompt "
+                             f"(~{self._prompt_tokens(msgs)} tokens) leaves too little of the context for the answer")
+                break
+            try:
+                draft = self.client.generate_json(msgs, LayoutPlanDraft, max_tokens=self._call_tokens(budget),
+                                                  thinking=True if self.thinking else None)
+            except LLMError as exc:
+                if best is None:
+                    raise
+                msg = (f"chunk {ci + 1}: repair round {rnd + 1} failed ({str(exc)[:200]}); "
+                       f"kept the plan of round {best.rnd + 1}")
+                self.log.append({"chunk": ci, "round": rnd, "error": str(exc)[:300], "items": 0, "problems": [],
+                                 "issues": []})
+                notes.append(msg)
+                errors.append(msg)
+                break
+            raw = list(draft.items)
+            raw_ids = {it.object_id for it in raw if it.object_id in chunk_set}
+            # a repair answer that drops items the best plan has is a patch of that plan
+            partial = best is not None and any(r not in raw_ids and r in {it.object_id for it in best.items}
+                                               for r in required)
+            merged = merge_patch(best.items, raw) if partial and best is not None else raw
+            problems = check_plan(merged, chunk, required, placed_ids)
+            items_d = sanitize_items(merged, chunk, placed_ids)
+            items = [PlanItem(**it.model_dump(), source=self.label) for it in items_d]
+            have = {it.object_id for it in items_d} | set(placed_ids)
+            missing = [r for r in required if r not in have]
             fill = self._fill(required, placed + items, ref_items, doc)
             trial = LayoutPlan(items=placed + items + fill, planner=self.label)
             res = solve_detailed(trial, doc, room)
             issues = res.issues([it.object_id for it in items])
-            feedback = problems + issues
-            score = len(problems) * 2 + len(issues)
-            self.log.append({"chunk": ci, "round": rnd, "items": len(draft.items), "problems": problems,
-                             "issues": issues})
-            if best is None or score < best[0]:
-                best = (score, rnd, items, draft)
-            if not feedback:
+            structural = [p for p in problems if not p.startswith("missing items")]
+            key = (len(missing), len(structural), len(issues))
+            feedback = ([f"your answer listed {len(raw_ids)} of {len(chunk)} objects; "
+                         f"the others were kept from your previous plan (always return the COMPLETE plan)"]
+                        if partial else []) + problems + issues
+            self.log.append({"chunk": ci, "round": rnd, "items": len(raw), "merged": partial, "problems": problems,
+                             "issues": issues, "score": key, "max_tokens": self._call_tokens(budget),
+                             "prompt_tokens_est": self._prompt_tokens(msgs), "messages": len(msgs)})
+            if best is None or key < best.key:
+                best = _Round(key, rnd, items_d, draft)
+            if not problems and not issues:
                 break
             if rnd < self.max_rounds:
-                shown = feedback[: self.max_feedback_lines]
-                more = len(feedback) - len(shown)
-                msgs = msgs + [
-                    Message("assistant", _to_json(draft.model_dump(mode="json"))[-12000:]),
-                    Message("user", "The solver checked your plan and reported these problems:\n- " +
-                            "\n- ".join(shown) + (f"\n(+{more} more)" if more > 0 else "") +
-                            "\nReturn the COMPLETE corrected plan (all required items, same JSON format). Fix "
-                            "unknown/duplicate/missing ids and anchors first; move items out of crowded bands, "
-                            "choose other zones, sides or longitudinal thirds, or adjust relations and sizes."),
-                ]
+                msgs = self._repair_messages(first, items_d, draft, feedback, len(chunk))
         assert best is not None
-        _, rnd, items, draft = best
-        notes = [f"chunk {ci + 1}: best plan from round {rnd + 1} ({len(items)} items)"]
-        notes += [f"model note: {n}"[:300] for n in draft.notes[:5]]
-        return items, self._valid_routing(doc, draft.routing), notes
+        items = [PlanItem(**it.model_dump(), source=self.label) for it in best.items]
+        notes.insert(0, f"chunk {ci + 1}: best plan from round {best.rnd + 1} ({len(items)} items; "
+                        f"missing {best.key[0]}, problems {best.key[1]}, solver issues {best.key[2]})")
+        notes += [f"model note: {n}"[:300] for n in best.draft.notes[:5]]
+        return items, self._valid_routing(doc, best.draft.routing), notes
+
+    def _repair_messages(self, first: list[Message], items: Sequence[PlanItemDraft], draft: LayoutPlanDraft,
+                         feedback: list[str], n_items: int) -> list[Message]:
+        """Bounded repair context: system + original request + the latest plan (merged, sanitized,
+        default fields left out) as the assistant turn + its feedback. If that leaves too little
+        context for the answer, the plan echo is dropped and the feedback is appended to the
+        request (one user turn, so roles still alternate for Gemma's chat template)."""
+        shown = feedback[: self.max_feedback_lines]
+        more = len(feedback) - len(shown)
+        problems = "\n- ".join(shown) + (f"\n(+{more} more)" if more > 0 else "")
+        ask = ("\nReturn the COMPLETE corrected plan (all required items, same JSON format). Fix "
+               "unknown/duplicate/missing ids and anchors first; move items out of crowded bands, choose other "
+               "zones, sides or longitudinal thirds, or adjust relations and sizes.")
+        current = {"items": [{"object_id": it.object_id, "zone": it.zone, "side": it.side,
+                              "longitudinal": it.longitudinal,
+                              **it.model_dump(mode="json", exclude_none=True, exclude_defaults=True)}
+                             for it in items],
+                   "routing": draft.routing.model_dump(mode="json")}
+        msgs = list(first) + [Message("assistant", _to_json(current)),
+                              Message("user", "The solver checked your plan and reported these problems:\n- "
+                                      + problems + ask)]
+        budget = self._answer_budget(msgs)
+        if budget is None or budget >= self._min_answer(n_items):
+            return msgs
+        system, user = first[0], first[-1]
+        return [system, Message("user", user.text() + "\n\nA previous plan for these objects was checked by the "
+                                "solver, which reported these problems:\n- " + problems + ask)]
 
     def _fill(self, required: list[str], placed: list[PlanItem], ref_items: dict[str, PlanItem],
               doc: PIDDocument) -> list[PlanItem]:

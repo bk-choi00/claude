@@ -12,7 +12,12 @@ clearance) and records what it did, which the Gemma planner feeds back for repai
 Nozzle positions: fixed symbol ports are mapped from the symbol's local frame onto the
 box faces (local +u = +x face, drawing "up" = top face); boundary-port equipment (tanks,
 engines, receivers, overboards, connectors) gets each nozzle on the face nearest to the
-equipment it connects to (top face for double-bottom tanks and sea chests).
+equipment it connects to (top face for double-bottom tanks and sea chests, searched over the
+whole face, then the upper part of the side faces). Every nozzle, fixed ports included, is
+probe-checked: the space just outside it must be inside the room and free of other equipment.
+A nozzle that stays covered makes the solver move the covering item once (keeping the access
+column clear); if that fails it is reported in :meth:`SolveResult.issues` (and so fed back to
+the Gemma planner).
 """
 
 from __future__ import annotations
@@ -190,6 +195,7 @@ class ItemDiag:
     relation_ok: Optional[bool] = None
     relation_detail: str = ""
     message: str = ""
+    nozzle_issues: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -210,6 +216,7 @@ class SolveResult:
                 out.append(f"{oid}: {d.message}")
             if d.relation_ok is False:
                 out.append(f"{oid}: relation {d.relation} not satisfied ({d.relation_detail})")
+            out += [f"{oid}: {m}" for m in d.nozzle_issues]
         return out
 
 
@@ -440,6 +447,72 @@ def solve(plan: LayoutPlan, doc: PIDDocument, room: EngineRoom) -> tuple[list[Pl
     return res.placements, res.notes
 
 
+def _place(ctx: _Ctx, it: _ItemCtx) -> tuple[tuple[float, float, float, str, float], str, str]:
+    """Position of one item: requested band, whole zone, fallback zones, relaxed clearance, forced.
+    Returns ((cx, cy, z0, deck, height), status, zone used)."""
+    room, item, fx, fy = ctx.room, it.item, it.fx, it.fy
+    status = "ok"
+    res = _attempt(ctx, it, item.zone, item.side, item.longitudinal)
+    zone_used = item.zone
+    if res is None:
+        res = _attempt(ctx, it, item.zone, None, None)
+        if res is not None:
+            status = "relocated"
+    if res is None:
+        for alt in ZONE_FALLBACK.get(item.zone, ()):
+            res = _attempt(ctx, it, alt, item.side, item.longitudinal) or _attempt(ctx, it, alt, None, None)
+            if res is not None:
+                status, zone_used = "relocated", alt
+                break
+    if res is None:
+        res = _attempt(ctx, it, item.zone, None, None, relax=True)
+        if res is not None:
+            status = "relaxed"
+    if res is None:
+        deck = effective_deck(item)
+        z0 = room.deck_z(deck)
+        bb = room.band(item.zone, item.side, item.longitudinal)
+        cx = min(max((bb.x0 + bb.x1) / 2, fx / 2), room.length - fx / 2)
+        cy = min(max((bb.y0 + bb.y1) / 2, -room.breadth / 2 + fy / 2), room.breadth / 2 - fy / 2)
+        res = (cx, cy, z0, deck, min(it.size[2], room.height - z0))
+        status = "forced"
+    return res, status, zone_used
+
+
+def _diagnose(it: _ItemCtx, room: EngineRoom, res: tuple[float, float, float, str, float], status: str,
+              zone_used: str) -> ItemDiag:
+    item, size, fx, fy = it.item, it.size, it.fx, it.fy
+    cx, cy, z0, _, h = res
+    requested = f"{item.zone}/{item.side}/{item.longitudinal}"
+    side_a, long_a = room.classify(cx, cy)
+    actual = f"{zone_used}/{side_a}/{long_a}"
+    msg = ""
+    if status == "relocated":
+        msg = f"no free space for {fx:.1f} x {fy:.1f} m in {requested}; solver moved it to {actual}"
+    elif status == "relaxed":
+        msg = f"placed in {actual} with reduced clearance ({MARKER_CLEARANCE} m): zone is crowded"
+    elif status == "forced":
+        msg = f"no feasible position anywhere; forced into {actual} and overlaps other equipment"
+    if h < size[2]:
+        msg = (msg + "; " if msg else "") + f"height clipped to {h:.1f} m by the room"
+        if status == "ok":
+            status = "relocated"
+    if item.size_m and (abs(size[0] - item.size_m[0]) > 1e-6 or abs(size[1] - item.size_m[1]) > 1e-6):
+        msg = (msg + "; " if msg else "") + f"size_m {item.size_m} exceeds the room; clipped to {list(size)}"
+        if status == "ok":
+            status = "relocated"
+    diag = ItemDiag(object_id=item.object_id, status=status, requested=requested, actual=actual,
+                    relation=item.relation, message=msg)
+    anchor_box = it.anchor_box
+    if anchor_box is not None and (item.relation != "none" or item.min_m is not None or item.max_m is not None):
+        pt = np.array([[cx, cy]])
+        pen = float(_relation_penalty(item, pt, fx, fy, z0, z0 + h, anchor_box, room.clearance)[0])
+        gap = float(_gap(pt, fx, fy, anchor_box)[0])
+        diag.relation_ok = pen <= 0.3
+        diag.relation_detail = _relation_detail(item, pen, gap)
+    return diag
+
+
 def solve_detailed(plan: LayoutPlan, doc: PIDDocument, room: EngineRoom, step: float = 0.5,
                    adjacency: Optional[dict[str, list[Neighbor]]] = None) -> SolveResult:
     objs = doc.object_by_id()
@@ -452,6 +525,7 @@ def solve_detailed(plan: LayoutPlan, doc: PIDDocument, room: EngineRoom, step: f
     placements: dict[str, Placement3D] = {}
     boxes: dict[str, Box3] = {}
     diags: dict[str, ItemDiag] = {}
+    item_ctx: dict[str, _ItemCtx] = {}
     notes: list[str] = []
     groups: dict[str, list[str]] = defaultdict(list)
 
@@ -472,90 +546,122 @@ def solve_detailed(plan: LayoutPlan, doc: PIDDocument, room: EngineRoom, step: f
         marker = obj.cls in MARKERS
         c_self = MARKER_CLEARANCE if marker else room.clearance
         anchor_box = boxes.get(item.anchor_id) if item.anchor_id else None
-        requested = f"{item.zone}/{item.side}/{item.longitudinal}"
         u, v = dpos.get(oid, (0.5, 0.5))
         hint = (u * room.length, (0.5 - v) * room.breadth)
         nb_centres = [boxes[n.id].center[:2] for n in adjacency.get(oid, []) if n.id in boxes]
         group_centres = [boxes[g].center[:2] for g in groups.get(item.group or "", []) if g in boxes]
-
         it = _ItemCtx(item=item, obj=obj, size=size, fx=fx, fy=fy, structural=structural, marker=marker,
                       c_self=c_self, hint=hint, anchor_box=anchor_box, group_centres=group_centres,
                       nb_centres=nb_centres)
-
-        status, msg = "ok", ""
-        res = _attempt(ctx, it, item.zone, item.side, item.longitudinal)
-        zone_used = item.zone
-        if res is None:
-            res = _attempt(ctx, it, item.zone, None, None)
-            if res is not None:
-                status = "relocated"
-        if res is None:
-            for alt in ZONE_FALLBACK.get(item.zone, ()):
-                res = _attempt(ctx, it, alt, item.side, item.longitudinal) or _attempt(ctx, it, alt, None, None)
-                if res is not None:
-                    status, zone_used = "relocated", alt
-                    break
-        if res is None:
-            res = _attempt(ctx, it, item.zone, None, None, relax=True)
-            if res is not None:
-                status = "relaxed"
-        if res is None:
-            deck = effective_deck(item)
-            z0 = room.deck_z(deck)
-            bb = room.band(item.zone, item.side, item.longitudinal)
-            cx = min(max((bb.x0 + bb.x1) / 2, fx / 2), room.length - fx / 2)
-            cy = min(max((bb.y0 + bb.y1) / 2, -room.breadth / 2 + fy / 2), room.breadth / 2 - fy / 2)
-            res = (cx, cy, z0, deck, min(size[2], room.height - z0))
-            status = "forced"
+        item_ctx[oid] = it
+        res, status, zone_used = _place(ctx, it)
         cx, cy, z0, deck, h = res
-        box = Box3(cx - fx / 2, cy - fy / 2, z0, cx + fx / 2, cy + fy / 2, z0 + h)
-        side_a, long_a = room.classify(cx, cy)
-        actual = f"{zone_used}/{side_a}/{long_a}"
-        size3 = (size[0], size[1], h)
-        if status == "relocated":
-            msg = (f"no free space for {fx:.1f} x {fy:.1f} m in {requested}; solver moved it to {actual}")
-        elif status == "relaxed":
-            msg = f"placed in {actual} with reduced clearance ({MARKER_CLEARANCE} m): zone is crowded"
-        elif status == "forced":
-            msg = f"no feasible position anywhere; forced into {actual} and overlaps other equipment"
+        if status == "forced":
             notes.append(f"{oid}: forced placement overlaps other equipment")
-        if size3 != tuple(size) and h < size[2]:
-            msg = (msg + "; " if msg else "") + f"height clipped to {h:.1f} m by the room"
-            if status == "ok":
-                status = "relocated"
-        if item.size_m and (abs(size[0] - item.size_m[0]) > 1e-6 or abs(size[1] - item.size_m[1]) > 1e-6):
-            msg = (msg + "; " if msg else "") + f"size_m {item.size_m} exceeds the room; clipped to {list(size)}"
-            if status == "ok":
-                status = "relocated"
-        diag = ItemDiag(object_id=oid, status=status, requested=requested, actual=actual, relation=item.relation,
-                        message=msg)
-        if anchor_box is not None and (item.relation != "none" or item.min_m is not None or item.max_m is not None):
-            pt = np.array([[cx, cy]])
-            pen = float(_relation_penalty(item, pt, fx, fy, z0, z0 + h, anchor_box, room.clearance)[0])
-            gap = float(_gap(pt, fx, fy, anchor_box)[0])
-            diag.relation_ok = pen <= 0.3
-            diag.relation_detail = _relation_detail(item, pen, gap)
-        diags[oid] = diag
+        diags[oid] = _diagnose(it, room, res, status, zone_used)
         tag = f"[{item.source}] " if item.source else ""
         placements[oid] = Placement3D(
             object_id=oid, cls=obj.cls, position=Vec3(x=round(cx, 4), y=round(cy, 4), z=round(z0, 4)),
-            yaw_deg=yaw, size=Vec3(x=size3[0], y=size3[1], z=round(h, 4)), deck=deck,
+            yaw_deg=yaw, size=Vec3(x=size[0], y=size[1], z=round(h, 4)), deck=deck,
             rationale=(tag + (item.rationale or "") + (f" (size: {size_origin})" if size_origin else "")).strip(),
         )
-        boxes[oid] = box
-        ctx.add(_Placed(oid, box, c_self, structural, marker, item.group))
+        boxes[oid] = Box3(cx - fx / 2, cy - fy / 2, z0, cx + fx / 2, cy + fy / 2, z0 + h)
+        ctx.add(_Placed(oid, boxes[oid], c_self, structural, marker, item.group))
         if item.group:
             groups[item.group].append(oid)
 
-    for oid, pl in placements.items():
-        pl.nozzles = compute_nozzles(doc, objs[oid], pl, placements, room, zone_of=plan.item_by_id())
+    _nozzles_with_access(doc, plan, room, placements, boxes, diags, item_ctx, notes, step)
     counts = defaultdict(int)
     for d in diags.values():
         counts[d.status] += 1
     unsat = sum(1 for d in diags.values() if d.relation_ok is False)
+    covered = sum(len(d.nozzle_issues) for d in diags.values())
     notes.append("solver: " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())) +
-                 f"; unsatisfied relations {unsat}")
+                 f"; unsatisfied relations {unsat}; covered nozzles {covered}")
     return SolveResult(list(placements.values()), notes, diags, boxes)
+
+
+def _nozzles_with_access(doc: PIDDocument, plan: LayoutPlan, room: EngineRoom, placements: dict[str, Placement3D],
+                         boxes: dict[str, Box3], diags: dict[str, ItemDiag], item_ctx: dict[str, _ItemCtx],
+                         notes: list[str], step: float) -> None:
+    """Compute every nozzle; when one is covered by other equipment, move the covering item (or,
+    if that is structural, the item itself) once with the nozzle's access column kept clear, then
+    recompute. Nozzles still covered are recorded as diagnostics issues."""
+    objs = doc.object_by_id()
+    zone_of = plan.item_by_id()
+    moved: set[str] = set()
+    for attempt in range(2):
+        blocked: list[NozzleBlock] = []
+        for oid, pl in placements.items():
+            noz, blk = compute_nozzles_detailed(doc, objs[oid], pl, placements, room, zone_of=zone_of)
+            pl.nozzles = noz
+            blocked += blk
+        if not blocked:
+            return
+        if attempt == 1:
+            break
+        any_moved = False
+        def movable(oid: str) -> bool:  # double-bottom tanks / sea chests are packed in the hull: never moved
+            it = zone_of.get(oid)
+            return oid in placements and oid not in moved and not (it is not None and it.zone in
+                                                                    ("double_bottom", "bottom"))
+
+        for b in blocked:
+            # prefer moving the covering item (a non-structural one first), else the nozzle's owner
+            cands = [o for o in (b.blocker, b.object_id) if movable(o)]
+            cands.sort(key=lambda o: (objs[o].cls in STRUCTURAL, o != b.blocker))
+            if not cands:
+                continue
+            mover = cands[0]
+            keep_out = b.access_box(0.2)
+            if _relocate(room, step, placements, boxes, diags, item_ctx, mover, keep_out, b):
+                moved.add(mover)
+                any_moved = True
+        if not any_moved:
+            break
+    for b in blocked:
+        what = f"by {b.blocker}" if b.blocker != "room" else "by the room boundary"
+        diags[b.object_id].nozzle_issues.append(
+            f"nozzle {b.key} is covered {what}: no free face point for the pipe connection; "
+            f"move {b.blocker if b.blocker in placements else b.object_id} or give it another zone / side")
+    if blocked:
+        notes.append(f"solver: {len(blocked)} nozzle(s) without free access: "
+                     + ", ".join(f"{b.object_id}.{b.key} ({b.blocker})" for b in blocked[:10]))
+
+
+def _relocate(room: EngineRoom, step: float, placements: dict[str, Placement3D], boxes: dict[str, Box3],
+              diags: dict[str, ItemDiag], item_ctx: dict[str, _ItemCtx], mover: str, keep_out: Box3,
+              why: "NozzleBlock") -> bool:
+    """Re-place ``mover`` with all other boxes plus ``keep_out`` as obstacles."""
+    it = item_ctx.get(mover)
+    if it is None:
+        return False
+    ctx = _Ctx(room=room, step=step)
+    for oid, bx in boxes.items():
+        if oid == mover:
+            continue
+        o = item_ctx.get(oid)
+        if o is None:
+            continue
+        ctx.add(_Placed(oid, bx, o.c_self, o.structural, o.marker, o.item.group))
+    ctx.add(_Placed("__nozzle_access__", keep_out, 0.0, False, True, None))
+    res, status, zone_used = _place(ctx, it)
+    if status == "forced":
+        return False
+    cx, cy, z0, deck, h = res
+    pl = placements[mover]
+    diag = _diagnose(it, room, res, status, zone_used)
+    if diag.status == "ok":
+        diag.status = "relocated"
+    what = (f"moved to keep nozzle {why.key} of {why.object_id} accessible (it was covering it)"
+            if mover != why.object_id else f"moved so that its nozzle {why.key} is not covered by {why.blocker}")
+    diag.message = ((diag.message + "; ") if diag.message else "") + what
+    diags[mover] = diag
+    pl.position = Vec3(x=round(cx, 4), y=round(cy, 4), z=round(z0, 4))
+    pl.size = Vec3(x=pl.size.x, y=pl.size.y, z=round(h, 4))
+    pl.deck = deck
+    boxes[mover] = Box3(cx - it.fx / 2, cy - it.fy / 2, z0, cx + it.fx / 2, cy + it.fy / 2, z0 + h)
+    return True
 
 
 # ---------------------------------------------------------------------------- nozzles
@@ -647,7 +753,26 @@ def _neighbor_targets(doc: PIDDocument, obj: PIDObject, placements: dict[str, Pl
 
 
 NOZZLE_PROBE = 0.4  # m: the space just outside a nozzle must be free for the pipe stub
+_PROBE_STEPS = (0.1, 0.25, NOZZLE_PROBE)
 _LOCAL_NORMALS = {"+x": (1, 0, 0), "-x": (-1, 0, 0), "+y": (0, 1, 0), "-y": (0, -1, 0), "top": (0, 0, 1)}
+
+
+@dataclass
+class NozzleBlock:
+    """A nozzle whose outside is covered by other equipment (or lies against the room boundary)."""
+
+    object_id: str
+    key: str
+    point: tuple[float, float, float]
+    normal: tuple[float, float, float]
+    blocker: str  # object id, or "room"
+
+    def access_box(self, half: float = 0.2) -> Box3:
+        """Column in front of the nozzle that must stay free (pipe stub + elbow)."""
+        a = self.point
+        b = tuple(a[i] + 0.8 * self.normal[i] for i in range(3))
+        return Box3(min(a[0], b[0]) - half, min(a[1], b[1]) - half, min(a[2], b[2]) - half,
+                    max(a[0], b[0]) + half, max(a[1], b[1]) + half, max(a[2], b[2]) + half)
 
 
 def _world_normal(pl: Placement3D, face: str) -> tuple[float, float, float]:
@@ -657,26 +782,37 @@ def _world_normal(pl: Placement3D, face: str) -> tuple[float, float, float]:
     return (c * nx - s * ny, s * nx + c * ny, float(nz))
 
 
-def _face_candidates(pl: Placement3D, face: str, lx: float, ly: float, lz: float
+_SHIFTS = (0.0, 0.4, -0.4, 0.8, -0.8, 1.2, -1.2, 1.8, -1.8, 2.6, -2.6)
+
+
+def _face_candidates(pl: Placement3D, face: str, lx: float, ly: float, lz: float, high: bool = False
                      ) -> list[tuple[float, float, float]]:
-    """Local points on ``face`` closest to the target, then shifted along the face (0.4 m steps)."""
+    """Local points on ``face`` closest to the target, then shifted along the face (0.4 m steps);
+    the top face is searched in both directions, ordered by distance from the closest point.
+    ``high``: side-face points at the top of the face (low tanks: just under the tank top)."""
     l, w, h = pl.size.as_tuple()
     m = 0.15
 
     def clamp(v: float, half: float) -> float:
         return max(-half + m, min(half - m, v)) if half > m else 0.0
 
-    pz = max(0.25 * h, min(0.75 * h, lz)) if h > 0.3 else h / 2
+    pz = (max(0.5 * h, h - 0.2) if high else max(0.25 * h, min(0.75 * h, lz))) if h > 0.3 else h / 2
     out: list[tuple[float, float, float]] = []
-    for d in (0.0, 0.4, -0.4, 0.8, -0.8, 1.2, -1.2, 1.8, -1.8, 2.6, -2.6):
+    if face == "top":
+        cand = []
+        for dx in _SHIFTS:
+            for dy in _SHIFTS:
+                q = (clamp(lx + dx, l / 2), clamp(ly + dy, w / 2), h)
+                cand.append((math.hypot(q[0] - clamp(lx, l / 2), q[1] - clamp(ly, w / 2)), q))
+        for _, q in sorted(cand, key=lambda c: c[0]):
+            if q not in out:
+                out.append(q)
+        return out
+    for d in _SHIFTS:
         if face in ("+x", "-x"):
             q = ((l / 2) * (1 if face == "+x" else -1), clamp(ly + d, w / 2), pz)
-        elif face in ("+y", "-y"):
-            q = (clamp(lx + d, l / 2), (w / 2) * (1 if face == "+y" else -1), pz)
-        elif l >= w:
-            q = (clamp(lx + d, l / 2), clamp(ly, w / 2), h)
         else:
-            q = (clamp(lx, l / 2), clamp(ly + d, w / 2), h)
+            q = (clamp(lx + d, l / 2), (w / 2) * (1 if face == "+y" else -1), pz)
         if q not in out:
             out.append(q)
     return out
@@ -684,12 +820,21 @@ def _face_candidates(pl: Placement3D, face: str, lx: float, ly: float, lz: float
 
 def compute_nozzles(doc: PIDDocument, obj: PIDObject, pl: Placement3D, placements: dict[str, Placement3D],
                     room: EngineRoom, zone_of: Optional[dict[str, PlanItem]] = None) -> dict[str, Vec3]:
-    """World positions of every nozzle of a planned object (ports + pipe ends without port names).
+    """World positions of every nozzle of a planned object (see :func:`compute_nozzles_detailed`)."""
+    return compute_nozzles_detailed(doc, obj, pl, placements, room, zone_of)[0]
+
+
+def compute_nozzles_detailed(doc: PIDDocument, obj: PIDObject, pl: Placement3D, placements: dict[str, Placement3D],
+                             room: EngineRoom, zone_of: Optional[dict[str, PlanItem]] = None
+                             ) -> tuple[dict[str, Vec3], list[NozzleBlock]]:
+    """Nozzle positions (ports + pipe ends without port names) and the nozzles left covered.
 
     Fixed symbol ports keep their mapped face. Boundary nozzles go on the face pointing to the
-    connected equipment (top face for double-bottom tanks / sea chests), at the point closest to it,
-    moved along the face (or to the next best face) until the space just outside the nozzle is free
-    of other equipment and at least 0.3 m from the object's other nozzles.
+    connected equipment (top face for double-bottom tanks / sea chests, then the upper part of
+    their side faces), at the point closest to it, moved along the face (or to the next best
+    face) until the space just outside the nozzle is free of other equipment and at least 0.3 m
+    from the object's other nozzles. Every nozzle is probe-checked (0.1 / 0.25 / 0.4 m out along
+    its normal); a covered one is returned as a :class:`NozzleBlock` naming the covering item.
     """
     keys: list[str] = [p.name for p in obj.ports]
     for p in process_pipes(doc):
@@ -699,57 +844,80 @@ def compute_nozzles(doc: PIDDocument, obj: PIDObject, pl: Placement3D, placement
                 if k not in keys:
                     keys.append(k)
     if not keys:
-        return {}
+        return {}, []
     targets = _neighbor_targets(doc, obj, placements)
     item = (zone_of or {}).get(obj.id)
     low = item is not None and item.zone in ("double_bottom", "bottom")
     box = placement_box(pl)
     cx, cy, cz = box.center
-    others = [placement_box(q).expand(0.05) for oid, q in placements.items() if oid != obj.id]
+    others = [(oid, placement_box(q).expand(0.05)) for oid, q in placements.items() if oid != obj.id]
     bounds = room.bounds
     l, w, h = pl.size.as_tuple()
     out: dict[str, tuple[float, float, float]] = {}
     used: list[tuple[float, float, float]] = []
+    blocked: list[NozzleBlock] = []
 
-    def free(pt: tuple[float, float, float], n: tuple[float, float, float]) -> bool:
-        probe = (pt[0] + NOZZLE_PROBE * n[0], pt[1] + NOZZLE_PROBE * n[1], pt[2] + NOZZLE_PROBE * n[2])
-        return bounds.contains(*probe) and not any(b.contains(*probe) for b in others)
+    def blocker(pt: tuple[float, float, float], n: tuple[float, float, float]) -> Optional[str]:
+        """Id of the item covering the nozzle's outside ("room" if it leaves the room), else None."""
+        for d in _PROBE_STEPS:
+            probe = (pt[0] + d * n[0], pt[1] + d * n[1], pt[2] + d * n[2])
+            if not bounds.contains(*probe):
+                return "room"
+            for oid, b in others:
+                if b.contains(*probe):
+                    return oid
+        return None
 
     for k in keys:
         spec_face = None if low else _spec_face(obj.cls, k)
-        if spec_face is not None:  # fixed port of the symbol
-            out[k] = _face_point(pl, *spec_face)
-            used.append(out[k])
+        if spec_face is not None:  # fixed port of the symbol: face given by the symbol, only probe-checked
+            pt = _face_point(pl, *spec_face)
+            n = _world_normal(pl, spec_face[0])
+            out[k] = pt
+            used.append(pt)
+            who = blocker(pt, n)
+            if who is not None:
+                blocked.append(NozzleBlock(obj.id, k, pt, n, who))
             continue
         tx, ty, tz = targets.get(k, (cx, cy, box.z1 + 1.0))
         lx, ly, lz = world_to_local(pl, tx, ty, tz)
-        if low:
-            order = ["top"]
+        rel = {"+x": lx / (l / 2), "-x": -lx / (l / 2), "+y": ly / (w / 2), "-y": -ly / (w / 2),
+               "top": (lz - h / 2) / (h / 2)}
+        sides = [f for f, _ in sorted(rel.items(), key=lambda kv: -kv[1]) if f != "top"]
+        if low:  # through the tank top; the side faces (just under the top) only if the top is covered
+            order = [("top", False)] + [(f, True) for f in sides]
         else:
-            rel = {"+x": lx / (l / 2), "-x": -lx / (l / 2), "+y": ly / (w / 2), "-y": -ly / (w / 2),
-                   "top": (lz - h / 2) / (h / 2)}
-            order = [f for f, _ in sorted(rel.items(), key=lambda kv: -kv[1])]
+            faces = [f for f, _ in sorted(rel.items(), key=lambda kv: -kv[1])]
             if obj.cls == S.OVERBOARD and item is not None and item.zone.startswith("ship_side"):
                 # the discharge pipe comes from inboard, perpendicular to the shell
                 inboard = _local_face_for_world(pl, "-y" if item.zone.endswith("port") else "+y")
-                order = [inboard] + [f for f in order if f != inboard]
+                faces = [inboard] + [f for f in faces if f != inboard]
+            order = [(f, False) for f in faces]
         chosen = None
-        for face in order:
+        first_block: Optional[NozzleBlock] = None
+        for face, high in order:
             n = _world_normal(pl, face)
-            for q in _face_candidates(pl, face, lx, ly, lz):
+            for q in _face_candidates(pl, face, lx, ly, lz, high):
                 wpt = local_to_world(pl, *q)
                 if any(math.dist(wpt, u) < 0.3 for u in used):
                     continue
-                if free(wpt, n):
+                who = blocker(wpt, n)
+                if who is None:
                     chosen = wpt
                     break
+                if first_block is None:
+                    first_block = NozzleBlock(obj.id, k, wpt, n, who)
             if chosen is not None:
                 break
-        if chosen is None:  # every face is covered: closest point on the preferred face
-            chosen = local_to_world(pl, *_face_candidates(pl, order[0], lx, ly, lz)[0])
+        if chosen is None:  # every face is covered: closest point on the preferred face, reported
+            face = order[0][0]
+            chosen = local_to_world(pl, *_face_candidates(pl, face, lx, ly, lz, order[0][1])[0])
+            n = _world_normal(pl, face)
+            who = blocker(chosen, n) or (first_block.blocker if first_block else "room")
+            blocked.append(NozzleBlock(obj.id, k, chosen, n, who))
         out[k] = chosen
         used.append(chosen)
-    return {k: Vec3(x=round(x, 4), y=round(y, 4), z=round(z, 4)) for k, (x, y, z) in out.items()}
+    return {k: Vec3(x=round(x, 4), y=round(y, 4), z=round(z, 4)) for k, (x, y, z) in out.items()}, blocked
 
 
 def _local_face_for_world(pl: Placement3D, world_face: str) -> str:
