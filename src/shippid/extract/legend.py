@@ -240,12 +240,19 @@ class LegendRow:
         }
 
 
+MAX_LEGEND_ROWS = 150  # rows read per legend (reading order); the rest is dropped and reported
+MAX_DOCUMENT_ROWS = 300  # rows learned from per document (legends in page order); the rest is skipped
+MAX_TEMPLATES = 64  # learned templates per document: every one adds up to (stub versions x actuators x
+# 4 rotations x 2 mirrors) matcher variants, which slow the matching of every drawing page
+
+
 @dataclass
 class Legend:
     page: int
     bbox: BBox4
     heading: str
     rows: list[LegendRow] = field(default_factory=list)
+    dropped_rows: int = 0  # rows beyond MAX_LEGEND_ROWS (not read)
 
     @property
     def unmapped(self) -> list[LegendRow]:
@@ -303,7 +310,7 @@ def prepare_page(pc: PageContent, config: Optional[Config] = None,
     """Primitives, text lines (SHX stroke text marked), symbol unit and sheet regions -- the same
     computation as the first steps of :func:`shippid.extract.pipeline.extract_page` (which can
     reuse the result)."""
-    from .pipeline import page_text_strokes  # the extractor's own first step (imported late: no cycle)
+    from .pipeline import page_text_strokes, stroke_lines  # the extractor's own first step (late: no cycle)
 
     cfg = config or Config()
     tol = cfg.snap_tol
@@ -311,7 +318,7 @@ def prepare_page(pc: PageContent, config: Optional[Config] = None,
     if lines is None:
         lines = page_lines(pc)
     unit, lettering = page_text_strokes(ps, lines, tol, None, (pc.width, pc.height))
-    regions = detect_regions(ps, lines, pc.width, pc.height, tol, unit)
+    regions = detect_regions(ps, list(lines) + stroke_lines(lettering), pc.width, pc.height, tol, unit)
     return PageGeometry(pc, ps, lines, regions, unit, tol, lettering)
 
 
@@ -320,6 +327,43 @@ def page_has_heading(pc_or_text: Union[PageContent, str]) -> bool:
     contains a legend heading word."""
     text = pc_or_text if isinstance(pc_or_text, str) else "".join(w.text for w in pc_or_text.words)
     return bool(_PAGE_HINT_RE.search(re.sub(r"\s+", "", text)))
+
+
+HINT_MAX_CHARS = 40  # a heading is a short line (the same limit as :func:`heading_lines`)
+
+
+def _short_hint(text: str) -> bool:
+    compact = re.sub(r"\s+", "", text)
+    return 0 < len(compact) <= HINT_MAX_CHARS and bool(_PAGE_HINT_RE.search(compact))
+
+
+def page_heading_hint(page) -> bool:
+    """Cheap test on a PyMuPDF page before it is read: a short text line, span or text block of the page
+    (or a line of an annotation's contents: SHX text exported as annotations) holds a legend heading
+    word -- whitespace removed, so text written one character at a time counts. A sentence that only
+    mentions symbols ("FOR SYMBOLS AND ABBREVIATIONS SEE ...") does not. Unreadable text: True."""
+    try:
+        blocks = page.get_text("dict", flags=0).get("blocks", ())
+    except Exception:  # pragma: no cover - let the full reader decide
+        return True
+    for b in blocks:
+        lines = b.get("lines", ())
+        texts = []
+        for ln in lines:
+            spans = [sp.get("text", "") for sp in ln.get("spans", ())]
+            texts.append("".join(spans))
+            if _short_hint(texts[-1]) or any(_short_hint(t) for t in spans):
+                return True
+        if len(texts) > 1 and _short_hint("".join(texts)):
+            return True
+    try:
+        for a in page.annots() or ():
+            content = (a.info or {}).get("content", "") or ""
+            if any(_short_hint(t) for t in content.splitlines()):
+                return True
+    except Exception:  # pragma: no cover - malformed annotations
+        return True
+    return False
 
 
 def find_legends(page_or_content, page_index: int = 0, config: Optional[Config] = None,
@@ -353,7 +397,14 @@ def find_legends(page_or_content, page_index: int = 0, config: Optional[Config] 
         if not rows:
             continue
         seen.append(box)
-        out.append(Legend(page_index, tuple(float(v) for v in box), head.text, rows))
+        lg = Legend(page_index, tuple(float(v) for v in box), head.text, rows[:MAX_LEGEND_ROWS])
+        if len(rows) > MAX_LEGEND_ROWS:
+            # a symbol legend has tens of rows; hundreds of glyph rows are a parts list or a flood of
+            # distinct drawings: the first rows in reading order are kept
+            lg.dropped_rows = len(rows) - MAX_LEGEND_ROWS
+            log.warning("legend on page %d: %d rows, only the first %d are read", page_index, len(rows),
+                        MAX_LEGEND_ROWS)
+        out.append(lg)
     return out
 
 
@@ -896,6 +947,8 @@ class LegendBook:
         self.specs: list[LegendSpec] = []  # learned templates (added to the matcher)
         self.confirmed: dict[tuple[SymbolClass, ActuatorType], str] = {}  # built-in symbols the legend confirms
         self.unmapped_specs: list[LegendSpec] = []
+        self.capped_templates = 0  # glyph drawings beyond MAX_TEMPLATES (not learned)
+        self.capped_rows = 0  # rows beyond MAX_DOCUMENT_ROWS (not learned from)
         self._library: Optional[TemplateLibrary] = None
         self._unmapped_library: Optional[TemplateLibrary] = None
         self._stubs: dict[int, dict[str, float]] = {}
@@ -906,12 +959,16 @@ class LegendBook:
         """Templates of the mapped rows (see the module docstring)."""
         book = cls(legends)
         rows = [r for lg in book.legends for r in lg.rows]
+        for row in rows[MAX_DOCUMENT_ROWS:]:  # every row costs a library match (~10 ms)
+            row.status = f"skipped: more than {MAX_DOCUMENT_ROWS} legend rows in the document"
+        book.capped_rows = max(0, len(rows) - MAX_DOCUMENT_ROWS)
+        rows = rows[:MAX_DOCUMENT_ROWS]
         groups: dict[tuple, list[tuple[LegendRow, LegendSpec]]] = {}
         for row in rows:
             if not row.mapped:
                 row.status = "unmapped"
                 spec = glyph_template(row)
-                if spec is not None:
+                if spec is not None and len(book.unmapped_specs) < MAX_TEMPLATES:
                     book.unmapped_specs.append(spec)
                 continue
             lib = get_symbol(row.cls)
@@ -945,6 +1002,11 @@ class LegendBook:
                 log.info("legend glyph used for several classes %s; not learned", sorted(c.value for c in classes))
                 continue
             row0, spec0 = members[0]
+            if len(book.specs) >= MAX_TEMPLATES:
+                for r, _ in members:
+                    r.status = f"skipped: more than {MAX_TEMPLATES} templates in the document"
+                book.capped_templates += 1
+                continue
             names = []
             for r, sp in members:
                 pair = (r.drawn_actuator.value, r.description)
@@ -957,6 +1019,9 @@ class LegendBook:
                 boundary_ports=spec0.boundary_ports, stretchable=False, holds_text=spec0.holds_text,
                 rotatable=spec0.rotatable, description=spec0.description, legend=row0.description,
                 rows=tuple(names), inherent_actuator=inherent, page=row0.page))
+        if book.capped_templates:
+            log.warning("legend: %d glyph drawings beyond the first %d templates are not learned",
+                        book.capped_templates, MAX_TEMPLATES)
         return book
 
     # -- matching --------------------------------------------------------------
@@ -1032,6 +1097,10 @@ class LegendBook:
             "confirmed": sorted({f"{c.value}/{a.value}": d for (c, a), d in self.confirmed.items()}.items()),
             "unmapped": [{"page": r.page, "description": r.description,
                           "glyph_bbox": [round(v, 2) for v in r.glyph_bbox]} for r in rows if not r.mapped],
+            # limits that were hit: rows not read (MAX_LEGEND_ROWS per legend), templates not learned (MAX_TEMPLATES)
+            "capped": {"rows": sum(lg.dropped_rows for lg in self.legends) + self.capped_rows,
+                       "templates": self.capped_templates, "max_rows_per_legend": MAX_LEGEND_ROWS,
+                       "max_rows": MAX_DOCUMENT_ROWS, "max_templates": MAX_TEMPLATES},
         }
 
 

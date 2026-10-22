@@ -610,3 +610,196 @@ def test_check_connection_reports_base_url_source(monkeypatch, tmp_path):
     assert report["ok"] and report["base_url_source"] == "backend default"
     assert report["url"] == "http://localhost:11434/v1/chat/completions"
     assert server.bodies[0]["reasoning_effort"] == "none" and "chat_template_kwargs" not in server.bodies[0]
+
+
+# --------------------------------------------------------------------------- credentials never in errors
+
+SECRET = "sk-PROD-KEY-0123456789"
+
+
+def _no_secret(*texts, secrets=(SECRET,)):
+    for t in texts:
+        for s in secrets:
+            assert s not in str(t), f"secret leaked: {str(t)[:200]}"
+
+
+def test_api_key_whitespace_is_stripped_and_control_characters_rejected():
+    server = Server(lambda body, n: httpx.Response(200, json=completion('{"label": "x", "score": 1}')))
+    for raw in (SECRET + "\n", SECRET + "\r\n", "  " + SECRET + "\t"):  # YAML block scalar, CRLF env file
+        b = oa_backend(server, api_key=raw)
+        assert b.api_key == SECRET
+        LLMClient(b).generate_json([Message("user", "q")], Out)
+        assert server.requests[-1].headers["authorization"] == f"Bearer {SECRET}"
+    with pytest.raises(LLMError) as err:
+        OpenAICompatBackend("m", "http://gpu:8000/v1", api_key="sk-PROD\nKEY-0123456789")
+    assert "control character" in str(err.value)
+    _no_secret(err.value, secrets=("sk-PROD", "KEY-0123456789"))
+    with pytest.raises(LLMError) as err:
+        GeminiBackend(api_key="AIzaSy\x00FAKE012345")
+    _no_secret(err.value, secrets=("AIzaSy", "FAKE012345"))
+    gem = GeminiBackend(api_key="AIzaSyFAKE012345\n", transport=httpx.MockTransport(lambda r: httpx.Response(500)))
+    assert gem.api_key == "AIzaSyFAKE012345"
+
+
+def test_transport_errors_never_quote_api_key_or_url_credentials():
+    def protocol_error(request):  # what h11 raises for a header value with a line break
+        raise httpx.LocalProtocolError(f"Illegal header value b'Bearer {SECRET}\\n'")
+
+    b = OpenAICompatBackend("m", "http://gpu:8000/v1", api_key=SECRET, transport=httpx.MockTransport(protocol_error),
+                            max_retries=0)
+    with pytest.raises(LLMError) as err:
+        LLMClient(b).generate_text([Message("user", "q")])
+    assert "could not be sent" in str(err.value) and "api_key" in str(err.value)
+    _no_secret(err.value)
+
+    def refuse(request):
+        raise httpx.ConnectError(f"refused {request.url}", request=request)
+
+    url = "http://svc-user:S3cr3tTok3n@gpu:8000/v1?key=QKEY9876"
+    b = OpenAICompatBackend("m", url, transport=httpx.MockTransport(refuse), max_retries=0)
+    assert b.url == "http://svc-user:S3cr3tTok3n@gpu:8000/v1/chat/completions?key=QKEY9876"  # query stays last
+    assert b.display_url == "http://gpu:8000/v1/chat/completions"
+    with pytest.raises(LLMError) as err:
+        LLMClient(b).generate_text([Message("user", "q")])
+    assert "cannot reach http://gpu:8000/v1/chat/completions" in str(err.value)
+    _no_secret(err.value, secrets=("S3cr3tTok3n", "QKEY9876"))
+    rep = check_connection(LLMClient(b))
+    assert rep["url"] == "http://gpu:8000/v1/chat/completions"
+    _no_secret(rep, secrets=("S3cr3tTok3n", "QKEY9876"))
+
+
+def test_http_error_bodies_echoing_the_key_are_redacted(caplog):
+    echo = lambda body, n: httpx.Response(401, json={"error": {"message": f"invalid api key {SECRET} for user"}})
+    b = oa_backend(Server(echo), api_key=SECRET + "\n")
+    with pytest.raises(LLMError) as err:
+        LLMClient(b).generate_text([Message("user", "q")])
+    assert "HTTP 401" in str(err.value) and "***" in str(err.value)
+    _no_secret(err.value, caplog.text)
+    retry = lambda body, n: httpx.Response(503, json={"error": {"message": f"upstream rejected key {SECRET}"}})
+    b = oa_backend(Server(retry), api_key=SECRET, max_retries=1)
+    with pytest.raises(LLMError) as err:
+        LLMClient(b).generate_text([Message("user", "q")])
+    _no_secret(err.value, caplog.text)  # the retry warning is logged too
+
+    def gem_echo(request):
+        return httpx.Response(400, json={"error": {"message": "API key not valid: AIzaSyFAKE012345"}})
+
+    gem = GeminiBackend(api_key="AIzaSyFAKE012345", transport=httpx.MockTransport(gem_echo), max_retries=0)
+    with pytest.raises(LLMError) as err:
+        LLMClient(gem).generate_text([Message("user", "q")])
+    _no_secret(err.value, secrets=("AIzaSyFAKE012345",))
+
+    def gem_protocol(request):
+        raise httpx.LocalProtocolError("Illegal header value b'AIzaSyFAKE012345\\n'")
+
+    gem = GeminiBackend(api_key="AIzaSyFAKE012345", transport=httpx.MockTransport(gem_protocol), max_retries=0)
+    with pytest.raises(LLMError) as err:
+        LLMClient(gem).generate_text([Message("user", "q")])
+    _no_secret(err.value, secrets=("AIzaSyFAKE012345",))
+
+
+def test_normalize_base_url_keeps_query_last():
+    assert normalize_base_url("http://gw:8000/v1/chat/completions?api-version=2") == "http://gw:8000/v1?api-version=2"
+    assert normalize_base_url("http://gw:8000?x=1") == "http://gw:8000/v1?x=1"
+
+
+# --------------------------------------------------------------------------- replay cache key
+
+
+def test_cache_key_covers_thinking_default_top_p_and_backend_settings(tmp_path):
+    def handler(body, n):
+        tag = (f"thinking={body.get('chat_template_kwargs', {}).get('enable_thinking')} top_p={body['top_p']} "
+               f"top_k={body.get('top_k')}")
+        return httpx.Response(200, json=completion(json.dumps({"label": tag, "score": 1.0})))
+
+    def run(thinking_default, top_p=0.95, top_k=None, extra=None):
+        server = Server(handler)
+        b = oa_backend(server, thinking_default=thinking_default, top_k=top_k, extra_body=extra)
+        out = LLMClient(b, cache_dir=tmp_path, top_p=top_p).generate_json([Message("user", "q")], Out)
+        return out.label, len(server.bodies)
+
+    assert run(False) == ("thinking=False top_p=0.95 top_k=None", 1)
+    assert run(False) == ("thinking=False top_p=0.95 top_k=None", 0)  # replayed
+    assert run(True) == ("thinking=True top_p=0.95 top_k=None", 1)  # effective thinking switch changed
+    assert run(True, top_p=0.5) == ("thinking=True top_p=0.5 top_k=None", 1)
+    assert run(True, top_p=0.5, top_k=64) == ("thinking=True top_p=0.5 top_k=64", 1)
+    assert run(True, top_p=0.5, top_k=64, extra={"min_p": 0.1})[1] == 1
+    assert run(True, top_p=0.5, top_k=64, extra={"min_p": 0.1})[1] == 0
+
+
+def test_cache_replays_after_a_response_format_downgrade(tmp_path):
+    def handler(body, n):
+        if body.get("response_format", {}).get("type") == "json_schema":
+            return httpx.Response(400, json={"error": {"message": "json_schema response_format not supported"}})
+        return httpx.Response(200, json=completion('{"label": "pump", "score": 0.9}'))
+
+    for expected_requests in (3, 0):  # run 1: rejected + 2 answers; run 2: everything replayed
+        server = Server(handler)
+        client = LLMClient(oa_backend(server), cache_dir=tmp_path)
+        for q in ("a", "b"):
+            assert client.generate_json([Message("user", q)], Out).label == "pump"
+        assert len(server.bodies) == expected_requests
+
+
+# --------------------------------------------------------------------------- cut-off answers
+
+
+def test_cut_off_answer_is_retried_without_echo_with_thinking_off_and_more_tokens():
+    cut = '{"label": "a very long label that never ends'
+
+    def handler(body, n):
+        if n == 1:
+            return httpx.Response(200, json={"choices": [{"message": {"content": cut}, "finish_reason": "length"}],
+                                             "usage": {"prompt_tokens": 50, "completion_tokens": 1000}})
+        return httpx.Response(200, json=completion('{"label": "tank", "score": 0.9}'))
+
+    server = Server(handler)
+    client = LLMClient(oa_backend(server, thinking_default=True), max_tokens=1000, context_tokens=32768)
+    msgs = [Message("system", "s"), Message("user", "classify")]
+    assert client.generate_json(msgs, Out).label == "tank"
+    first, second = server.bodies
+    assert first["max_tokens"] == 1000 and first["chat_template_kwargs"] == {"enable_thinking": True}
+    assert second["max_tokens"] == 2000 and second["chat_template_kwargs"] == {"enable_thinking": False}
+    assert [m["role"] for m in second["messages"]] == ["system", "user"]  # no assistant echo of the fragment
+    assert cut not in json.dumps(second) and "cut off at the max_tokens limit (1000 tokens)" in second["messages"][-1]["content"]
+    assert "cut off" in client.usage.errors[0]
+    # unknown context: same budget (a larger one could be rejected), thinking still switched off
+    server = Server(handler)
+    client = LLMClient(oa_backend(server, thinking_default=True), max_tokens=1000)
+    client.generate_json(msgs, Out)
+    assert server.bodies[1]["max_tokens"] == 1000 and server.bodies[1]["chat_template_kwargs"]["enable_thinking"] is False
+    # the raised budget stays inside the context
+    server = Server(handler)
+    client = LLMClient(oa_backend(server), max_tokens=1000, context_tokens=1500)
+    client.generate_json(msgs, Out)
+    assert 1000 <= server.bodies[1]["max_tokens"] < 1500
+
+
+def test_gemini_max_tokens_finish_counts_as_cut_off():
+    calls = []
+
+    def handler(request):
+        calls.append(json.loads(request.content))
+        if len(calls) == 1:
+            return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": '{"label": "x'}]},
+                                                             "finishReason": "MAX_TOKENS"}]})
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": '{"label": "x", "score": 1}'}]},
+                                                         "finishReason": "STOP"}]})
+
+    gem = GeminiBackend(api_key="k", transport=httpx.MockTransport(handler), thinking_default=True)
+    LLMClient(gem, max_tokens=800, context_tokens=32768).generate_json([Message("user", "q")], Out)
+    assert calls[1]["generationConfig"]["maxOutputTokens"] == 1600
+    assert calls[1]["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "minimal"}
+    assert len(calls[1]["contents"]) == 1  # no model turn echoing the fragment
+
+
+# --------------------------------------------------------------------------- context window setting
+
+
+def test_context_tokens_from_config_reaches_client(monkeypatch):
+    assert LLMConfig().context_tokens == 32768
+    assert make_client(LLMConfig(backend="vllm")).context_tokens == 32768
+    assert make_client(LLMConfig(backend="vllm", context_tokens=16384)).context_tokens == 16384
+    monkeypatch.setenv("SHIPPID_LLM_CONTEXT_TOKENS", "65536")
+    assert load_config().llm.context_tokens == 65536
+    assert LLMClient(MockBackend(lambda m, s, n: {})).context_tokens is None

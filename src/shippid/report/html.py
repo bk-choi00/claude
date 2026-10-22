@@ -18,7 +18,8 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
-from ..analysis.graph import object_labels
+from ..analysis.analyzer import pages_not_analysed
+from ..analysis.graph import flow_path_sheet_links, object_labels, sheet_link_pairs
 from ..analysis.rules import RULES
 from ..catalog import MEDIUM_COLORS, SYSTEMS, medium_rgb
 from ..model import (
@@ -398,6 +399,24 @@ def _cards(counts: dict[str, int]) -> str:
         for k, lbl in items) + "</div>"
 
 
+def _skipped_warning(skipped: dict[str, list[int]]) -> str:
+    """Warning box naming the pages the extractor skipped (empty string when none)."""
+    unreadable, empty = skipped.get("unreadable_pages") or [], skipped.get("empty_pages") or []
+    if not unreadable and not empty:
+        return ""
+    items = []
+    if unreadable:
+        pages = ", ".join(str(p + 1) for p in unreadable)
+        items.append(f"<li>스캔/래스터 페이지 (판독 불가) scanned / raster-only (unreadable): 페이지 page {_e(pages)}</li>")
+    if empty:
+        pages = ", ".join(str(p + 1) for p in empty)
+        items.append(f"<li>내용 없는 페이지 empty: 페이지 page {_e(pages)}</li>")
+    return ('<div class="warn" id="pages-not-analysed"><b>분석되지 않은 페이지 (pages not analysed)</b>'
+            f'<ul>{"".join(items)}</ul>이 페이지들의 객체·배관은 추출되지 않았으며 검토 결과에 포함되지 않습니다. '
+            '스캔 도면은 CAD에서 내보낸 벡터 PDF로 다시 받으세요 (no objects or pipes were extracted from these pages '
+            'and the findings do not cover them; obtain the vector PDF exported from CAD).</div>')
+
+
 def _kv(pairs: Iterable[tuple[str, Any]]) -> str:
     return '<dl class="kv">' + "".join(f"<dt>{_e(k)}</dt><dd>{_e(v)}</dd>" for k, v in pairs if v not in (None, "")) + "</dl>"
 
@@ -471,6 +490,13 @@ def _legend(doc: PIDDocument) -> str:
     return f'<div class="legend">{cats}</div><div class="legend">{meds}</div>'
 
 
+def _total_text(meta: dict[str, Any]) -> str:
+    total = meta.get("flow_paths_total")
+    if meta.get("flow_paths_total_exact", True) is False:
+        return f"최소 at least {total}; 열거 한도 도달 enumeration budget reached"
+    return str(total)
+
+
 # --------------------------------------------------------------------------- entry point
 
 
@@ -497,6 +523,11 @@ def write_html_report(report: AnalysisReport, out_html: str | Path, pdf_path: Op
     pages_html = []
     image_note = ""
     sizes = _page_sizes(doc)
+    skipped = pages_not_analysed(report)
+    skipped_warning = _skipped_warning(skipped)
+    page_notes = {p: "스캔/래스터 페이지 - 분석 안 됨 (scanned / raster-only page, not analysed)"
+                  for p in skipped["unreadable_pages"]}
+    page_notes.update({p: "내용 없는 페이지 - 분석 안 됨 (empty page, not analysed)" for p in skipped["empty_pages"]})
     for idx, (w, h) in sizes.items():
         img = None
         if pdf_path:
@@ -508,8 +539,9 @@ def write_html_report(report: AnalysisReport, out_html: str | Path, pdf_path: Op
             else:
                 image_note = ('<p class="warn">PDF 페이지를 렌더링하지 못했습니다 - 오버레이만 표시합니다 '
                               '(page render unavailable; overlay only).</p>')
-        if len(sizes) > 1:
-            pages_html.append(f"<h3>페이지 Page {idx + 1}</h3>")
+        if len(sizes) > 1 or idx in page_notes:
+            note = f' <span class="badge v-insufficient_data">{_e(page_notes[idx])}</span>' if idx in page_notes else ""
+            pages_html.append(f"<h3>페이지 Page {idx + 1}{note}</h3>")
         pages_html.append(f'<div class="drawing-wrap">{_svg(doc, idx, w, h, img, labels, node_names)}</div>')
     if not pdf_path:
         image_note = '<p class="muted">PDF 미지정 - 추출 결과 오버레이만 표시 (no PDF given; overlay only).</p>'
@@ -518,11 +550,22 @@ def write_html_report(report: AnalysisReport, out_html: str | Path, pdf_path: Op
     title = f"{info.drawing_no or ''} {info.title or Path(doc.source).name or 'P&ID'}".strip()
     rule_titles_ko = {rid: r.title_ko for rid, r in RULES.items()}
     flow_rows = []
+    drawn = {o.id for o in doc.objects} | {j.id for j in doc.junctions} | {p.id for p in doc.pipes}
+    pairs = [(a, b) for a, b, _ in sheet_link_pairs(doc)]
+    page_of = {o.id: o.page + 1 for o in doc.objects}
     for k, fp in enumerate(report.flow_paths, 1):
+        hops = flow_path_sheet_links(fp, pairs)
         flow_rows.append({"n": k, "from": node_names.get(fp.source_id, fp.source_id),
                           "to": node_names.get(fp.target_id, fp.target_id), "description": fp.description or "",
                           "nodes": len(fp.node_ids),
-                          "ids": " ".join(fp.node_ids + fp.pipe_ids)})
+                          "sheet_links": "; ".join(f"{node_names.get(a, a)} (p.{page_of.get(a, '?')}) -> "
+                                                   f"{node_names.get(b, b)} (p.{page_of.get(b, '?')})" for a, b in hops),
+                          # only ids drawn on the overlay (older reports carried "sheet_link:a:b" pseudo pipe ids)
+                          "ids": " ".join(i for i in dict.fromkeys(fp.node_ids + fp.pipe_ids) if i in drawn)})
+    flow_cols = [("n", "#"), ("description", "경로 Path"), ("from", "출발 From"), ("to", "도착 To"),
+                 ("nodes", "노드 Nodes")]
+    if any(r["sheet_links"] for r in flow_rows):
+        flow_cols.append(("sheet_links", "도면 간 연결 Sheet links"))
     summary_src = str(report.meta.get("summary_source", "template"))
     det = report.meta.get("summary_deterministic") or {}
     toggles = "".join(
@@ -544,7 +587,7 @@ def write_html_report(report: AnalysisReport, out_html: str | Path, pdf_path: Op
         '<a href="#valves">밸브 Valves</a><a href="#instruments">계기 Instruments</a><a href="#lines">라인 Lines</a>'
         '<a href="#flows">유동 경로 Flow paths</a>' + ('<a href="#model3d">3D</a>' if (layout or viewer_href) else "") +
         '<a href="#llm">LLM</a></nav>',
-        '<section id="summary"><h2>요약 (Summary)</h2>', _cards(report.counts),
+        '<section id="summary"><h2>요약 (Summary)</h2>', skipped_warning, _cards(report.counts),
         f"<p>{_summary_badge(summary_src)}</p>",
         f'<h3>한국어</h3><pre class="summary">{_e(report.summary_ko or "-")}</pre>',
         f'<h3>English</h3><pre class="summary">{_e(report.summary_en or "-")}</pre>',
@@ -555,7 +598,7 @@ def write_html_report(report: AnalysisReport, out_html: str | Path, pdf_path: Op
                     f"</pre></details>")
     body += [
         "</section>",
-        '<section id="drawing"><h2>도면 및 추출 결과 (Drawing with extracted objects)</h2>', image_note,
+        '<section id="drawing"><h2>도면 및 추출 결과 (Drawing with extracted objects)</h2>', skipped_warning, image_note,
         f'<div class="toolbar">{toggles}<label><input type="checkbox" id="dim"> 도면 흐리게 dim</label>'
         '<button data-zoom="0.8">－</button><button data-zoom="1.25">＋</button>'
         '<button data-zoom="fit">맞춤 fit</button></div>',
@@ -576,10 +619,9 @@ def write_html_report(report: AnalysisReport, out_html: str | Path, pdf_path: Op
         '<section id="lines"><h2>배관 라인 목록 (Line list)</h2>',
         _table(report.line_list, COLUMNS["lines"], "pipe_ids"), "</section>",
         '<section id="flows"><h2>유동 경로 (Flow paths)</h2>',
-        _table(flow_rows, [("n", "#"), ("description", "경로 Path"), ("from", "출발 From"), ("to", "도착 To"),
-                           ("nodes", "노드 Nodes")], "ids"),
+        _table(flow_rows, flow_cols, "ids"),
         ('<p class="muted">상위 경로만 표시 (truncated; total '
-         f'{_e(report.meta.get("flow_paths_total"))})</p>' if report.meta.get("flow_paths_truncated") else ""),
+         f'{_e(_total_text(report.meta))})</p>' if report.meta.get("flow_paths_truncated") else ""),
         "</section>",
         _layout_section(layout, viewer_href),
         _llm_section(report),

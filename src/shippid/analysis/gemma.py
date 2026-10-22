@@ -1175,10 +1175,17 @@ class GemmaAnalyzer:
         self._gemma_meta(out)["sheet_links"] = stats
         if _n_pages(out) <= 1:
             return out
-        if "sheet_links" not in out.meta:
-            link_sheets(out)
+        try:
+            if "sheet_links" not in out.meta:
+                link_sheets(out)
+            amb = ambiguous_links(out, compute=False)
+        except Exception as exc:  # the deterministic linker failed: analyze() links (and reports) again
+            for key in ("sheet_links", "sheet_links_ambiguous", "sheet_link_stats"):
+                out.meta.pop(key, None)
+            stats["status"] = "error"
+            self._error(out.meta, "resolve_sheet_links (deterministic linker)", exc)
+            return out
         stats["rule_links"] = len(out.meta.get("sheet_links") or [])
-        amb = ambiguous_links(out, compute=False)
         stats["connectors"] = len(amb)
         if not amb:
             return out
@@ -1699,7 +1706,8 @@ _CLAIMS_EN = [re.compile(p, re.I) for p in (
 _CLAIMS_KO = [re.compile(p) for p in (
     r"모두\s*(?:적합|통과|만족|충족|준수)",
     r"(?:부적합|위반|결함)\s*(?:사항|항목|건)?\s*(?:이|은|는|도)?\s*(?:전혀\s*)?없",
-    r"(?:규정|규칙|요건|요구\s*사항|기준)\S*\s*(?:모두\s*)?(?:만족|충족|준수)(?:한다|합니다|함|하며|하고)",
+    r"모든\s*(?:규정|규칙|요건|요구\s*사항|기준|검토\s*항목|항목|검사)\S*\s*(?:을|를|이|가)?\s*(?:모두\s*)?"
+    r"(?:만족|충족|준수|통과)(?:한다|합니다|함|하며|하고|했|하였|되었|됩니다)",
 )]
 
 

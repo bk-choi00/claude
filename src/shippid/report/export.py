@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import Any, Iterable
 
+from ..analysis.graph import SHEET_LINK, flow_path_sheet_links, sheet_link_pairs
 from ..model import AnalysisReport
 
 # Cells starting with these characters are interpreted as formulas by spreadsheet programs
@@ -52,7 +53,9 @@ def write_csv(rows: Iterable[dict[str, Any]], path: str | Path, columns: list[st
 
 def export_tables(report: AnalysisReport, out_dir: str | Path, prefix: str = "") -> dict[str, Path]:
     """Write ``equipment / valves / instruments / lines / findings / flow_paths`` CSV files and the
-    full JSON report into ``out_dir``; returns ``{name: path}`` (``report_json`` for the JSON)."""
+    full JSON report into ``out_dir``; returns ``{name: path}`` (``report_json`` for the JSON).
+    ``flow_paths.csv`` lists document pipe ids in ``pipe_ids`` and the cross-sheet hops (paired
+    off-page connectors ``a>b``) in ``sheet_links``."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     out: dict[str, Path] = {}
@@ -68,9 +71,15 @@ def export_tables(report: AnalysisReport, out_dir: str | Path, prefix: str = "")
                     "source", "confidence"]
     out["findings"] = write_csv((f.model_dump(mode="json") for f in report.findings), out_dir / f"{prefix}findings.csv",
                                 finding_cols)
+    pairs = [(a, b) for a, b, _ in sheet_link_pairs(report.document)]
     out["flow_paths"] = write_csv(
         ({"n": k, "source_id": fp.source_id, "target_id": fp.target_id, "description": fp.description or "",
-          "node_ids": fp.node_ids, "pipe_ids": fp.pipe_ids} for k, fp in enumerate(report.flow_paths, 1)),
-        out_dir / f"{prefix}flow_paths.csv", ["n", "source_id", "target_id", "description", "node_ids", "pipe_ids"])
+          "node_ids": fp.node_ids,
+          # document pipe ids only (reports written before this column carried "sheet_link:a:b" pseudo ids)
+          "pipe_ids": [p for p in fp.pipe_ids if not p.startswith(f"{SHEET_LINK}:")],
+          "sheet_links": [f"{a}>{b}" for a, b in flow_path_sheet_links(fp, pairs)]}
+         for k, fp in enumerate(report.flow_paths, 1)),
+        out_dir / f"{prefix}flow_paths.csv",
+        ["n", "source_id", "target_id", "description", "node_ids", "pipe_ids", "sheet_links"])
     out["report_json"] = report.save(out_dir / f"{prefix}report.json")
     return out

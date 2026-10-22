@@ -16,6 +16,8 @@ from typing import Any, Optional, Sequence
 DEFAULT_CONTEXT_TOKENS = 32768
 #: per-message chat-template overhead (turn markers, role)
 MESSAGE_OVERHEAD = 8
+#: upper bound of one image (Gemma 4 ``max_soft_tokens`` 1120, the documented vLLM setting)
+IMAGE_TOKENS = 1120
 #: what LLMClient's repair round adds to a prompt: up to 6000 characters of the failed answer
 #: plus up to 2000 characters of error text and the instruction around it
 REPAIR_CHARS = 8200
@@ -39,8 +41,11 @@ def schema_note_tokens(schema: dict[str, Any]) -> int:
 
 
 def messages_tokens(messages: Sequence[Any], schema: Optional[dict[str, Any]] = None) -> int:
-    """Estimated prompt tokens of chat messages (text parts only; images are counted by the caller)."""
-    total = sum(estimate_tokens(m.text()) + MESSAGE_OVERHEAD for m in messages)
+    """Estimated prompt tokens of chat messages: text, ``IMAGE_TOKENS`` per image, the schema note."""
+    total = 0
+    for m in messages:
+        images = m.images() if hasattr(m, "images") else []
+        total += estimate_tokens(m.text()) + MESSAGE_OVERHEAD + IMAGE_TOKENS * len(images)
     return total + (schema_note_tokens(schema) if schema is not None else 0)
 
 

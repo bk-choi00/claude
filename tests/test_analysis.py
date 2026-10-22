@@ -1218,3 +1218,171 @@ def test_tank_capacity_parsing_for_quick_closing_rule():
         b.chain(t, b.obj(S.GLOBE_VALVE, 160, y, actuator=A.QUICK_CLOSING), b.obj(S.PUMP_SCREW, 260, y))
     out = findings(b.build(), "R_QC_VALVE_FO_LO_TANK")
     assert [f.object_ids[0] for f in out] == [big] and out[0].verdict == V.PASS  # < 500 L tanks are exempt
+
+
+# --------------------------------------------------------------------------- pages not analysed (scanned / empty)
+
+
+def _scanned_document(**meta) -> PIDDocument:
+    from shippid.model import PageInfo
+
+    return PIDDocument(source="scanned.pdf", pages=[PageInfo(index=0, width=1191, height=842)],
+                       meta={"unreadable_pages": [0], **meta})
+
+
+def test_scanned_document_is_reported_not_passed():
+    """An image-only page yields no objects: no rule may pass or be 'not applicable', and the
+    summaries name the page that was not analysed (it used to read 'No rule check failed')."""
+    rep = analyze(_scanned_document())
+    assert rep.meta["unreadable_pages"] == [0] and rep.meta["empty_pages"] == []
+    assert {f.rule_id for f in rep.findings} == set(RULES)
+    assert all(f.verdict == V.INSUFFICIENT_DATA for f in rep.findings)
+    assert all("Page(s) 1 scanned / raster-only" in f.description for f in rep.findings)
+    assert rep.counts["findings_pass"] == 0 == rep.counts["findings_not_applicable"]
+    en, ko = rep.summary_en, rep.summary_ko
+    assert "WARNING: Page(s) 1 scanned / raster-only (unreadable) - these pages were not analysed." in en
+    assert "No rule check failed" not in en and "nothing was extracted" in en
+    assert "1페이지는 스캔/래스터 이미지라 판독 불가" in ko and "부적합 항목이 없습니다" not in ko
+    # a reviewer-less report keeps the deterministic banner first
+    assert en.startswith("[Deterministic summary")
+
+
+def test_partly_scanned_document_keeps_findings_and_warns():
+    b, _ = pump_station(ST.BALLAST)
+    clean = b.build()
+    doc = clean.model_copy(deep=True)
+    doc.meta.update({"unreadable_pages": [1], "empty_pages": [2, "x", -1, True]})  # invalid entries ignored
+    rep, ref = analyze(doc), analyze(clean)
+    assert [(f.rule_id, f.verdict) for f in rep.findings] == [(f.rule_id, f.verdict) for f in ref.findings]
+    assert rep.meta["unreadable_pages"] == [1] and rep.meta["empty_pages"] == [2]
+    assert "page(s) 2 scanned / raster-only" in rep.summary_en.lower() and "page(s) 3 empty" in rep.summary_en
+    assert "readable pages only" in rep.summary_en and "판독 가능한 페이지만" in rep.summary_ko
+    assert "WARNING" not in ref.summary_en and ref.meta["unreadable_pages"] == []
+
+
+def test_quality_checks_never_pass_vacuously():
+    empty = DocBuilder(ST.BALLAST).build()
+    for rid in ("DQ_UNCONNECTED_OBJECTS", "DQ_OPEN_INLINE_ITEMS", "DQ_DANGLING_PIPE_ENDS", "DQ_DUPLICATE_TAGS",
+                "DQ_MISSING_TAGS"):
+        assert verdicts(empty, rid) == [V.INSUFFICIENT_DATA], rid
+    # objects but no pipes, no in-line items, no tags, nothing taggable
+    b = DocBuilder(ST.BALLAST)
+    c1, c2 = b.obj(S.OFF_PAGE_CONNECTOR, 100, 100), b.obj(S.OFF_PAGE_CONNECTOR, 300, 100)
+    doc = b.build()
+    assert verdicts(doc, "DQ_DANGLING_PIPE_ENDS") == [V.INSUFFICIENT_DATA]
+    assert verdicts(doc, "DQ_OPEN_INLINE_ITEMS") == [V.NOT_APPLICABLE]
+    assert verdicts(doc, "DQ_DUPLICATE_TAGS") == [V.NOT_APPLICABLE]
+    assert verdicts(doc, "DQ_MISSING_TAGS") == [V.NOT_APPLICABLE]
+    b.pipe(c1, c2)
+    out = findings(b.build(), "DQ_DANGLING_PIPE_ENDS")
+    assert out[0].verdict == V.PASS and "All 1 pipe runs" in out[0].description
+
+
+# --------------------------------------------------------------------------- bounded flow-path enumeration
+
+
+def _manifold(n_src: int, n_pumps: int, n_dst: int) -> PIDDocument:
+    """Tanks -> suction header -> parallel pumps -> discharge header -> tanks: n_src * n_pumps * n_dst
+    driven paths."""
+    b = DocBuilder(ST.BALLAST)
+    width = max(n_src, n_pumps, n_dst)
+    suc = [b.junction(100 + 40 * i, 200) for i in range(width)]
+    dis = [b.junction(100 + 40 * i, 400) for i in range(width)]
+    b.chain(*suc)
+    b.chain(*dis)
+    for i in range(n_src):
+        b.pipe(b.obj(S.TANK, 100 + 40 * i, 100, name=f"NO.{i + 1} W.B.TK"), suc[i], flow=1)
+    for i in range(n_dst):
+        b.pipe(dis[i], b.obj(S.TANK, 100 + 40 * i, 500, name=f"NO.{i + 1} F.W.TK"), flow=1)
+    for i in range(n_pumps):
+        b.chain(suc[i], b.obj(S.PUMP_CENTRIFUGAL, 100 + 40 * i, 300, name=f"NO.{i + 1} BALLAST PUMP"), dis[i])
+    return b.build()
+
+
+def test_flow_path_enumeration_is_bounded_and_exact():
+    import tracemalloc
+
+    from shippid.analysis.graph import enumerate_flow_paths
+
+    doc = _manifold(12, 3, 12)
+    G = build_graph(doc)
+    full = enumerate_flow_paths(doc, G, 10 ** 6, max_work=None)
+    assert full.total == len(full.paths) == 12 * 3 * 12 and full.exact and full.complete
+    order = {n: G.nodes[n]["order"] for n in G.nodes}
+    keys = [(order[f.source_id], order[f.target_id], len(f.node_ids), tuple(f.node_ids)) for f in full.paths]
+    assert keys == sorted(keys)  # source, sink, length, nodes
+    for k in (0, 1, 7, 40, 431, 432, 1000):
+        res = enumerate_flow_paths(doc, G, k)
+        assert res.paths == full.paths[:k] and res.total == full.total and res.exact
+    assert flow_paths(doc, G, 5) == full.paths[:5]
+    # out of budget: the count is a lower bound, the kept (first) paths are still the right ones
+    capped = enumerate_flow_paths(doc, G, 7, max_work=150)
+    assert not capped.exact and capped.complete and 0 < capped.total < full.total and capped.work == 150
+    assert capped.paths == full.paths[:7]
+    starved = enumerate_flow_paths(doc, G, 50, max_work=10)
+    assert not starved.exact and not starved.complete and len(starved.paths) < 50
+    # memory: only the kept paths are stored, not every path (the former code stored all of them)
+    big = _manifold(30, 6, 30)  # 5400 paths
+    Gb = build_graph(big)
+    tracemalloc.start()
+    res = enumerate_flow_paths(big, Gb, 5)
+    _, peak_bounded = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    tracemalloc.start()
+    enumerate_flow_paths(big, Gb, 10 ** 6, max_work=None)
+    _, peak_full = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert res.total == 5400 and len(res.paths) == 5 and peak_bounded < peak_full / 4
+
+
+def test_analyze_reports_flow_path_budget():
+    doc = _manifold(12, 3, 12)
+    rep = analyze(doc, max_paths=5)
+    assert rep.meta["flow_paths_total"] == 432 and rep.meta["flow_paths_total_exact"] and len(rep.flow_paths) == 5
+    assert rep.meta["flow_paths_truncated"] and "Flow paths: 432 driven paths" in rep.summary_en
+    rep = analyze(doc, max_paths=5, max_path_work=150)
+    assert not rep.meta["flow_paths_total_exact"] and rep.meta["flow_paths_truncated"]
+    assert rep.meta["flow_paths_complete"] and rep.meta["flow_paths_work"] == 150
+    assert f"Flow paths: at least {rep.meta['flow_paths_total']} driven paths" in rep.summary_en
+    assert f"펌프 구동 경로 최소 {rep.meta['flow_paths_total']}개" in rep.summary_ko
+
+
+# --------------------------------------------------------------------------- analysis cost (no per-row / per-rule rescans)
+
+
+def test_rule_context_caches_object_and_class_indexes(monkeypatch):
+    from shippid.analysis.graph import PUMP_CLASSES, object_ids
+    from shippid.analysis.rules import RuleContext
+
+    b, ids = pump_station(ST.BALLAST, n_pumps=3)
+    doc = b.build()
+    ctx = RuleContext(doc)
+    pumps = ctx.ids(*PUMP_CLASSES)
+    assert pumps == [n for n in object_ids(ctx.G) if ctx.eff(n) in PUMP_CLASSES] == ids["pumps"]
+    pumps.append("junk")  # callers get copies
+    ctx.object_ids().clear()
+    assert ctx.ids(*PUMP_CLASSES) == ids["pumps"] and ctx.object_ids() == object_ids(ctx.G)
+    for p in ids["pumps"]:
+        for n in ctx.G.nodes:
+            assert ctx.on_other_pump_branch(p, n) == any(n in ctx.passed(q) for q in ids["pumps"] if q != p)
+    calls = []
+    real = rules_mod.object_ids
+    monkeypatch.setattr(rules_mod, "object_ids", lambda G: calls.append(1) or real(G))
+    run_rules(doc)
+    assert len(calls) == 1  # was once per ids() call (hundreds on a large set)
+
+
+def test_lists_build_the_object_index_once(monkeypatch):
+    b, _ = pump_station(ST.BALLAST, n_pumps=3)
+    i = b.obj(S.INSTRUMENT_LOCAL, 520, 230)
+    b.text("PI", 520, 226, role=TextRole.INSTRUMENT, owner=i)
+    b.text("101", 520, 234, role=TextRole.INSTRUMENT, owner=i)
+    doc = b.build()
+    G = build_graph(doc)
+    expected = (equipment_list(doc, G), valve_list(doc, G), instrument_list(doc, G))
+    calls = []
+    real = PIDDocument.object_by_id
+    monkeypatch.setattr(PIDDocument, "object_by_id", lambda self: calls.append(1) or real(self))
+    got = (equipment_list(doc, G), valve_list(doc, G), instrument_list(doc, G))
+    assert got == expected and len(calls) == 3  # one per list, not one per row
+    assert [(r["letters"], r["loop"]) for r in got[2] if r["id"] == i] == [("PI", "101")]

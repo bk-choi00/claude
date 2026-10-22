@@ -48,7 +48,7 @@ from ..model import (
     TextItem,
     TextRole,
 )
-from ..pdf.reader import PageContent, open_pdf, read_page
+from ..pdf.reader import PageContent, open_pdf, pdf_health, read_page
 from ..symbols import category_of, get_symbol
 from .candidates import Candidate, group_candidates
 from .legend import (
@@ -60,11 +60,12 @@ from .legend import (
     is_learned_variant,
     name_stub_ports,
     page_has_heading,
+    page_heading_hint,
     page_lines,
     prepare_page,
 )
 from .legend import rerank as legend_rerank
-from .lettering import Lettering, mark_stroke_lettering
+from .lettering import MAX_HEIGHT_UNITS, Lettering, LetteringFinder, mark_lettering
 from .pipes import MLine, Separation, separate
 from .primitives import (
     BoxGrid,
@@ -73,6 +74,7 @@ from .primitives import (
     bbox_inside,
     bbox_union,
     estimate_unit,
+    page_scale,
     point_prim_dist,
     point_seg_dist,
 )
@@ -268,12 +270,16 @@ def classify_candidates(ps: PrimSet, cands: Sequence[Candidate], unit: float, op
         dets.append(d)
     for d in dets:
         _finalise(d, accept)
+    clutter = {"hatch_field": 0, "noise": 0}
+    dets = _hatch_fields(m, dets, clutter)
     dets = _absorb_fragments(m, dets)
+    dets = _loose_marks(m, dets, opts, clutter)
     _size_prior(dets, accept)
     dets = _concentric_bubbles(m.ps, dets)
     if stats is not None:
         stats["decompose_budget_exhausted"] = m.budget <= 0
         stats["decompose_budget_used"] = round(budget - m.budget, 1)
+        stats["clutter"] = clutter
     return _resolve_containers(m, dets, opts)
 
 
@@ -513,6 +519,84 @@ def _decompose(m: _Matcher, whole: Detection) -> Optional[list[Detection]]:
     return parts if len(parts) > 1 else None
 
 
+FIELD_MIN = 6  # unmatched detections of one shape that make a hatch / tick field ...
+FIELD_RADIUS = 2.0  # ... within this distance (symbol units) of each other
+
+
+def _field_key(d: Detection, unit: float) -> tuple:
+    return (d.shape.signature, round(2 * math.log2(max(d.size, 1e-6) / unit)))
+
+
+def _hatch_fields(m: _Matcher, dets: list[Detection], counts: dict) -> list[Detection]:
+    """Fields of many identical small unmatched detections (section hatching, tick or stipple marks
+    drawn as separate strokes): at least :data:`FIELD_MIN` of one shape (stroke signature and size)
+    within :data:`FIELD_RADIUS` units of each other, not touching a pipe. They are not objects: their
+    strokes become ``hatch``. A member touching a pipe still belongs to the field when that many
+    pipe-free members surround it. A row of identical unseen valves on a manifold is piped and
+    never forms a field."""
+    unit = m.unit
+    small = [d for d in dets if d.cls == SymbolClass.UNKNOWN and d.size <= 1.5 * unit]
+    if len(small) < FIELD_MIN:
+        return dets
+    by_key: dict[tuple, list[Detection]] = defaultdict(list)
+    for d in small:
+        by_key[_field_key(d, unit)].append(d)
+    drop: set[int] = set()
+    reach = FIELD_RADIUS * unit
+    for members in by_key.values():
+        if len(members) < FIELD_MIN:
+            continue
+        free = [d for d in members if not m.piped(d.prim_ids)]
+        if len(free) < FIELD_MIN - 1:
+            continue
+        grid = BoxGrid(max(reach, 1.0))
+        for d in free:
+            grid.add(d, d.shape.bbox)
+        free_ids = {id(d) for d in free}
+        for d in members:
+            n = sum(1 for o in grid.near(d.shape.bbox, reach) if o is not d)
+            if n >= FIELD_MIN - 1 and (id(d) in free_ids or n >= FIELD_MIN):
+                drop.add(id(d))
+    if not drop:
+        return dets
+    for d in dets:
+        if id(d) in drop:
+            for i in d.prim_ids:
+                m.ps.prims[i].role = "hatch"
+    counts["hatch_field"] += len(drop)
+    return [d for d in dets if id(d) not in drop]
+
+
+def _loose_marks(m: _Matcher, dets: list[Detection], opts: ExtractOptions, counts: dict) -> list[Detection]:
+    """Unmatched detections that touch no pipe and are a single open straight stroke (no library
+    symbol is one; a stroke of two units or more is a pipe, see :func:`_straight_unknowns_to_pipes`)
+    or smaller than ``opts.min_unknown_units`` (a period, a stray tick): not objects (role ``noise``).
+    Runs after :func:`_absorb_fragments`, so a stroke that completes a neighbouring symbol (an actuator
+    stem drawn with a gap) has already joined it; strokes inside box-like equipment stay (they become
+    its internals, see :func:`_resolve_containers`)."""
+    margin = 0.02 * m.unit
+    boxes = BoxGrid(max(4.0 * m.unit, 1.0))
+    for o in dets:
+        if o.cls != SymbolClass.UNKNOWN and get_symbol(o.cls).stretchable:
+            boxes.add(o.body, o.body)
+    out = []
+    for d in dets:
+        if d.cls == SymbolClass.UNKNOWN:
+            prims = [m.ps.prims[i] for i in d.prim_ids]
+            single = len(prims) == 1 and prims[0].kind == "seg" and not prims[0].curve and not prims[0].closed
+            if single and prims[0].length >= 2.0 * m.unit:
+                out.append(d)  # a straight (diagonal) pipe
+                continue
+            inside = len(boxes) and any(_inside(d.shape.bbox, b, margin) for b in boxes.near(d.shape.bbox, 0.0))
+            if (single or d.size < opts.min_unknown_units * m.unit) and not inside and not m.piped(d.prim_ids):
+                for p in prims:
+                    p.role = "noise"
+                counts["noise"] += 1
+                continue
+        out.append(d)
+    return out
+
+
 ABSORB_NEIGHBOURS = 6  # union attempts per unmatched fragment: its nearest neighbours within reach
 
 
@@ -740,7 +824,7 @@ class _Stage:
     unit: float
     anchored: bool  # the unit comes from matched valve-like symbols (not from the stroke-cluster median)
     stats: dict = field(default_factory=dict)
-    lettering: Optional[Lettering] = None  # stroke lettering without a text carrier (marked 'text')
+    lettering: Optional[Lettering] = None  # stroke lettering without a text carrier (role 'lettering')
 
 
 def _analyse(pc: PageContent, lines: list[TextLine], cfg: Config, opts: ExtractOptions, lib: TemplateLibrary,
@@ -757,7 +841,7 @@ def _analyse(pc: PageContent, lines: list[TextLine], cfg: Config, opts: ExtractO
     else:
         ps = PrimSet.from_page(pc)
         unit0, lettering = page_text_strokes(ps, lines, tol, unit, (pc.width, pc.height))
-        regions = detect_regions(ps, lines, pc.width, pc.height, tol, unit0)
+        regions = detect_regions(ps, list(lines) + stroke_lines(lettering), pc.width, pc.height, tol, unit0)
     for box in legend_boxes:
         if not any(bbox_inside(box, b, tol) for b in regions.legends):
             regions.legends.append(tuple(box))
@@ -783,20 +867,55 @@ def _analyse(pc: PageContent, lines: list[TextLine], cfg: Config, opts: ExtractO
                            cache, timing)
 
 
+LETTER_PAGE_FRAC = 0.009  # first lettering search: glyphs up to this share of the page's short side
+
+
 def page_text_strokes(ps: PrimSet, lines: Sequence[TextLine], tol: float, unit: Optional[float] = None,
                       page_size: Optional[tuple[float, float]] = None) -> tuple[float, Lettering]:
     """Mark the strokes that are lettering -- SHX glyphs of a text carrier (:func:`_mark_text_strokes`)
     and stroke lettering without any carrier (:mod:`shippid.extract.lettering`) -- and return the
-    symbol-unit estimate (``unit`` when given) with the lettering found. The first steps of every
-    page analysis (also :func:`shippid.extract.legend.prepare_page`)."""
+    symbol-unit estimate (``unit`` when given) with the lettering found. The first step of every
+    page analysis (also :func:`shippid.extract.legend.prepare_page`).
+
+    Without a known unit the stroke-cluster estimate of a sheet full of stroke lettering is the
+    letter size itself, so lettering is searched first up to a share of the page size, the unit
+    is estimated without it, and the final search allows glyphs up to half that unit."""
     touch = max(0.6, 0.5 * tol)
     _mark_text_strokes(ps, lines)
-    est = unit or estimate_unit(ps.prims, [p.id for p in ps.prims if p.role != "text"], touch, page_size=page_size)
-    lettering = mark_stroke_lettering(ps, tol, est)
-    if unit is None and (lettering.text_ids or lettering.hatch_ids):
-        est = estimate_unit(ps.prims, [p.id for p in ps.prims if p.role not in ("text", "hatch")], touch,
-                            page_size=page_size)
-    return est, lettering
+
+    def estimate(excl: Iterable[int] = ()) -> float:
+        skip = set(excl)
+        return estimate_unit(ps.prims, [p.id for p in ps.prims if p.role != "text" and p.id not in skip], touch,
+                             page_size=page_size)
+
+    finder = LetteringFinder(ps, tol)
+    if not finder.clusters:
+        return (unit or estimate()), Lettering()
+    if unit is not None:
+        let = finder.find(MAX_HEIGHT_UNITS * unit)
+        mark_lettering(ps, let)
+        return unit, let
+    est = estimate()
+    cap = max(MAX_HEIGHT_UNITS * est, LETTER_PAGE_FRAC * min(page_size or (0.0, 0.0)))
+    let = finder.find(cap)
+    if let:
+        # stroke lettering on the sheet: letters not in a row (cell entries, stray marks) still outnumber
+        # the symbols, so the unit is estimated without any glyph-like cluster
+        est = estimate(finder.glyph_like_ids(cap) + let.text_ids + let.hatch_ids)
+        let = finder.find(MAX_HEIGHT_UNITS * est)
+        if let:
+            est = estimate(finder.glyph_like_ids(MAX_HEIGHT_UNITS * est) + let.text_ids + let.hatch_ids)
+    mark_lettering(ps, let)
+    return est, let
+
+
+def stroke_lines(lettering: Optional[Lettering]) -> list[TextLine]:
+    """Stroke-lettering rows as text lines without a string (``source="stroke"``): sheet-furniture
+    detection counts them like text (a title block or table drawn with stroke lettering only)."""
+    if not lettering:
+        return []
+    return [TextLine("", tuple(b), h / 0.7, rot, source="stroke")
+            for b, rot, h in zip(lettering.rows, lettering.row_rotation, lettering.row_height)]
 
 
 def _mark_text_strokes(ps: PrimSet, lines: Sequence[TextLine]) -> int:
@@ -920,6 +1039,13 @@ def _valve_unit(dets: Sequence[Detection], min_n: int = 3) -> Optional[float]:
     return None
 
 
+def rigid_limit(cfg: Config, page_size: tuple[float, float]) -> float:
+    """Largest candidate (points) that can still be a rigid symbol: ``cfg.symbol_max_size``, times the
+    page scale beyond A0 (:func:`shippid.extract.primitives.page_scale`; a sheet exported at 5x its
+    size has 5x larger valves)."""
+    return float(cfg.symbol_max_size) * page_scale(page_size)
+
+
 def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids: Optional[IdAllocator] = None,
                  options: Optional[ExtractOptions] = None, cache: Optional[MatchCache] = None,
                  content: Optional[PageContent] = None, legend: Optional[LegendBook] = None,
@@ -932,7 +1058,6 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
     cfg = config or Config()
     opts = options or ExtractOptions()
     ids = ids or IdAllocator()
-    cache = cache if cache is not None else MatchCache(cfg.symbol_max_size)
     timing: dict[str, float] = {}
     t0 = time.perf_counter()
 
@@ -940,6 +1065,8 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
         geometry = None  # prepared from another reading of the page
     pc = content or (geometry.pc if geometry is not None else None) or read_page(page)
     timing["read"] = time.perf_counter() - t0
+    if cache is None:
+        cache = MatchCache(rigid_limit(cfg, (pc.width, pc.height)))
     doc = PIDDocument(source=str(getattr(getattr(page, "parent", None), "name", "") or ""))
     doc.pages.append(PageInfo(index=page_index, width=pc.width, height=pc.height, rotation=pc.rotation))
     page_meta: dict = {"image_coverage": round(pc.image_coverage, 4), "layers": pc.layers, "readable": pc.readable,
@@ -1175,6 +1302,9 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
         "unit_anchored": st.anchored,
         "decompose_budget_exhausted": bool(st.stats.get("decompose_budget_exhausted")),
         "decompose_budget_used": st.stats.get("decompose_budget_used", 0.0),
+        # unmatched stroke groups that are not objects: fields of identical hatch / tick strokes (role 'hatch'),
+        # loose single strokes and tiny marks touching no pipe (role 'noise')
+        "clutter": st.stats.get("clutter", {"hatch_field": 0, "noise": 0}),
         "regions": {
             "drawing_area": [round(v, 2) for v in regions.drawing_area],
             "title_blocks": [[round(v, 2) for v in b] for b in regions.title_blocks],
@@ -1187,6 +1317,9 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
                    "junctions": len(junctions), "texts": len(texts), "dots": len(sep.dots), "arrows": len(sep.arrows)},
         "timing": {k: round(v, 4) for k, v in timing.items()},
     })
+    if st.lettering:
+        # lettering drawn as strokes without a text carrier (PDFSHX=0): not read here, its rows are listed
+        page_meta["stroke_lettering"] = st.lettering.to_meta()
     return doc
 
 
@@ -1494,26 +1627,19 @@ def _merge_info(infos: list[DrawingInfo]) -> DrawingInfo:
     return out
 
 
-def _learn_legends(pdf, page_list: Sequence[int], cfg: Config, contents: dict[int, PageContent],
-                   geoms: dict[int, PageGeometry]) -> Optional[LegendBook]:
-    """Legends of every page of the document. Selected pages are read once (their content is kept
-    in ``contents``, and the prepared geometry of pages with a legend heading in ``geoms``, for the
-    extraction); other pages are read only when their text has a legend heading word. None when the
-    document has no legend rows."""
+def _learn_legends(pdf, page_list: Sequence[int], cfg: Config, geoms: dict[int, PageGeometry]) -> Optional[LegendBook]:
+    """Legends of every page of the document. A page is read only when the cheap text test
+    (:func:`shippid.extract.legend.page_heading_hint`) finds a legend heading word on it; the prepared
+    geometry of a *selected* page read here is kept in ``geoms`` for its extraction (other pages are
+    read lazily by the extraction loop). None when the document has no legend rows. The result does
+    not depend on the selection (see :func:`_legend_book`)."""
     legends = []
     selected = set(page_list)
     for idx in range(pdf.page_count):
         page = pdf[idx]
-        if idx in selected:
-            pc = read_page(page)
-            contents[idx] = pc
-        else:
-            try:
-                if not page_has_heading(page.get_text("text")):
-                    continue
-            except Exception:  # pragma: no cover - a page whose text cannot be read is not a legend sheet
-                continue
-            pc = read_page(page)
+        if not page_heading_hint(page):
+            continue
+        pc = read_page(page)
         if pc.empty or not pc.readable or not page_has_heading(pc):
             continue
         try:
@@ -1530,6 +1656,38 @@ def _learn_legends(pdf, page_list: Sequence[int], cfg: Config, contents: dict[in
     if not any(lg.rows for lg in legends):
         return None
     return LegendBook.learn(legends)
+
+
+LEGEND_CACHE_SIZE = 4  # documents whose legend book is kept (per process)
+_LEGEND_CACHE: "dict[tuple, Optional[LegendBook]]" = {}
+
+
+def _legend_key(path, pdf, cfg: Config) -> Optional[tuple]:
+    """Identity of a PDF file for the legend cache: resolved path, size, modification time and page
+    count (+ the snap tolerance legend reading depends on); None for a file that cannot be stat'ed."""
+    try:
+        p = Path(path).resolve()
+        st = p.stat()
+    except (OSError, TypeError, ValueError):
+        return None
+    return (str(p), st.st_size, st.st_mtime_ns, pdf.page_count, float(cfg.snap_tol))
+
+
+def _legend_book(path, pdf, page_list: Sequence[int], cfg: Config,
+                 geoms: dict[int, PageGeometry]) -> tuple[Optional[LegendBook], bool]:
+    """The document's legend book, from the per-process cache when the same file was read before
+    (``extract_pdf(pdf, pages=[k])`` called page by page reads the legend sheets once); ``(book, cached)``."""
+    key = _legend_key(path, pdf, cfg)
+    if key is not None and key in _LEGEND_CACHE:
+        book = _LEGEND_CACHE.pop(key)
+        _LEGEND_CACHE[key] = book  # most recently used last
+        return book, True
+    book = _learn_legends(pdf, page_list, cfg, geoms)
+    if key is not None:
+        _LEGEND_CACHE[key] = book
+        while len(_LEGEND_CACHE) > LEGEND_CACHE_SIZE:
+            _LEGEND_CACHE.pop(next(iter(_LEGEND_CACHE)))
+    return book, False
 
 
 def extract_pdf(path: str | Path, config: Optional[Config] = None, pages: Optional[Iterable[int]] = None,
@@ -1553,24 +1711,35 @@ def extract_pdf(path: str | Path, config: Optional[Config] = None, pages: Option
         for idx in page_list:
             if idx < 0 or idx >= pdf.page_count:
                 raise IndexError(f"page {idx} out of range (document has {pdf.page_count} pages)")
-        contents: dict[int, PageContent] = {}
-        geoms: dict[int, PageGeometry] = {}
+        geoms: dict[int, PageGeometry] = {}  # prepared legend pages among the selected ones (reused once)
         book: Optional[LegendBook] = None
         if opts.learn_legends:
             t1 = time.perf_counter()
-            book = _learn_legends(pdf, page_list, cfg, contents, geoms)
+            book, cached = _legend_book(path, pdf, page_list, cfg, geoms)
             if book is not None:
                 doc.meta["legend"] = book.to_meta()
                 doc.meta["legend"]["seconds"] = round(time.perf_counter() - t1, 3)
-        cache = MatchCache(cfg.symbol_max_size)
-        for idx in page_list:
-            part = extract_page(pdf[idx], idx, cfg, ids, opts, cache, content=contents.pop(idx, None), legend=book,
-                                geometry=geoms.pop(idx, None))
+                doc.meta["legend"]["cached"] = cached
+        caches: dict[float, MatchCache] = {}  # one per page scale (the rigid-symbol size limit grows with it)
+        for idx in page_list:  # pages are read one at a time (only legend pages were read ahead)
+            limit = rigid_limit(cfg, (pdf[idx].rect.width, pdf[idx].rect.height))
+            cache = caches.setdefault(limit, MatchCache(limit))
+            part = extract_page(pdf[idx], idx, cfg, ids, opts, cache, legend=book, geometry=geoms.pop(idx, None))
             _merge_into(doc, part)
             infos.append(part.info)
         doc.info = _merge_info(infos)
+        health = pdf_health(pdf)
+        if health:
+            # a damaged file MuPDF repaired, or content it could not decode: the extraction may be incomplete
+            doc.meta["pdf"] = health
+            if health["repaired"]:
+                doc.meta["damaged"] = True
+            log.warning("%s: %s; %d MuPDF warning(s), e.g. %s -- the extracted drawing may be incomplete", path,
+                        "repaired by MuPDF" if health["repaired"] else "content errors",
+                        health["n_warnings"], "; ".join(health["warnings"][:2]) or "-")
         doc.meta["seconds"] = round(time.perf_counter() - t0, 3)
-        doc.meta["match_cache"] = {"hits": cache.hits, "misses": cache.misses}
+        doc.meta["match_cache"] = {"hits": sum(c.hits for c in caches.values()),
+                                   "misses": sum(c.misses for c in caches.values())}
         return doc
     finally:
         pdf.close()

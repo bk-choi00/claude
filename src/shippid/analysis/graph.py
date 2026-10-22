@@ -38,6 +38,7 @@ the per-sheet graph.
 
 from __future__ import annotations
 
+import heapq
 import math
 import re
 from collections import defaultdict, deque
@@ -603,53 +604,157 @@ def _short_name(G: nx.MultiGraph, n: str) -> str:
     return node_name(G, n, with_tag=False)
 
 
-def flow_paths(doc: PIDDocument, G: Optional[nx.MultiGraph] = None, max_paths: int = 200, *,
-               net: Optional[FlowNet] = None) -> list[FlowPath]:
-    """Driven flow paths source -> pump/compressor -> sink (shortest per source, driver and
-    sink), node-simple, sorted by source, sink and length, at most ``max_paths``."""
+#: default budget of :func:`enumerate_flow_paths`: (source, driver inlet, sink) combinations evaluated
+#: before the count stops (the kept paths are exact whenever the budget is not reached before them)
+FLOW_PATH_WORK_LIMIT = 100_000
+
+
+@dataclass
+class FlowPathResult:
+    """Outcome of :func:`enumerate_flow_paths`."""
+
+    paths: list[FlowPath]
+    total: int  # distinct driven paths counted (a lower bound when ``exact`` is False)
+    exact: bool = True  # False when the work budget ran out before every combination was evaluated
+    work: int = 0  # (source, driver inlet, sink) combinations evaluated
+    complete: bool = True  # False when the budget ran out before the kept paths were known to be the first ones
+
+
+class _Worse:
+    """Heap entry ordered in reverse, so :mod:`heapq` keeps the *largest* key on top."""
+
+    __slots__ = ("key", "nodes", "pipes")
+
+    def __init__(self, key: tuple, nodes: list[str], pipes: list[str]):
+        self.key, self.nodes, self.pipes = key, nodes, pipes
+
+    def __lt__(self, other: "_Worse") -> bool:
+        return self.key > other.key
+
+
+def enumerate_flow_paths(doc: PIDDocument, G: Optional[nx.MultiGraph] = None, max_paths: int = 200, *,
+                         net: Optional[FlowNet] = None,
+                         max_work: Optional[int] = FLOW_PATH_WORK_LIMIT) -> FlowPathResult:
+    """Driven flow paths source -> pump/compressor -> sink (shortest per source, driver and sink),
+    node-simple, sorted by source, sink and length: the first ``max_paths`` plus the number of
+    distinct paths.
+
+    Memory is bounded: sources are visited in sort order, so once ``max_paths`` paths are kept the
+    remaining sources are only counted (de-duplicated per source, never stored), and within one
+    source a bounded heap keeps the best paths. ``max_work`` caps the (source, driver inlet, sink)
+    combinations evaluated (``None`` = no cap); when it runs out the count stops and ``exact`` is
+    False (``total`` is then a lower bound). ``pipe_ids`` hold document pipe ids only: a hop over a
+    cross-sheet link (two paired off-page connectors, consecutive in ``node_ids``) has no pipe and is
+    listed by :func:`flow_path_sheet_links`."""
     G = G if G is not None else (net.G if net is not None else build_graph(doc))
     net = net if net is not None else FlowNet(doc, G)
     sources, sinks = sources_and_sinks(doc, G)
     order = {n: G.nodes[n].get("order", 0) for n in G.nodes}
-    drivers = [n for n in object_ids(G) if G.nodes[n]["eff_cls"] in DRIVER_CLASSES and net.adj.get(n)]
-    found: dict[tuple[str, ...], tuple[list[str], list[str]]] = {}
+    objs = object_ids(G)
+    drivers = [n for n in objs if G.nodes[n]["eff_cls"] in DRIVER_CLASSES and net.adj.get(n)]
+    driver_set = set(drivers)
+    link_keys = {k for _, _, k, d in G.edges(keys=True, data=True) if d.get("kind") == SHEET_LINK}
+    limit = max(0, max_paths)
+    budget = math.inf if max_work is None else max(0, max_work)
+    kept: list[tuple[tuple, list[str], list[str]]] = []
+    total = work = 0
+    exhausted = False
+    complete = True
 
-    def add(nodes: list[str], pipes: list[str]) -> None:
-        if len(nodes) >= 2 and len(set(nodes)) == len(nodes):
-            found.setdefault(tuple(nodes), (nodes, pipes))
+    sink_set = set(sinks)
+    path1: dict[State, tuple[list[str], list[str]]] = {}
+    legs: dict[State, list[tuple[str, list[str], list[str]]]] = {}
 
-    cache: dict[State, Search] = {}
-    for s in sources:
-        if not drivers or s in drivers:
-            res = net.search(s)
-            for t in sinks:
-                st = res.best(t) if t != s else None
-                if st is not None:
-                    add(*res.path(st))
-            continue
-        res = net.search(s)
-        for d in drivers:
-            for st in res.states_at(d):
-                pin = net.port_of.get(st)
-                if pin in OUTLET_PORTS:
+    def second_legs(d: str, st: State, pin: Optional[str]) -> list[tuple[str, list[str], list[str]]]:
+        """(sink, nodes, pipes) from driver ``d`` entered in state ``st`` to every sink it reaches
+        across the driver (cached per state: the same for every source; each leg built counts as
+        work)."""
+        nonlocal work, exhausted
+        if st not in legs:
+            res2 = net.search(d, st[1])
+            out_legs = []
+            for t in sorted((n for n in res2.by_node if n in sink_set and n != d), key=order.get):
+                if work >= budget:
+                    exhausted = True
+                    break
+                work += 1
+                st2 = res2.best(t)
+                if st2 is None:
                     continue
-                res2 = cache.get(st)
-                if res2 is None:
-                    res2 = cache[st] = net.search(d, st[1])
-                n1, p1 = res.path(st)
-                for t in sinks:
-                    if t in (s, d):
+                n2, p2 = res2.path(st2)
+                if p2 and net.crosses(d, pin, net.port_of.get((d, p2[0]))):
+                    out_legs.append((t, n2, p2))
+            legs[st] = out_legs
+        return legs[st]
+
+    for s in sources:
+        if exhausted:
+            break
+        storing = len(kept) < limit
+        need = limit - len(kept)
+        heap: list[_Worse] = []
+        seen: set[tuple[str, ...]] = set()
+        n_src = 0
+
+        def add(nodes: list[str], pipes: list[str]) -> None:
+            nonlocal n_src
+            if len(nodes) < 2 or len(set(nodes)) != len(nodes):
+                return
+            tup = tuple(nodes)
+            if tup in seen:
+                return
+            seen.add(tup)
+            n_src += 1
+            if not storing:
+                return
+            key = (order[nodes[-1]], len(nodes) - 1, tup)  # the source is the same for all of them
+            if len(heap) < need:
+                heapq.heappush(heap, _Worse(key, nodes, pipes))
+            elif key < heap[0].key:
+                heapq.heapreplace(heap, _Worse(key, nodes, pipes))
+
+        res = net.search(s)
+        path1.clear()
+        if not drivers or s in driver_set:
+            for t in sorted((n for n in res.by_node if n in sink_set and n != s), key=order.get):
+                if work >= budget:
+                    exhausted = True
+                    break
+                st = res.best(t)
+                if st is not None:
+                    work += 1
+                    add(*res.path(st))
+        else:
+            for d in sorted((n for n in res.by_node if n in driver_set), key=order.get):
+                if exhausted:
+                    break
+                for st in res.states_at(d):
+                    if exhausted:
+                        break
+                    pin = net.port_of.get(st)
+                    if pin in OUTLET_PORTS:
                         continue
-                    st2 = res2.best(t)
-                    if st2 is None:
-                        continue
-                    n2, p2 = res2.path(st2)
-                    if not p2 or not net.crosses(d, pin, net.port_of.get((d, p2[0]))):
-                        continue
-                    add(n1 + n2[1:], p1 + p2)
-    items = sorted(found.values(), key=lambda np_: (order[np_[0][0]], order[np_[0][-1]], len(np_[1]), np_[0]))
+                    for t, n2, p2 in second_legs(d, st, pin):
+                        if exhausted:
+                            break
+                        if t == s:
+                            continue
+                        if work >= budget:
+                            exhausted = True
+                            break
+                        work += 1
+                        if st not in path1:
+                            path1[st] = res.path(st)
+                        n1, p1 = path1[st]
+                        add(n1 + n2[1:], p1 + p2)
+        total += n_src
+        if storing:
+            if exhausted:
+                complete = False
+            kept += [((order[s],) + e.key, e.nodes, e.pipes) for e in sorted(heap, key=lambda e: e.key)]
+
     counts: dict[str, int] = defaultdict(int)
-    for n in object_ids(G):
+    for n in objs:
         counts[_short_name(G, n)] += 1
 
     def label(n: str) -> str:
@@ -657,12 +762,29 @@ def flow_paths(doc: PIDDocument, G: Optional[nx.MultiGraph] = None, max_paths: i
         return f"{nm} ({n})" if counts[nm] > 1 and not nm.endswith(f":{n}") else nm
 
     out: list[FlowPath] = []
-    for nodes, pipes in items[: max(0, max_paths)]:
+    for _, nodes, pipes in kept[:limit]:
         via = [n for n in nodes[1:-1] if G.nodes[n].get("kind") == "object" and G.nodes[n]["eff_cls"] in DRIVER_CLASSES]
         names = [label(nodes[0])] + [label(n) for n in via] + [label(nodes[-1])]
-        out.append(FlowPath(source_id=nodes[0], target_id=nodes[-1], node_ids=list(nodes), pipe_ids=list(pipes),
-                            description=" -> ".join(names)))
-    return out
+        out.append(FlowPath(source_id=nodes[0], target_id=nodes[-1], node_ids=list(nodes),
+                            pipe_ids=[p for p in pipes if p not in link_keys], description=" -> ".join(names)))
+    return FlowPathResult(out, total, exact=not exhausted, work=work, complete=complete)
+
+
+def flow_paths(doc: PIDDocument, G: Optional[nx.MultiGraph] = None, max_paths: int = 200, *,
+               net: Optional[FlowNet] = None, max_work: Optional[int] = FLOW_PATH_WORK_LIMIT) -> list[FlowPath]:
+    """Driven flow paths source -> pump/compressor -> sink (shortest per source, driver and
+    sink), node-simple, sorted by source, sink and length, at most ``max_paths`` (see
+    :func:`enumerate_flow_paths`, which also returns the total count)."""
+    return enumerate_flow_paths(doc, G, max_paths, net=net, max_work=max_work).paths
+
+
+def flow_path_sheet_links(fp: FlowPath, pairs: Iterable[Iterable[str]]) -> list[tuple[str, str]]:
+    """Cross-sheet hops of a flow path: consecutive ``node_ids`` that are a linked off-page connector
+    pair (``pairs`` e.g. :func:`shippid.analysis.sheets.linked_pairs`), in path order."""
+    linked = {frozenset(p) for p in pairs}
+    if not linked:
+        return []
+    return [(u, v) for u, v in zip(fp.node_ids, fp.node_ids[1:]) if frozenset((u, v)) in linked]
 
 
 # --------------------------------------------------------------------------- isolation

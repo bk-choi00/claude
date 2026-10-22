@@ -26,10 +26,11 @@ The reader does no P&ID interpretation; :mod:`shippid.extract` builds on it.
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import pymupdf
@@ -830,10 +831,35 @@ def _gap(a, b, horizontal: bool) -> float:
     return max(0.0, max(a[1], b[1]) - min(a[3], b[3]))
 
 
+log = logging.getLogger(__name__)
+
+MAX_WARNINGS = 20  # MuPDF messages kept in the document meta
+
+
 def open_pdf(path) -> "pymupdf.Document":
-    """Open a PDF with PyMuPDF (raises ``ValueError`` for encrypted documents)."""
+    """Open a PDF with PyMuPDF (raises ``ValueError`` for encrypted documents). MuPDF's warning store
+    is cleared first, so :func:`pdf_health` reports what this document produces; a file MuPDF had to
+    repair (broken cross-reference table, truncated download) is logged."""
+    pymupdf.TOOLS.mupdf_warnings(reset=True)
     doc = pymupdf.open(str(path))
     if doc.needs_pass:
         doc.close()
         raise ValueError(f"{path}: encrypted PDF")
+    if getattr(doc, "is_repaired", False):
+        msgs = [m for m in pymupdf.TOOLS.mupdf_warnings(reset=False).splitlines() if m.strip()]
+        log.warning("%s: damaged PDF, repaired by MuPDF (%s); content may be missing", path,
+                    "; ".join(msgs[:3]) or "no details")
     return doc
+
+
+def pdf_health(doc: "pymupdf.Document") -> dict[str, Any]:
+    """Damage indicators of an open document: ``{"repaired": bool, "warnings": [...], "n_warnings": n}``
+    -- MuPDF repaired the file on opening, and the warnings / errors it reported since :func:`open_pdf`
+    (corrupt or truncated content streams, missing objects, broken fonts), which mean the drawing as
+    read may be incomplete. Empty for an intact file. Reading the warnings clears MuPDF's store."""
+    msgs = [m.strip() for m in pymupdf.TOOLS.mupdf_warnings(reset=True).splitlines() if m.strip()]
+    repaired = bool(getattr(doc, "is_repaired", False))
+    if not repaired and not msgs:
+        return {}
+    uniq = list(dict.fromkeys(m for m in msgs if not m.startswith("... repeated")))
+    return {"repaired": repaired, "warnings": uniq[:MAX_WARNINGS], "n_warnings": len(msgs)}

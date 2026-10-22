@@ -585,3 +585,126 @@ def test_yard_variant_classes_from_its_legend(tmp_path, seed):
     assert wrong == []
     learned = [o for o in doc.objects if str(o.attributes.get("template", "")).startswith("legend:")]
     assert learned
+
+
+# ----------------------------------------------------------------------------- limits and cost (review findings)
+
+
+def test_learned_templates_and_rows_are_capped(tmp_path, monkeypatch):
+    """A legend flood (hundreds of distinct glyphs) must not multiply the matcher's templates without
+    bound: templates per document and rows per legend are capped, the first ones in reading order kept,
+    and the cap is reported."""
+    import shippid.extract.legend as L
+
+    path, _, _ = _remote_valve_sheet(tmp_path)
+    monkeypatch.setattr(L, "MAX_TEMPLATES", 2)
+    doc = extract_pdf(path)
+    meta = doc.meta["legend"]
+    assert [t["legend"] for t in meta["templates"]] == ["REMOTE BUTTERFLY VALVE", "CHECK VALVE (NON-RETURN)"]
+    assert meta["capped"]["templates"] == 1 and meta["capped"]["max_templates"] == 2
+    status = {r["description"]: r["status"] for lg in meta["legends"] for r in lg["rows"]}
+    assert status["GATE VALVE"].startswith("skipped: more than 2 templates")
+    monkeypatch.setattr(L, "MAX_TEMPLATES", 64)
+    monkeypatch.setattr(L, "MAX_LEGEND_ROWS", 3)
+    with pymupdf.open(path) as pdf:
+        legends = find_legends(pdf[0], 0)
+    assert len(legends[0].rows) == 3 and legends[0].dropped_rows == len(LEGEND_ROWS) - 3
+    book = LegendBook.learn(legends)
+    assert book.to_meta()["capped"]["rows"] == len(LEGEND_ROWS) - 3
+    monkeypatch.setattr(L, "MAX_LEGEND_ROWS", 150)
+    monkeypatch.setattr(L, "MAX_DOCUMENT_ROWS", 2)
+    with pymupdf.open(path) as pdf:
+        book = LegendBook.learn(find_legends(pdf[0], 0))
+    assert book.capped_rows == len(LEGEND_ROWS) - 2 and len(book.specs) <= 2
+
+
+def test_page_heading_hint_is_a_short_line(tmp_path):
+    """The cheap pre-test that decides which pages are read for legends: a short heading line (also
+    written one character at a time, or as an annotation), not a sentence that mentions symbols."""
+    from shippid.extract.legend import page_heading_hint
+
+    pdf = pymupdf.open()
+    pages = []
+    for kind in ("heading", "sentence", "chars", "annot", "korean", "none"):
+        page = pdf.new_page(width=842, height=595)
+        page.insert_text((60, 60), "M/E L.O. SYSTEM", fontsize=9)
+        if kind == "heading":
+            page.insert_text((60, 120), "SYMBOL LEGEND", fontsize=9)
+        elif kind == "sentence":
+            page.insert_text((60, 120), "3. FOR SYMBOLS AND ABBREVIATIONS SEE PIPING SYMBOL LIST DWG 1234-567.", fontsize=7)
+        elif kind == "chars":
+            for i, ch in enumerate("LEGEND"):
+                page.insert_text((60 + 7.5 * i, 120), ch, fontsize=9)
+        elif kind == "annot":
+            a = page.add_freetext_annot(pymupdf.Rect(60, 110, 160, 125), "LEGEND", fontsize=9)
+            a.update()
+        elif kind == "korean":
+            page.insert_text((60, 120), "범 례", fontsize=9, fontname="korea")
+        pages.append(kind)
+    path = tmp_path / "hints.pdf"
+    pdf.save(str(path))
+    with pymupdf.open(path) as doc:
+        got = {kind: page_heading_hint(doc[i]) for i, kind in enumerate(pages)}
+    assert got == {"heading": True, "sentence": False, "chars": True, "annot": True, "korean": True, "none": False}
+
+
+def _legend_and_drawings(tmp_path, n_drawings: int = 3) -> str:
+    pdf = pymupdf.open()
+    leg = Sheet(pdf)
+    leg.legend(100, 100, "SYMBOL LEGEND", LEGEND_ROWS[:3], two_columns=True)
+    leg.sh.commit()
+    for x, y, s, size, font in leg.texts:
+        leg.page.insert_text((x, y), s, fontsize=size, fontname=font, color=BLACK)
+    last = None
+    for k in range(n_drawings):
+        dr = Sheet(pdf)
+        y, x_prev = 300.0, 100.0
+        for x in (220.0, 380.0, 540.0):
+            a, b = _inline(dr, S.BUTTERFLY_VALVE, REMOTE_BFV, x, y)
+            dr.line([(x_prev, y), (a, y)])
+            x_prev = b
+        dr.line([(x_prev, y), (700.0, y)])
+        dr.text(110, 292, f"150A-BA-00{k}", 6.5)
+        dr.text(60, 780, "3. FOR SYMBOLS AND ABBREVIATIONS SEE THE SYMBOL LEGEND SHEET 1.", 6.5)
+        if k + 1 < n_drawings:
+            dr.sh.commit()
+            for x, yy, s, size, font in dr.texts:
+                dr.page.insert_text((x, yy), s, fontsize=size, fontname=font, color=BLACK)
+        last = dr
+    return last.save(tmp_path / "set.pdf")
+
+
+def test_legend_book_is_cached_and_pages_are_read_lazily(tmp_path, monkeypatch):
+    """``extract_pdf(pdf, pages=[k])`` page by page read every legend sheet again (and every selected page
+    was read up front): the legend book is cached per file, only legend pages are read ahead."""
+    import shippid.extract.pipeline as PL
+
+    path = _legend_and_drawings(tmp_path)
+    PL._LEGEND_CACHE.clear()
+    reads: list[int] = []
+    orig = PL.read_page
+
+    def counted(page):
+        reads.append(page.number)
+        return orig(page)
+
+    monkeypatch.setattr(PL, "read_page", counted)
+    first = extract_pdf(path, pages=[2])
+    assert reads == [0, 2] and first.meta["legend"]["cached"] is False  # the legend sheet, then the drawing
+    reads.clear()
+    second = extract_pdf(path, pages=[3])
+    assert reads == [3] and second.meta["legend"]["cached"] is True
+    assert second.meta["legend"]["templates"] == first.meta["legend"]["templates"]
+    assert [o.cls for o in second.objects] == [S.BUTTERFLY_VALVE] * 3
+    reads.clear()
+    full = extract_pdf(path)
+    assert sorted(reads) == [0, 1, 2, 3]  # every page once (cached book: the legend sheet read for extraction)
+    assert sum(o.cls == S.BUTTERFLY_VALVE for o in full.objects) == 9
+    # a changed file is a new document
+    import os
+
+    st = os.stat(path)
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 10_000_000))
+    reads.clear()
+    again = extract_pdf(path, pages=[1])
+    assert again.meta["legend"]["cached"] is False and reads == [0, 1]

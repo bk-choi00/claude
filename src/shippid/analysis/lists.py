@@ -20,7 +20,7 @@ from ..catalog import (
     SYSTEMS,
     parse_line_number,
 )
-from ..model import ActuatorType, Category, FlowPath, Medium, PIDDocument, PipeKind, SymbolClass, TextRole
+from ..model import ActuatorType, Category, FlowPath, Medium, PIDDocument, PIDObject, PipeKind, SymbolClass, TextItem, TextRole
 from ..symbols import get_symbol
 from .graph import (
     ALL_KINDS,
@@ -119,8 +119,10 @@ def _size_num(size: Optional[str]) -> float:
     return float(m.group(1)) if m else -1.0
 
 
-def _base(G: nx.MultiGraph, doc: PIDDocument, n: str) -> dict[str, Any]:
-    o = doc.object_by_id()[n]
+def _base(G: nx.MultiGraph, doc: PIDDocument, n: str, objs: Optional[dict[str, PIDObject]] = None) -> dict[str, Any]:
+    """Common row columns of object ``n`` (``objs``: ``doc.object_by_id()``, computed once by the
+    caller for a whole list)."""
+    o = (objs if objs is not None else doc.object_by_id())[n]
     eff = G.nodes[n]["eff_cls"]
     en, ko = _type_labels(eff)
     x, y = _pos(G, n)
@@ -135,11 +137,12 @@ def _base(G: nx.MultiGraph, doc: PIDDocument, n: str) -> dict[str, Any]:
 def equipment_list(doc: PIDDocument, G: Optional[nx.MultiGraph] = None) -> list[dict[str, Any]]:
     """Equipment rows: tag, name, type, connections, connected objects, isolation valves."""
     G = G if G is not None else build_graph(doc)
+    objs = doc.object_by_id()
     rows = []
     for o in doc.objects:
         if G.nodes[o.id].get("eff_category") != Category.EQUIPMENT:
             continue
-        row = _base(G, doc, o.id)
+        row = _base(G, doc, o.id, objs)
         rating = o.attributes.get("rating") or o.attributes.get("capacity")
         row["rating"] = str(rating) if rating else ""
         row["connections"] = len(links(G, o.id, PROCESS_KINDS))
@@ -152,11 +155,12 @@ def equipment_list(doc: PIDDocument, G: Optional[nx.MultiGraph] = None) -> list[
 def valve_list(doc: PIDDocument, G: Optional[nx.MultiGraph] = None) -> list[dict[str, Any]]:
     """Valve rows: type, actuator, remote operation, size, line numbers, medium, neighbours."""
     G = G if G is not None else build_graph(doc)
+    objs = doc.object_by_id()
     rows = []
     for o in doc.objects:
         if G.nodes[o.id].get("eff_category") != Category.VALVE:
             continue
-        row = _base(G, doc, o.id)
+        row = _base(G, doc, o.id, objs)
         edges = _pipe_attrs(G, o.id)
         sizes = [s for s in (_size_of(e) for e in edges) if s]
         row.update({
@@ -205,9 +209,20 @@ def decode_isa(letters: str) -> tuple[str, list[str]]:
     return (variable, funcs)
 
 
-def instrument_letters(doc: PIDDocument, obj_id: str) -> tuple[str, str]:
-    """(ISA letters, loop number) from attributes, the tag or the text inside the bubble."""
-    o = doc.object_by_id()[obj_id]
+def _instrument_texts(doc: PIDDocument) -> dict[str, list[TextItem]]:
+    """INSTRUMENT-role texts per owner id (document order)."""
+    out: dict[str, list[TextItem]] = defaultdict(list)
+    for t in doc.texts:
+        if t.owner_id and t.role == TextRole.INSTRUMENT:
+            out[t.owner_id].append(t)
+    return out
+
+
+def instrument_letters(doc: PIDDocument, obj_id: str, *, objs: Optional[dict[str, PIDObject]] = None,
+                       owned: Optional[dict[str, list[TextItem]]] = None) -> tuple[str, str]:
+    """(ISA letters, loop number) from attributes, the tag or the text inside the bubble
+    (``objs`` / ``owned``: precomputed ``doc.object_by_id()`` and instrument texts per owner)."""
+    o = (objs if objs is not None else doc.object_by_id())[obj_id]
     letters = str(o.attributes.get("letters") or "")
     number = str(o.attributes.get("loop") or "")
     if not letters and o.tag:
@@ -219,8 +234,9 @@ def instrument_letters(doc: PIDDocument, obj_id: str) -> tuple[str, str]:
             if m:
                 letters, number = m.group(1), number or m.group(2)
     if not letters:
-        inside = sorted((t for t in doc.texts if t.owner_id == obj_id and t.role == TextRole.INSTRUMENT),
-                        key=lambda t: (t.bbox.y0, t.bbox.x0))
+        texts = owned.get(obj_id, []) if owned is not None else [
+            t for t in doc.texts if t.owner_id == obj_id and t.role == TextRole.INSTRUMENT]
+        inside = sorted(texts, key=lambda t: (t.bbox.y0, t.bbox.x0))
         for t in inside:
             txt = t.text.strip().upper()
             if not letters and re.fullmatch(r"[A-Z]{1,5}", txt):
@@ -233,12 +249,14 @@ def instrument_letters(doc: PIDDocument, obj_id: str) -> tuple[str, str]:
 def instrument_list(doc: PIDDocument, G: Optional[nx.MultiGraph] = None) -> list[dict[str, Any]]:
     """Instrument rows with ISA letters decoded via the catalogue."""
     G = G if G is not None else build_graph(doc)
+    objs = doc.object_by_id()
+    owned = _instrument_texts(doc)
     rows = []
     for o in doc.objects:
         if G.nodes[o.id].get("eff_category") != Category.INSTRUMENT:
             continue
-        row = _base(G, doc, o.id)
-        letters, number = instrument_letters(doc, o.id)
+        row = _base(G, doc, o.id, objs)
+        letters, number = instrument_letters(doc, o.id, objs=objs, owned=owned)
         variable, funcs = decode_isa(letters) if letters else ("", [])
         measured_on: list[str] = []
         for lk in links(G, o.id, CONNECT_KINDS):

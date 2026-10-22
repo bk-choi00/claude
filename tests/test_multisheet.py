@@ -272,7 +272,15 @@ def test_analyze_links_multipage_documents(made, extracted):
     assert "cross-sheet connector links" in rep.summary_en and "도면 간 연결" in rep.summary_ko
     page = {o.id: o.page for o in pred.objects}
     assert any(len({page[n] for n in fp.node_ids if n in page}) > 1 for fp in rep.flow_paths)
-    assert any(fp.pipe_ids and any(p.startswith(f"{SHEET_LINK}:") for p in fp.pipe_ids) for fp in rep.flow_paths)
+    # pipe_ids hold document pipes only; the crossings are listed separately (connector pairs of node_ids)
+    pipe_ids = {p.id for p in pred.pipes}
+    assert all(set(fp.pipe_ids) <= pipe_ids for fp in rep.flow_paths)
+    pairs = linked_pairs(pred)
+    hops = rep.meta["flow_path_sheet_links"]
+    assert hops and all(frozenset(h) in pairs for row in hops for h in row["links"])
+    for row in hops:
+        fp = rep.flow_paths[row["path"]]
+        assert all(fp.node_ids[fp.node_ids.index(a) + 1] == b for a, b in row["links"])
     # a single-page document is analysed exactly as before
     single, _ = generate(3)
     rep1 = analyze(single)
@@ -530,3 +538,202 @@ def test_multipage_pdf_writer_is_deterministic():
     assert one == two
     with pymupdf.open("pdf", one) as d:
         assert d.page_count == 2 and d.metadata["title"] == parts[0][1].metadata["title"]
+
+
+# --------------------------------------------------------------------------- flow paths across sheets
+
+
+def test_flow_paths_across_sheets_list_document_pipes_only():
+    """FlowPath.pipe_ids hold real pipe ids; the hop between the two paired connectors is listed by
+    flow_path_sheet_links (and in the report meta), not as a 'sheet_link:a:b' pseudo pipe."""
+    from shippid.analysis.graph import flow_path_sheet_links
+
+    doc, ids = _two_sheets()
+    link_sheets(doc)
+    paths = flow_paths(doc, build_graph(doc))
+    pipe_ids = [p.id for p in doc.pipes]
+    assert len(paths) == 1 and paths[0].pipe_ids == [p for p in pipe_ids]  # the whole chain, both sheets
+    assert flow_path_sheet_links(paths[0], linked_pairs(doc)) == [(ids["c1"], ids["c2"])]
+    assert len(paths[0].node_ids) == len(paths[0].pipe_ids) + 2  # one hop without a pipe
+    rep = analyze(doc)
+    assert rep.meta["flow_path_sheet_links"] == [{"path": 0, "links": [[ids["c1"], ids["c2"]]]}]
+    dq = [f for f in rep.findings if f.rule_id == "DQ_DANGLING_PIPE_ENDS"]
+    assert f"All {len(doc.pipes)} pipe runs" in dq[0].description  # link edges are not pipe runs
+
+
+# --------------------------------------------------------------------------- linker cost and guards
+
+
+def _marked_connectors(n_per_page: int, mark: str = "A") -> PIDDocument:
+    """Two pages of n connectors that all carry the same bare mark (every pair is a tie)."""
+    from shippid.model import BBox, Category, PIDObject, TextItem
+
+    doc = PIDDocument(source="marks", pages=[PageInfo(index=0, width=2384, height=1684),
+                                             PageInfo(index=1, width=2384, height=1684)])
+    k = 0
+    for page in (0, 1):
+        for i in range(n_per_page):
+            x, y = 50 + (i % 60) * 35, 50 + (i // 60) * 30
+            doc.objects.append(PIDObject(id=f"o{k}", cls=S.OFF_PAGE_CONNECTOR, category=Category.CONNECTOR,
+                                         bbox=BBox(x0=x, y0=y, x1=x + 24, y1=y + 10), page=page, source="vector"))
+            doc.texts.append(TextItem(id=f"t{k}", text=mark, bbox=BBox(x0=x + 8, y0=y + 2, x1=x + 14, y1=y + 8),
+                                      page=page, size=6, role=TextRole.CONNECTOR, owner_id=f"o{k}"))
+            k += 1
+    return doc
+
+
+def test_linker_guards_keys_shared_by_many_connectors():
+    import json
+    import time
+
+    doc = _marked_connectors(150)  # 300 connectors sharing mark A: 44,850 pairs (was cubic: minutes at 800)
+    t0 = time.perf_counter()
+    assert link_sheets(doc) == []
+    assert time.perf_counter() - t0 < 5.0
+    stats = doc.meta["sheet_link_stats"]
+    assert stats["pairs_evaluated"] == 0 and stats["candidates"] == 0 and stats["guarded"] == 300
+    assert stats["skipped_blocks"] == [{"key": "mark:A", "connectors": 300, "pairs": 44850}]
+    amb = doc.meta["sheet_links_ambiguous"]
+    assert len(amb) == 300 and all(row["candidates"] == [] and "mark:A" in row["guard"] for row in amb)
+    assert len(json.dumps(doc.meta)) < 100_000
+    assert ambiguous_links(doc, compute=False) == []  # nothing to choose from: not sent to Gemma
+    rep = analyze(_marked_connectors(150))
+    assert rep.meta["sheet_links"] == 0 and rep.meta["sheet_links_ambiguous"] == 300
+    # below the guard: evaluated, all ties stay ambiguous, at most 5 stored candidates per connector
+    doc = _marked_connectors(15)
+    assert link_sheets(doc) == []
+    amb = doc.meta["sheet_links_ambiguous"]
+    assert doc.meta["sheet_link_stats"]["candidates"] == 435 and doc.meta["sheet_link_stats"]["guarded"] == 0
+    assert all(len(row["candidates"]) == 5 and row["candidates_total"] == 29 and "guard" not in row for row in amb)
+
+
+def _named_sheets(n: int) -> tuple[PIDDocument, list[str], list[str]]:
+    """n outgoing arrows on sheet 1 and n incoming ones on sheet 2, all referencing the other sheet;
+    each names the (unique) equipment beside its partner."""
+    b = DocBuilder(ST.BALLAST)
+    outs, ins = [], []
+    for i in range(n):
+        y = 40 + 12 * i
+        c = b.obj(S.OFF_PAGE_CONNECTOR, 300, y, attrs={"ref": "SH.2"})
+        b.pipe(b.obj(S.TANK, 60, y, name=f"UNIT{i}A TK"), c, flow=1)
+        b.text(f"TO UNIT{i}B TK", 330, y - 4, role=TextRole.CONNECTOR, owner=c)
+        outs.append(c)
+    for i in range(n):
+        y = 40 + 12 * i
+        c = b.obj(S.OFF_PAGE_CONNECTOR, 60, y, rotation=180, attrs={"ref": "SH.1"}, page=1)
+        b.pipe(c, b.obj(S.TANK, 300, y, name=f"UNIT{i}B TK", page=1), flow=1, page=1)
+        b.text(f"FROM UNIT{i}A TK", 0, y - 4, role=TextRole.CONNECTOR, owner=c)
+        ins.append(c)
+    doc = b.build()
+    for t in doc.texts:
+        if t.owner_id in ins:
+            t.page = 1
+    doc.pages.append(PageInfo(index=1, width=1200, height=800))
+    return doc, outs, ins
+
+
+def test_linker_resolves_large_sets_when_names_single_out_the_partner():
+    """200 + 200 arrows all referencing the other sheet: the page pair (40,000 pairs) is too large to
+    enumerate, but each name matches one partner whose score beats every pair not evaluated."""
+    import time
+
+    doc, outs, ins = _named_sheets(200)
+    t0 = time.perf_counter()
+    links = link_sheets(doc)
+    assert time.perf_counter() - t0 < 5.0
+    assert {frozenset((lk["a"], lk["b"])) for lk in links} == {frozenset(p) for p in zip(outs, ins)}
+    stats = doc.meta["sheet_link_stats"]
+    assert stats["pairs_evaluated"] == 200 and stats["guarded"] == 0 and stats["skipped_blocks"][0]["pairs"] == 40000
+    # without the names the same set is guarded (pairs not evaluated could be the right ones)
+    for t in doc.texts:
+        t.text = "TO SH.2" if t.text.startswith("TO") else "FROM SH.1"
+    assert link_sheets(doc) == [] and doc.meta["sheet_link_stats"]["guarded"] == 400
+
+
+def _brute_resolve(cands, margin=1.0, min_score=2.5):
+    """The original (quadratic per round) one-to-one acceptance, as the reference."""
+    import math
+    from collections import defaultdict
+
+    used: set[str] = set()
+    pool = [c for c in cands if c.score >= min_score]
+    accepted = []
+    changed = True
+    while changed:
+        changed = False
+        by = defaultdict(list)
+        for c in pool:
+            by[c.a].append(c)
+            by[c.b].append(c)
+        for c in sorted(pool, key=lambda c: (-c.score, c.a, c.b)):
+            if c.a in used or c.b in used or c.conflict:
+                continue
+            others = [o for o in by[c.a] + by[c.b] if o is not c]
+            best = max((o.score for o in others), default=None)
+            m = c.score - best if best is not None else math.inf
+            if m >= margin:
+                accepted.append((c.a, c.b, m))
+                used.update((c.a, c.b))
+                changed = True
+        pool = [c for c in pool if c.a not in used and c.b not in used]
+    return accepted
+
+
+def _random_set(seed: int) -> PIDDocument:
+    import random
+
+    rnd = random.Random(seed)
+    n_pages = rnd.choice([2, 3])
+    b = DocBuilder(ST.BILGE)
+    names = ["BILGE WELL", "OWS", "SLUDGE TK", "NO.1 BILGE PUMP", "OVERBOARD", "HOLDING TK", "FIRE PUMP"]
+    owners = []
+    for page in range(n_pages):
+        for i in range(rnd.randint(4, 9)):
+            y = 40 + 40 * i
+            attrs = {}
+            r = rnd.random()
+            if r < 0.3:
+                attrs["ref"] = rnd.choice(["A", "B", "A1", "1", "2", "3"])
+            elif r < 0.6:
+                attrs["ref"] = f"SH.{rnd.randint(1, n_pages + 1)}"
+            out = rnd.random() < 0.5
+            c = b.obj(S.OFF_PAGE_CONNECTOR, 300 if out else 60, y, rotation=0 if out else 180, attrs=attrs or None,
+                      page=page)
+            t = b.obj(S.TANK if rnd.random() < 0.5 else S.PUMP_CENTRIFUGAL, 60 if out else 300, y,
+                      name=rnd.choice(names), page=page)
+            if out:
+                b.pipe(t, c, flow=rnd.choice([1, None]), page=page, line=rnd.choice([None, "50A-BG-001"]))
+            else:
+                b.pipe(c, t, flow=rnd.choice([-1, None]), page=page, line=rnd.choice([None, "50A-BG-001"]))
+            if rnd.random() < 0.6:
+                b.text(f"{'TO' if out else 'FROM'} {rnd.choice(names)}", 330, y - 8, role=TextRole.CONNECTOR, owner=c)
+                owners.append((len(b.texts) - 1, page))
+    doc = b.build()
+    for k, page in owners:
+        doc.texts[k].page = page
+    for page in range(1, n_pages):
+        doc.pages.append(PageInfo(index=page, width=1200, height=800))
+    return doc
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_candidate_enumeration_and_resolution_match_brute_force(seed):
+    from shippid.analysis.sheets import _all_titles, _pair, enumerate_candidates, resolve
+
+    doc = _random_set(seed)
+    sheets = page_sheet_numbers(doc)
+    keys = connector_keys(doc, sheets=sheets)
+    ks = list(keys.values())
+    doc_dwgs = any(sheets[p]["titles"] for p in sheets)
+    brute = [c for i in range(len(ks)) for j in range(i + 1, len(ks))
+             if (c := _pair(ks[i], ks[j], sheets, doc_dwgs, _all_titles(sheets))) is not None]
+    brute.sort(key=lambda c: (-c.score, c.a, c.b))
+    got = enumerate_candidates(doc, keys, sheets)
+    assert [(c.a, c.b, c.score, c.key) for c in got.candidates] == [(c.a, c.b, c.score, c.key) for c in brute]
+    assert not got.guarded and got.pairs_evaluated <= len(ks) * (len(ks) - 1) // 2
+    accepted, _ = resolve(brute, top_k=None)
+    assert [(c.a, c.b, m) for c, m in accepted] == _brute_resolve(brute)
+    # guards that skip everything never link anything they could not compare
+    tight = enumerate_candidates(doc, keys, sheets, max_block_pairs=1)
+    accepted_tight, _ = resolve(tight.candidates, hidden=tight.hidden)
+    assert {(c.a, c.b) for c, _ in accepted_tight} <= {(a, b) for a, b, _ in _brute_resolve(brute)}

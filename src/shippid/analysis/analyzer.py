@@ -17,10 +17,19 @@ from typing import Optional, Protocol, runtime_checkable
 
 from ..catalog import SYSTEMS
 from ..model import AnalysisReport, Category, Finding, FlowPath, PIDDocument, PipeKind, SymbolClass, Verdict
-from .graph import FlowNet, build_graph, components, flow_paths, node_name, sources_and_sinks
+from .graph import (
+    FLOW_PATH_WORK_LIMIT,
+    FlowNet,
+    build_graph,
+    components,
+    enumerate_flow_paths,
+    flow_path_sheet_links,
+    node_name,
+    sources_and_sinks,
+)
 from .lists import equipment_list, instrument_list, line_list, valve_list
-from .rules import RULES, RuleContext, run_rules
-from .sheets import link_sheets
+from .rules import RULES, RuleContext, run_rules, skipped_pages, skipped_pages_note
+from .sheets import link_sheets, linked_pairs
 
 log = logging.getLogger(__name__)
 
@@ -35,19 +44,26 @@ class ReportReviewer(Protocol):
     def review(self, report: AnalysisReport) -> AnalysisReport: ...
 
 
-def analyze(doc: PIDDocument, reviewer: Optional[ReportReviewer] = None, *, max_paths: int = 200) -> AnalysisReport:
+def analyze(doc: PIDDocument, reviewer: Optional[ReportReviewer] = None, *, max_paths: int = 200,
+            max_path_work: Optional[int] = FLOW_PATH_WORK_LIMIT) -> AnalysisReport:
     """Graph + flow paths + lists + rule findings + template summaries, then optional review.
 
     A document with several pages and no ``meta["sheet_links"]`` yet gets its off-page connectors
     paired first (:func:`shippid.analysis.sheets.link_sheets`, stored in ``doc.meta``), so the
-    graph, flow paths and rules see one system across the sheets."""
+    graph, flow paths and rules see one system across the sheets.
+
+    At most ``max_paths`` flow paths are kept; ``meta["flow_paths_total"]`` counts all of them
+    within the enumeration budget ``max_path_work`` (``meta["flow_paths_total_exact"]`` is False
+    when the budget ran out and the total is a lower bound). Pages the extractor skipped
+    (``doc.meta["unreadable_pages"]`` / ``["empty_pages"]``) are copied to ``report.meta`` and named
+    in the summaries."""
     if _pages(doc) > 1 and "sheet_links" not in doc.meta:
         link_sheets(doc)
     G = build_graph(doc)
     net = FlowNet(doc, G)
     ctx = RuleContext(doc, G, net)
-    all_paths = flow_paths(doc, G, max_paths=10 ** 6, net=net)
-    paths = all_paths[: max(0, max_paths)]
+    fpr = enumerate_flow_paths(doc, G, max(0, max_paths), net=net, max_work=max_path_work)
+    paths = fpr.paths
     findings = run_rules(doc, G, context=ctx)
     sources, sinks = sources_and_sinks(doc, G)
     comps = components(doc, G)
@@ -68,14 +84,27 @@ def analyze(doc: PIDDocument, reviewer: Optional[ReportReviewer] = None, *, max_
         "systems": [s.value for s in ctx.systems],
         "system_basis": ctx.system_basis,
         "summary_source": "template",
-        "flow_paths_total": len(all_paths),
-        "flow_paths_truncated": len(all_paths) > len(paths),
+        "flow_paths_total": fpr.total,
+        "flow_paths_total_exact": fpr.exact,
+        "flow_paths_truncated": fpr.total > len(paths) or not fpr.exact,
         "rules": list(RULES),
         "components": len(comps),
+        **skipped_pages(doc.meta),
     })
+    if not fpr.exact:
+        report.meta["flow_paths_work"] = fpr.work
+        report.meta["flow_paths_complete"] = fpr.complete  # False: the kept paths may not be the first ones
     if _pages(doc) > 1 or doc.meta.get("sheet_links"):
         report.meta["sheet_links"] = sum(1 for *_, linked in G.edges(data="sheet_link") if linked)
         report.meta["sheet_links_ambiguous"] = len(doc.meta.get("sheet_links_ambiguous") or [])
+        stats = doc.meta.get("sheet_link_stats") if isinstance(doc.meta.get("sheet_link_stats"), dict) else {}
+        if stats.get("guarded"):
+            report.meta["sheet_links_guarded"] = stats["guarded"]
+        # cross-sheet hops of the kept flow paths (FlowPath.pipe_ids hold document pipes only)
+        pairs = linked_pairs(doc)
+        hops = [{"path": k, "links": [list(h) for h in flow_path_sheet_links(fp, pairs)]}
+                for k, fp in enumerate(paths)]
+        report.meta["flow_path_sheet_links"] = [h for h in hops if h["links"]]
     report.summary_en = summary_en(report, ctx)
     report.summary_ko = summary_ko(report, ctx)
 
@@ -102,6 +131,19 @@ def analyze(doc: PIDDocument, reviewer: Optional[ReportReviewer] = None, *, max_
 
 def _pages(doc: PIDDocument) -> int:
     return len({p.index for p in doc.pages} | {o.page for o in doc.objects})
+
+
+def _skipped_meta(report: AnalysisReport) -> dict:
+    """``report.meta`` when it lists the skipped pages, else the document's meta."""
+    if any(k in report.meta for k in ("unreadable_pages", "empty_pages")):
+        return report.meta
+    return report.document.meta
+
+
+def pages_not_analysed(report: AnalysisReport) -> dict[str, list[int]]:
+    """``{"unreadable_pages", "empty_pages"}`` of a report (0-based page indices; see
+    :func:`shippid.analysis.rules.skipped_pages`)."""
+    return skipped_pages(_skipped_meta(report))
 
 
 def review_status(reviewed: AnalysisReport, n_errors_before: int = 0) -> str:
@@ -192,10 +234,16 @@ def summary_en(report: AnalysisReport, ctx: RuleContext) -> str:
         f"{c['signal_lines']} signal lines), {c['line_numbers']} line numbers, {c['junctions']} junctions, "
         f"{c['components']} connected groups.",
     ]
+    note = skipped_pages_note(_skipped_meta(report))
+    if note:
+        lines.insert(1, f"WARNING: {note[0].upper()}{note[1:]}"
+                        + (" No objects were extracted, so no rule could be evaluated." if not c["objects"] else
+                           " The findings below cover the readable pages only."))
     if "sheet_links" in report.meta:
         lines.append(f"Sheets: {_pages(report.document)} pages joined by {report.meta['sheet_links']} cross-sheet "
                      f"connector links ({report.meta.get('sheet_links_ambiguous', 0)} connectors left ambiguous).")
     total = report.meta.get("flow_paths_total", c["flow_paths"])
+    total = total if report.meta.get("flow_paths_total_exact", True) else f"at least {total}"
     fp = f"Flow paths: {total} driven paths from {c['sources']} sources to {c['sinks']} sinks"
     if report.flow_paths:
         fp += f", e.g. {report.flow_paths[0].description}"
@@ -209,6 +257,10 @@ def summary_en(report: AnalysisReport, ctx: RuleContext) -> str:
     if fails:
         lines.append("Failed checks:")
         lines += fails
+    elif not c["objects"]:
+        lines.append("No rule check could be evaluated: nothing was extracted.")
+    elif note:
+        lines.append("No rule check failed on the readable pages.")
     else:
         lines.append("No rule check failed.")
     return "\n".join(lines)
@@ -227,10 +279,15 @@ def summary_ko(report: AnalysisReport, ctx: RuleContext) -> str:
         f"신호선 {c['signal_lines']}), 라인 번호 {c['line_numbers']}개, 분기점 {c['junctions']}개, "
         f"연결 그룹 {c['components']}개.",
     ]
+    note = skipped_pages_note(_skipped_meta(report), ko=True)
+    if note:
+        lines.insert(1, f"경고: {note}" + (" 추출된 객체가 없어 어떤 규칙도 판정하지 못했습니다." if not c["objects"] else
+                                           " 아래 검토 결과는 판독 가능한 페이지만 대상으로 합니다."))
     if "sheet_links" in report.meta:
         lines.append(f"도면 {_pages(report.document)}매, 도면 간 연결 표시 쌍 {report.meta['sheet_links']}개 "
                      f"(미결 연결 표시 {report.meta.get('sheet_links_ambiguous', 0)}개).")
     total = report.meta.get("flow_paths_total", c["flow_paths"])
+    total = total if report.meta.get("flow_paths_total_exact", True) else f"최소 {total}"
     fp = f"유동 경로: 출발점 {c['sources']}곳에서 도착점 {c['sinks']}곳까지 펌프 구동 경로 {total}개"
     if report.flow_paths:
         fp += f" (예: {report.flow_paths[0].description})"
@@ -244,6 +301,10 @@ def summary_ko(report: AnalysisReport, ctx: RuleContext) -> str:
     if fails:
         lines.append("부적합 항목:")
         lines += fails
+    elif not c["objects"]:
+        lines.append("추출된 내용이 없어 판정한 규칙이 없습니다.")
+    elif note:
+        lines.append("판독 가능한 페이지에서는 부적합 항목이 없습니다.")
     else:
         lines.append("부적합 항목이 없습니다.")
     return "\n".join(lines)

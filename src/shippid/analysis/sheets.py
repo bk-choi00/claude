@@ -28,14 +28,25 @@ this repeats until nothing changes. Connectors left with viable but unresolved c
 listed as ambiguous (:func:`ambiguous_links`) for a later Gemma step, which hands its choice back
 through :func:`apply_link_decisions` (validated against the listed candidates).
 
+Cost is bounded: candidate pairs are enumerated per shared key only (same mark, mutually
+referenced pages, a name that matches the equipment beside the other connector) instead of all
+N^2 pairs -- every other pair is rejected by the rules above anyway. A key shared by so many connectors that its pairs exceed
+``max_block_pairs`` (or the total exceeds ``max_pairs``) is not enumerated: its connectors are
+*guarded* -- linked automatically only when their best evaluated pair beats an upper bound of every
+pair not evaluated by the margin (a name or another shared key that singles the partner out), else
+listed as ambiguous with the reason. Each connector keeps its ``top_k`` best
+candidates for resolution, and at most ``MAX_STORED_CANDIDATES`` are stored per ambiguous connector.
+
 Results are stored in ``doc.meta``:
 
 * ``"sheet_links"``: ``[{"a", "b", "key", "confidence", "source", "directed", "evidence"}]`` -- ``a``
   is the outgoing (upstream) connector when ``directed`` (directions known), ``key`` the continuation keys that
   matched (``"mark:A1+sheet:1>2+name"``), ``source`` ``"rule"`` (``"gemma"`` / ``"manual"`` for
   decisions handed in later; ground truth of :mod:`shippid.datasets.multisheet` uses ``"gt"``);
-* ``"sheet_links_ambiguous"``: ``[{"id", "page", "candidates": [{"id", "page", "score", "key"}]}]``;
-* ``"sheet_link_stats"``: counts and the page -> sheet number map used.
+* ``"sheet_links_ambiguous"``: ``[{"id", "page", "candidates": [{"id", "page", "score", "key"}]}]`` (plus
+  ``"candidates_total"`` when the list was capped and ``"guard"`` for guarded connectors);
+* ``"sheet_link_stats"``: counts (``pairs_evaluated``, ``guarded`` ...), the skipped key blocks and the
+  page -> sheet number map used.
 
 :func:`shippid.analysis.graph.build_graph` turns every link into an edge ``kind="sheet_link"``
 between the two connectors, so flow paths, adjacency, components, isolation and the rules see one
@@ -93,6 +104,13 @@ W_NAME_CONFLICT = 1.0  # penalty: the name written does not match the (fully nam
 W_LINE = 1.0
 W_DIRECTION = 0.5
 
+#: linker guards: pairs evaluated for one shared key / in total, candidates kept per connector for
+#: resolution, candidates stored per ambiguous connector
+MAX_BLOCK_PAIRS = 20_000
+MAX_PAIRS = 200_000
+TOP_K = 8
+MAX_STORED_CANDIDATES = 5
+
 
 # --------------------------------------------------------------------------- text keys
 
@@ -122,7 +140,10 @@ def name_tokens(text: str) -> set[str]:
 
 def names_match(name: str, pool: set[str]) -> bool:
     """Most words of ``name`` (and at least one specific word) occur in the token ``pool``."""
-    toks = name_tokens(name)
+    return _tokens_match(name_tokens(name), pool)
+
+
+def _tokens_match(toks: set[str], pool: set[str]) -> bool:
     if not toks:
         return False
     inter = toks & pool
@@ -148,10 +169,17 @@ class ConnectorKeys:
     near_names: list[str] = field(default_factory=list)
     near_complete: bool = False  # every equipment item beside it is named (a mismatch is then evidence)
     line_numbers: set[str] = field(default_factory=set)
+    name_toks: list[set[str]] = field(default_factory=list)  # name_tokens() of each of ``names`` (cache)
 
     @property
     def digit_mark(self) -> bool:
         return bool(self.mark) and self.mark.isdigit()
+
+    def name_token_sets(self) -> list[set[str]]:
+        """:func:`name_tokens` of every destination / origin name (computed once)."""
+        if len(self.name_toks) != len(self.names):
+            self.name_toks = [name_tokens(nm) for nm in self.names]
+        return self.name_toks
 
     def summary(self) -> dict[str, Any]:
         return {"id": self.id, "page": self.page, "sheet": self.sheet, "texts": self.texts, "direction": self.direction,
@@ -281,11 +309,22 @@ def _first_layer(G: nx.MultiGraph, start: str, limit: int = 400) -> tuple[list[s
     return names, tokens, complete and bool(names)
 
 
-def _texts_of(doc: PIDDocument, obj) -> tuple[list[str], list[str]]:
+def _owned_texts(doc: PIDDocument) -> dict[str, list]:
+    """Non-blank texts per owner id (document order), built once per document."""
+    out: dict[str, list] = defaultdict(list)
+    for t in doc.texts:
+        if t.owner_id and t.text.strip():
+            out[t.owner_id].append(t)
+    return out
+
+
+def _texts_of(doc: PIDDocument, obj, owned_by: Optional[dict[str, list]] = None) -> tuple[list[str], list[str]]:
     """(all texts, texts written inside the arrow) of a connector: owned texts in reading order,
-    plus the ``name`` / ``rating`` / ``ref`` attributes."""
-    owned = sorted((t for t in doc.texts if t.owner_id == obj.id and t.text.strip()),
-                   key=lambda t: (round(t.bbox.y0, 1), t.bbox.x0))
+    plus the ``name`` / ``rating`` / ``ref`` attributes (``owned_by``: :func:`_owned_texts`, so a
+    whole document is not scanned once per connector)."""
+    mine = owned_by.get(obj.id, []) if owned_by is not None else [
+        t for t in doc.texts if t.owner_id == obj.id and t.text.strip()]
+    owned = sorted(mine, key=lambda t: (round(t.bbox.y0, 1), t.bbox.x0))
     texts: list[str] = []
     inside: list[str] = []
     b = obj.bbox
@@ -313,6 +352,7 @@ def connector_keys(doc: PIDDocument, G: Optional[nx.MultiGraph] = None,
     G = G if G is not None else build_graph(doc, with_sheet_links=False)
     sheets = sheets if sheets is not None else page_sheet_numbers(doc)
     labels = object_labels(doc)
+    owned_by = _owned_texts(doc)
     pipes_of: dict[str, list] = defaultdict(list)
     for p in doc.pipes:
         if p.kind != PipeKind.PROCESS:
@@ -324,7 +364,7 @@ def connector_keys(doc: PIDDocument, G: Optional[nx.MultiGraph] = None,
     for o in doc.objects:
         if effective_class(o, labels.get(o.id)) != S.OFF_PAGE_CONNECTOR:
             continue
-        texts, inside = _texts_of(doc, o)
+        texts, inside = _texts_of(doc, o, owned_by)
         k = ConnectorKeys(id=o.id, page=o.page, sheet=sheets.get(o.page, {}).get("sheet"), texts=texts,
                           inside=inside)
         up = [t.upper() for t in texts]
@@ -375,9 +415,10 @@ class Candidate:
 
 
 def _support(x: ConnectorKeys, y: ConnectorKeys, sheets: dict[int, dict[str, Any]],
-             doc_dwgs: bool) -> tuple[Optional[list[str]], float, list[str]]:
+             doc_dwgs: bool, all_titles: Optional[set[str]] = None) -> tuple[Optional[list[str]], float, list[str]]:
     """What ``x``'s own text says about ``y`` being its partner: (None if contradicted, else the
-    supporting keys), score, evidence."""
+    supporting keys), score, evidence. ``all_titles``: union of every page's title-block strings
+    (computed from ``sheets`` when not given)."""
     keys: list[str] = []
     ev: list[str] = []
     score = 0.0
@@ -399,14 +440,16 @@ def _support(x: ConnectorKeys, y: ConnectorKeys, sheets: dict[int, dict[str, Any
             return None, 0.0, []  # names another sheet
     if x.dwg_refs:
         here = sheets.get(y.page, {}).get("titles", set())
-        known = any(d in sheets.get(p, {}).get("titles", set()) for p in sheets for d in x.dwg_refs)
+        if all_titles is None:
+            all_titles = _all_titles(sheets)
+        known = bool(x.dwg_refs & all_titles)
         if any(d in here for d in x.dwg_refs):
             keys.append("dwg")
             score += W_DWG
             ev.append(f"{x.id} refers to the drawing of page {y.page}")
         elif x.page != y.page and (known or doc_dwgs):
             return None, 0.0, []  # another drawing of this set, or an external drawing
-    if x.names and any(names_match(nm, y.near) for nm in x.names):
+    if x.names and any(_tokens_match(t, y.near) for t in x.name_token_sets()):
         keys.append("name")
         score += W_NAME
         ev.append(f"{x.id} names equipment beside {y.id}")
@@ -417,11 +460,19 @@ def _support(x: ConnectorKeys, y: ConnectorKeys, sheets: dict[int, dict[str, Any
     return keys, score, ev
 
 
+def _all_titles(sheets: dict[int, dict[str, Any]]) -> set[str]:
+    out: set[str] = set()
+    for v in sheets.values():
+        out |= v.get("titles", set())
+    return out
+
+
 def _pos(keys: list[str]) -> bool:
     return any(not k.startswith("!") for k in keys)
 
 
-def _pair(x: ConnectorKeys, y: ConnectorKeys, sheets: dict[int, dict[str, Any]], doc_dwgs: bool) -> Optional[Candidate]:
+def _pair(x: ConnectorKeys, y: ConnectorKeys, sheets: dict[int, dict[str, Any]], doc_dwgs: bool,
+          all_titles: Optional[set[str]] = None) -> Optional[Candidate]:
     if x.id == y.id:
         return None
     if x.direction and y.direction and x.direction == y.direction and x.direction_hard and y.direction_hard:
@@ -433,8 +484,8 @@ def _pair(x: ConnectorKeys, y: ConnectorKeys, sheets: dict[int, dict[str, Any]],
     same_page = x.page == y.page
     if same_page and not mark_eq:
         return None  # within a sheet only a shared mark continues a line
-    sx = _support(x, y, sheets, doc_dwgs)
-    sy = _support(y, x, sheets, doc_dwgs)
+    sx = _support(x, y, sheets, doc_dwgs, all_titles)
+    sy = _support(y, x, sheets, doc_dwgs, all_titles)
     if sx[0] is None or sy[0] is None:
         return None
     dx, dy = sheets.get(x.page, {}).get("drawing_no"), sheets.get(y.page, {}).get("drawing_no")
@@ -479,21 +530,177 @@ def _pair(x: ConnectorKeys, y: ConnectorKeys, sheets: dict[int, dict[str, Any]],
     return Candidate(a.id, b.id, round(score, 3), "+".join(key_parts), ev, directed, conflict)
 
 
-def candidate_pairs(doc: PIDDocument, keys: Optional[dict[str, ConnectorKeys]] = None,
-                    sheets: Optional[dict[int, dict[str, Any]]] = None) -> list[Candidate]:
-    """Every viable connector pair (see module docstring), best first."""
+@dataclass
+class CandidateSet:
+    """Result of :func:`enumerate_candidates`."""
+
+    candidates: list[Candidate]
+    pairs_evaluated: int = 0
+    guarded: dict[str, str] = field(default_factory=dict)  # connector id -> key too common to enumerate
+    skipped: list[dict[str, Any]] = field(default_factory=list)  # [{"key", "connectors", "pairs"}]
+    #: connector id -> upper bound of the score of any pair with it that was not evaluated (a guarded
+    #: connector is linked only when its best pair beats this bound by the margin; inf: never)
+    hidden: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
+class _Block:
+    key: str
+    pairs: int
+    members: list[int]  # every connector involved
+    kind: str  # "group" (all pairs within) | "bipartite" (members[:split] x members[split:]) | "star"
+    split: int = 0
+    pages: tuple[int, int] = (-1, -1)  # bipartite: page of members[:split], page of members[split:]
+
+    def gen(self) -> Iterable[tuple[int, int]]:
+        m = self.members
+        if self.kind == "group":
+            for i in range(len(m)):
+                for j in range(i + 1, len(m)):
+                    yield m[i], m[j]
+        elif self.kind == "bipartite":
+            for i in m[: self.split]:
+                for j in m[self.split:]:
+                    yield i, j
+        else:  # star: members[0] with each of the others
+            for j in m[1:]:
+                yield m[0], j
+
+
+def _blocks(ks: list[ConnectorKeys], sheets: dict[int, dict[str, Any]], name_cap: int) -> tuple[list[_Block], dict[int, str]]:
+    """Key blocks whose pairs include every viable pair (see :func:`_pair`): a pair is viable only
+    with a shared mark, or when each side's own text supports the other by a sheet / drawing
+    reference to its page or by a name matching the equipment beside it. Also returns connectors
+    whose name pool was too large to verify (index -> key)."""
+    blocks: list[_Block] = []
+    too_common: dict[int, str] = {}
+    by_mark: dict[str, list[int]] = defaultdict(list)
+    for i, k in enumerate(ks):
+        if k.mark:
+            by_mark[k.mark].append(i)
+    for v, ms in sorted(by_mark.items()):
+        if len(ms) > 1:
+            blocks.append(_Block(f"mark:{v}", len(ms) * (len(ms) - 1) // 2, ms, "group"))
+    # pages each connector's sheet / drawing references point at (never its own page)
+    pages_by_sheet: dict[int, list[int]] = defaultdict(list)
+    pages_by_title: dict[str, list[int]] = defaultdict(list)
+    for pg, v in sheets.items():
+        if v.get("sheet") is not None:
+            pages_by_sheet[v["sheet"]].append(pg)
+        for t in v.get("titles", ()):
+            pages_by_title[t].append(pg)
+    support: dict[tuple[int, int], list[int]] = defaultdict(list)  # (own page, referenced page) -> connectors
+    for i, k in enumerate(ks):
+        refs = set(k.sheet_refs)
+        if k.digit_mark:
+            refs.add(int(k.mark))
+        pages = {pg for r in refs for pg in pages_by_sheet.get(r, ())}
+        pages |= {pg for d in k.dwg_refs for pg in pages_by_title.get(d, ())}
+        pages.discard(k.page)
+        for pg in pages:
+            support[(k.page, pg)].append(i)
+    for (pa, pb), xs in sorted(support.items()):
+        ys = support.get((pb, pa))
+        if pa < pb and ys:
+            blocks.append(_Block(f"pages:{pa}<>{pb}", len(xs) * len(ys), xs + ys, "bipartite", len(xs), (pa, pb)))
+    # names: connectors whose destination / origin name matches the equipment beside another one
+    near_index: dict[str, list[int]] = defaultdict(list)
+    for i, k in enumerate(ks):
+        for tok in k.near:
+            near_index[tok].append(i)
+    for i, k in enumerate(ks):
+        hits: set[int] = set()
+        for nm, toks in zip(k.names, k.name_token_sets()):
+            pool = {j for tok in toks - _GENERIC for j in near_index.get(tok, ())}
+            pool.discard(i)
+            if len(pool) > name_cap:
+                # not verified: neither this connector nor any connector of the pool may be linked on
+                # the evaluated pairs alone (each could pair with the other unseen)
+                for j in [i, *sorted(pool)]:
+                    too_common.setdefault(j, f"name:{nm[:40]}")
+                hits = set()
+                break
+            hits |= {j for j in pool if _tokens_match(toks, ks[j].near)}
+        if hits:
+            blocks.append(_Block(f"name:{k.id}", len(hits), [i] + sorted(hits), "star"))
+    return blocks, too_common
+
+
+def _page_support(k: ConnectorKeys, page: int, sheets: dict[int, dict[str, Any]]) -> float:
+    """Most that ``k``'s own sheet / drawing references can add for a partner on ``page``."""
+    refs = set(k.sheet_refs) | ({int(k.mark)} if k.digit_mark else set())
+    v = sheets.get(page, {})
+    return (W_SHEET if v.get("sheet") in refs else 0.0) + (W_DWG if k.dwg_refs & v.get("titles", set()) else 0.0)
+
+
+#: bound for a pair of a skipped mark block: shared mark, both sides' sheet and drawing references,
+#: opposite directions, a shared line number (a name match would have been enumerated by its own block)
+_MARK_PAIR_BOUND = W_MARK + 2 * (W_SHEET + W_DWG) + W_DIRECTION + W_LINE
+
+
+def _hidden_bounds(b: _Block, ks: list[ConnectorKeys], sheets: dict[int, dict[str, Any]]) -> dict[int, float]:
+    """Per member of a skipped block: an upper bound of the score of its pairs in the block. Pairs
+    of a page block that were not evaluated have no shared mark and no name match (those have
+    their own blocks), so they score at most both sides' page support + direction + line number."""
+    if b.kind == "group":
+        return {i: _MARK_PAIR_BOUND for i in b.members}
+    if b.kind != "bipartite":
+        return {i: math.inf for i in b.members}
+    pa, pb = b.pages
+    left, right = b.members[: b.split], b.members[b.split:]
+    own_l = {i: _page_support(ks[i], pb, sheets) for i in left}
+    own_r = {j: _page_support(ks[j], pa, sheets) for j in right}
+    best_l, best_r = max(own_l.values()), max(own_r.values())
+    out: dict[int, float] = {}
+    for i in left:
+        out[i] = own_l[i] + best_r + W_DIRECTION + (W_LINE if ks[i].line_numbers else 0.0)
+    for j in right:
+        out[j] = max(out.get(j, -math.inf), own_r[j] + best_l + W_DIRECTION + (W_LINE if ks[j].line_numbers else 0.0))
+    return out
+
+
+def enumerate_candidates(doc: PIDDocument, keys: Optional[dict[str, ConnectorKeys]] = None,
+                         sheets: Optional[dict[int, dict[str, Any]]] = None, *,
+                         max_block_pairs: int = MAX_BLOCK_PAIRS, max_pairs: int = MAX_PAIRS) -> CandidateSet:
+    """Viable connector pairs (best first) from the key blocks, smallest block first: a block with
+    more than ``max_block_pairs`` pairs, or one that would take the evaluated pairs past
+    ``max_pairs``, is skipped and its connectors are guarded (see module docstring)."""
     sheets = sheets if sheets is not None else page_sheet_numbers(doc)
     keys = keys if keys is not None else connector_keys(doc, sheets=sheets)
     doc_dwgs = any(sheets[p]["titles"] for p in sheets)
+    all_titles = _all_titles(sheets)
     ks = list(keys.values())
-    out: list[Candidate] = []
-    for i in range(len(ks)):
-        for j in range(i + 1, len(ks)):
-            c = _pair(ks[i], ks[j], sheets, doc_dwgs)
-            if c is not None:
-                out.append(c)
-    out.sort(key=lambda c: (-c.score, c.a, c.b))
+    blocks, too_common = _blocks(ks, sheets, max(1, max_block_pairs))
+    out = CandidateSet([])
+    for i, why in too_common.items():
+        out.guarded.setdefault(ks[i].id, why)
+        out.hidden[ks[i].id] = math.inf
+    todo: set[tuple[int, int]] = set()
+    for b in sorted(blocks, key=lambda b: (b.pairs, b.key)):
+        if b.pairs > max_block_pairs or len(todo) + b.pairs > max_pairs:
+            for i, ub in _hidden_bounds(b, ks, sheets).items():
+                out.guarded.setdefault(ks[i].id, b.key)
+                out.hidden[ks[i].id] = max(out.hidden.get(ks[i].id, -math.inf), ub)
+            out.skipped.append({"key": b.key, "connectors": len(set(b.members)), "pairs": b.pairs})
+            continue
+        for i, j in b.gen():
+            if i != j:
+                todo.add((i, j) if i < j else (j, i))
+    out.pairs_evaluated = len(todo)
+    for i, j in sorted(todo):
+        c = _pair(ks[i], ks[j], sheets, doc_dwgs, all_titles)
+        if c is not None:
+            out.candidates.append(c)
+    out.candidates.sort(key=lambda c: (-c.score, c.a, c.b))
     return out
+
+
+def candidate_pairs(doc: PIDDocument, keys: Optional[dict[str, ConnectorKeys]] = None,
+                    sheets: Optional[dict[int, dict[str, Any]]] = None, *,
+                    max_block_pairs: int = MAX_BLOCK_PAIRS, max_pairs: int = MAX_PAIRS) -> list[Candidate]:
+    """Every viable connector pair (see module docstring), best first; pairs of keys shared by too
+    many connectors are not enumerated (:func:`enumerate_candidates`)."""
+    return enumerate_candidates(doc, keys, sheets, max_block_pairs=max_block_pairs, max_pairs=max_pairs).candidates
 
 
 # --------------------------------------------------------------------------- linking
@@ -503,28 +710,57 @@ def _confidence(score: float, margin: float) -> float:
     return round(min(0.99, 0.4 + 0.08 * score + 0.05 * min(margin, 3.0)), 3)
 
 
+def _top_k(pool: list[Candidate], k: int) -> list[Candidate]:
+    """Candidates among the ``k`` best of at least one of their two connectors (best first)."""
+    rank: dict[str, int] = defaultdict(int)
+    out = []
+    for c in sorted(pool, key=lambda c: (-c.score, c.a, c.b)):
+        ra, rb = rank[c.a], rank[c.b]
+        rank[c.a] += 1
+        rank[c.b] += 1
+        if ra < k or rb < k:
+            out.append(c)
+    return out
+
+
 def resolve(cands: Sequence[Candidate], margin: float = 1.0, min_score: float = 2.5,
-            taken: Iterable[str] = ()) -> tuple[list[tuple[Candidate, float]], dict[str, list[Candidate]]]:
+            taken: Iterable[str] = (), *, top_k: Optional[int] = TOP_K, frozen: Iterable[str] = (),
+            hidden: Optional[dict[str, float]] = None) -> tuple[list[tuple[Candidate, float]], dict[str, list[Candidate]]]:
     """One-to-one acceptance: a pair whose two connectors are each other's best candidate with a
     margin of ``margin`` over every other candidate of either connector; repeated until stable.
     Returns the accepted (candidate, margin) pairs and the remaining candidates per unpaired
-    connector."""
+    connector. Each connector keeps its ``top_k`` best candidates (``None``: all; the best two,
+    which decide the margins, are always kept). ``hidden`` gives, per connector, a competitor score
+    for the pairs that were not evaluated (:attr:`CandidateSet.hidden`); ``frozen`` connectors are
+    never accepted (their candidates still compete). Each round costs O(candidates)."""
     used = set(taken)
+    bound = dict(hidden or {})
+    for x in frozen:
+        bound[x] = math.inf
     pool = [c for c in cands if c.score >= min_score and c.a not in used and c.b not in used]
+    if top_k is not None:
+        pool = _top_k(pool, max(2, top_k))
     accepted: list[tuple[Candidate, float]] = []
     changed = True
     while changed:
         changed = False
-        by: dict[str, list[Candidate]] = defaultdict(list)
+        # best candidate, best score and second-best score per connector at the start of the round
+        top: dict[str, list] = {}
         for c in pool:
-            by[c.a].append(c)
-            by[c.b].append(c)
+            for x in (c.a, c.b):
+                t = top.get(x)
+                if t is None:
+                    top[x] = [c, c.score, -math.inf]
+                elif c.score > t[1]:
+                    top[x] = [c, c.score, t[1]]
+                elif c.score > t[2]:
+                    t[2] = c.score
         for c in sorted(pool, key=lambda c: (-c.score, c.a, c.b)):
             if c.a in used or c.b in used or c.conflict:
                 continue
-            others = [o for o in by[c.a] + by[c.b] if o is not c]
-            best_other = max((o.score for o in others), default=None)
-            m = c.score - best_other if best_other is not None else math.inf
+            best_other = max([t[2] if t[0] is c else t[1] for t in (top[c.a], top[c.b])]
+                             + [bound.get(c.a, -math.inf), bound.get(c.b, -math.inf)])
+            m = c.score - best_other if best_other > -math.inf else math.inf
             if m >= margin:
                 accepted.append((c, m))
                 used.update((c.a, c.b))
@@ -538,35 +774,56 @@ def resolve(cands: Sequence[Candidate], margin: float = 1.0, min_score: float = 
 
 
 def link_sheets(doc: PIDDocument, *, store: bool = True, margin: float = 1.0, min_score: float = 2.5,
-                keep: Sequence[str] = ("gemma", "manual")) -> list[dict[str, Any]]:
+                keep: Sequence[str] = ("gemma", "manual"), max_block_pairs: int = MAX_BLOCK_PAIRS,
+                max_pairs: int = MAX_PAIRS, top_k: Optional[int] = TOP_K,
+                max_stored: int = MAX_STORED_CANDIDATES) -> list[dict[str, Any]]:
     """Pair off-page connectors across (and within) pages; returns ``[{"a", "b", "key",
     "confidence", "source", "evidence"}]`` and, with ``store``, writes ``doc.meta["sheet_links"]``,
     ``["sheet_links_ambiguous"]`` and ``["sheet_link_stats"]``. Links already in the document whose
-    ``source`` is in ``keep`` (Gemma / manual decisions) are kept and their connectors not re-paired."""
+    ``source`` is in ``keep`` (Gemma / manual decisions) are kept and their connectors not re-paired.
+    Guards (see module docstring): ``max_block_pairs`` / ``max_pairs`` bound the pairs evaluated,
+    ``top_k`` the candidates per connector, ``max_stored`` the candidates listed per ambiguous
+    connector."""
     sheets = page_sheet_numbers(doc)
     keys = connector_keys(doc, sheets=sheets)
     kept = [dict(lk) for lk in doc.meta.get("sheet_links", []) or []
             if isinstance(lk, dict) and lk.get("source") in keep and lk.get("a") in keys and lk.get("b") in keys]
     taken = {x for lk in kept for x in (lk["a"], lk["b"])}
-    cands = candidate_pairs(doc, keys, sheets)
-    accepted, left = resolve(cands, margin=margin, min_score=min_score, taken=taken)
+    cset = enumerate_candidates(doc, keys, sheets, max_block_pairs=max_block_pairs, max_pairs=max_pairs)
+    cands = cset.candidates
+    accepted, left = resolve(cands, margin=margin, min_score=min_score, taken=taken, top_k=top_k,
+                             hidden=cset.hidden)
     links_out = list(kept)
     for c, m in accepted:
         links_out.append({"a": c.a, "b": c.b, "key": c.key, "confidence": _confidence(c.score, m), "source": "rule",
                           "directed": c.directed, "score": c.score, "evidence": c.evidence})
+    linked_now = {x for lk in links_out for x in (lk["a"], lk["b"])}
+    viable: dict[str, int] = defaultdict(int)  # viable candidates left per unlinked connector (before top_k)
+    for c in cands:
+        if c.score >= min_score and c.a not in linked_now and c.b not in linked_now:
+            viable[c.a] += 1
+            viable[c.b] += 1
     ambiguous = []
     order = {o.id: i for i, o in enumerate(doc.objects)}
-    for cid in sorted(left, key=lambda i: order.get(i, 0)):
-        cs = sorted(left[cid], key=lambda c: (-c.score, c.a, c.b))
-        ambiguous.append({"id": cid, "page": keys[cid].page, "candidates": [
+    cap = max(1, max_stored)
+    for cid in sorted(set(left) | (set(cset.guarded) - linked_now), key=lambda i: (order.get(i, 0), i)):
+        cs = sorted(left.get(cid, []), key=lambda c: (-c.score, c.a, c.b))
+        row: dict[str, Any] = {"id": cid, "page": keys[cid].page, "candidates": [
             {"id": c.b if c.a == cid else c.a, "page": keys[c.b if c.a == cid else c.a].page, "score": c.score,
-             "key": c.key} for c in cs]})
+             "key": c.key} for c in cs[:cap]]}
+        if max(len(cs), viable.get(cid, 0)) > len(row["candidates"]):
+            row["candidates_total"] = max(len(cs), viable.get(cid, 0))
+        if cid in cset.guarded:
+            row["guard"] = f"continuation key {cset.guarded[cid]!r} shared by too many connectors to pair automatically"
+        ambiguous.append(row)
     if store:
         doc.meta["sheet_links"] = links_out
         doc.meta["sheet_links_ambiguous"] = ambiguous
         doc.meta["sheet_link_stats"] = {
-            "connectors": len(keys), "candidates": len(cands), "linked": len(links_out),
-            "ambiguous": len(ambiguous), "pages": {str(p): v["sheet"] for p, v in sorted(sheets.items())},
+            "connectors": len(keys), "candidates": len(cands), "pairs_evaluated": cset.pairs_evaluated,
+            "linked": len(links_out), "ambiguous": len(ambiguous), "guarded": len(set(cset.guarded) - linked_now),
+            "skipped_blocks": sorted(cset.skipped, key=lambda b: -b["pairs"])[:10],
+            "pages": {str(p): v["sheet"] for p, v in sorted(sheets.items())},
             "drawing_nos": {str(p): v["drawing_no"] for p, v in sorted(sheets.items())},
             "sheet_numbers_inferred": sorted(p for p, v in sheets.items() if v["inferred"])}
     return links_out

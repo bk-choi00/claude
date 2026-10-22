@@ -7,7 +7,10 @@ returns :class:`~shippid.model.Finding` objects with a verdict:
 * ``NOT_APPLICABLE`` -- the drawing's system (``doc.info.system(s)``, else inferred from the
   title, line numbers or title block) or its content makes the rule irrelevant;
 * ``INSUFFICIENT_DATA`` -- the rule applies but the drawing (or the extraction) does not show
-  enough to decide (e.g. an unconnected pump, an unnamed tank).
+  enough to decide (e.g. an unconnected pump, an unnamed tank). The drawing-quality checks never
+  pass vacuously (no objects / pipes / tags to check); when the extractor skipped the pages
+  (scanned / raster-only or empty, see :func:`skipped_pages`) and nothing was extracted, no rule
+  yields PASS or NOT_APPLICABLE.
 
 Rules look at the *effective* class of objects (the extracted class, or a class inferred from
 the equipment name for ``UNKNOWN`` objects), at port names (inferred from the symbol geometry
@@ -98,6 +101,52 @@ def drawing_systems(doc: PIDDocument) -> tuple[list[SystemType], str]:
     return [], "unknown"
 
 
+#: ``doc.meta`` keys of the pages the extractor skipped (0-based page indices)
+SKIPPED_PAGE_KEYS = ("unreadable_pages", "empty_pages")
+
+
+def skipped_pages(meta: object) -> dict[str, list[int]]:
+    """Pages the extractor did not analyse, from a ``doc.meta`` / ``report.meta`` dict:
+    ``{"unreadable_pages": [...], "empty_pages": [...]}`` (sorted 0-based page indices; scanned /
+    raster-only pages and pages without content). Invalid entries are ignored."""
+    out: dict[str, list[int]] = {}
+    for key in SKIPPED_PAGE_KEYS:
+        raw = meta.get(key) if isinstance(meta, dict) else None
+        vals: set[int] = set()
+        if isinstance(raw, (list, tuple, set)):
+            for x in raw:
+                if isinstance(x, bool):
+                    continue
+                if isinstance(x, int) and x >= 0:
+                    vals.add(x)
+                elif isinstance(x, str) and x.strip().isdigit():
+                    vals.add(int(x.strip()))
+        out[key] = sorted(vals)
+    return out
+
+
+def _page_list(pages: Iterable[int]) -> str:
+    """1-based page numbers for display: ``"1, 3"``."""
+    return ", ".join(str(p + 1) for p in pages)
+
+
+def skipped_pages_note(meta: object, ko: bool = False) -> str:
+    """One sentence naming the pages that were not analysed (empty string when none)."""
+    sk = skipped_pages(meta)
+    parts = []
+    if sk["unreadable_pages"]:
+        parts.append(f"{_page_list(sk['unreadable_pages'])}페이지는 스캔/래스터 이미지라 판독 불가" if ko else
+                     f"page(s) {_page_list(sk['unreadable_pages'])} scanned / raster-only (unreadable)")
+    if sk["empty_pages"]:
+        parts.append(f"{_page_list(sk['empty_pages'])}페이지는 내용 없음" if ko else
+                     f"page(s) {_page_list(sk['empty_pages'])} empty")
+    if not parts:
+        return ""
+    if ko:
+        return "; ".join(parts) + " - 해당 페이지는 분석되지 않았습니다."
+    return "; ".join(parts) + " - these pages were not analysed."
+
+
 # --------------------------------------------------------------------------- context
 
 
@@ -114,6 +163,10 @@ class RuleContext:
         self._pump_fwd: dict[str, Search] = {}
         self._pump_flow: dict[str, Search] = {}
         self._passed: dict[str, set[str]] = {}
+        # the graph does not change while the rules run: object ids and class indexes are computed once
+        self._object_ids: Optional[list[str]] = None
+        self._ids: dict[tuple[SymbolClass, ...], list[str]] = {}
+        self._pumps_through: Optional[dict[str, list[str]]] = None  # node -> pumps whose discharge passes it
 
     # -- lookups -----------------------------------------------------------------
     def node(self, n: str) -> dict:
@@ -145,8 +198,21 @@ class RuleContext:
         out = ", ".join(self.name(n) for n in ns[:limit])
         return out + (f" (+{len(ns) - limit} more)" if len(ns) > limit else "")
 
+    def object_ids(self) -> list[str]:
+        """Object node ids in document order (computed once; a copy is returned)."""
+        if self._object_ids is None:
+            self._object_ids = object_ids(self.G)
+        return list(self._object_ids)
+
     def ids(self, *classes: SymbolClass) -> list[str]:
-        return [n for n in object_ids(self.G) if self.eff(n) in classes]
+        """Object ids whose effective class is one of ``classes``, in document order (cached)."""
+        found = self._ids.get(classes)
+        if found is None:
+            if self._object_ids is None:
+                self._object_ids = object_ids(self.G)
+            wanted = set(classes)
+            found = self._ids[classes] = [n for n in self._object_ids if self.eff(n) in wanted]
+        return list(found)
 
     def links(self, n: str, kinds: frozenset = PROCESS_KINDS) -> list[Link]:
         key = (n, kinds)
@@ -226,6 +292,21 @@ class RuleContext:
             self._passed[p] = {parent[0][0] for parent in res.parent.values() if parent} - {p}
         return self._passed[p]
 
+    def pumps_through(self) -> dict[str, list[str]]:
+        """Node -> the pumps (document order) whose discharge-branch search passes through it."""
+        if self._pumps_through is None:
+            idx: dict[str, list[str]] = defaultdict(list)
+            for q in self.ids(*PUMP_CLASSES):
+                for n in self.passed(q):
+                    idx[n].append(q)
+            self._pumps_through = dict(idx)
+        return self._pumps_through
+
+    def on_other_pump_branch(self, p: str, n: str) -> bool:
+        """True when ``n`` is passed by the discharge search of a pump other than ``p`` (``n`` lies on
+        a common header / another pump's branch)."""
+        return any(q != p for q in self.pumps_through().get(n, ()))
+
 
 # --------------------------------------------------------------------------- registry
 
@@ -277,9 +358,14 @@ def rule(rule_id: str, title: str, title_ko: str, severity: Severity, reference:
 def run_rules(doc: PIDDocument, G: Optional[nx.MultiGraph] = None, *, context: Optional[RuleContext] = None,
               rule_ids: Optional[Iterable[str]] = None) -> list[Finding]:
     """Run the registered rules (all, or ``rule_ids``) and return their findings with stable
-    ids ``<rule_id>:<n>``. A rule that raises yields one INSUFFICIENT_DATA finding."""
+    ids ``<rule_id>:<n>``. A rule that raises yields one INSUFFICIENT_DATA finding. When the
+    extractor skipped pages (scanned / empty, ``doc.meta["unreadable_pages"|"empty_pages"]``) and no
+    object was extracted at all, no rule passes or is "not applicable": every verdict but FAIL
+    becomes one INSUFFICIENT_DATA finding naming the skipped pages."""
     ctx = context or RuleContext(doc, G)
     selected = list(rule_ids) if rule_ids is not None else list(RULES)
+    sk = skipped_pages(doc.meta)
+    empty = not ctx.object_ids() and bool(sk["unreadable_pages"] or sk["empty_pages"])
     out: list[Finding] = []
     for rid in selected:
         r = RULES[rid]
@@ -289,6 +375,11 @@ def run_rules(doc: PIDDocument, G: Optional[nx.MultiGraph] = None, *, context: O
             log.exception("rule %s failed", rid)
             found = [r.make(V.INSUFFICIENT_DATA, f"Rule evaluation failed: {type(exc).__name__}: {exc}",
                             confidence=0.0)]
+        if empty and any(f.verdict != V.FAIL for f in found):
+            # the extractor skipped the pages (scanned / empty) and found nothing: "not applicable"
+            # or "passed" cannot be concluded from pages that were never read, and the reason for
+            # the missing data is the skipped pages (a FAIL, e.g. dangling pipe ends, is kept)
+            found = [f for f in found if f.verdict == V.FAIL] or [_nothing_extracted(ctx, r, "objects")]
         for k, f in enumerate(found, 1):
             out.append(f.model_copy(update={"id": f"{rid}:{k}"}))
     return out
@@ -452,10 +543,6 @@ def _discharge_nrv(ctx: RuleContext, p: str) -> _NrvCheck:
         return res
     res.side_known = any(lk.port in INLET_PORTS | OUTLET_PORTS for lk in lks)
     fwd = ctx.pump_forward(p)
-    common: set[str] = set()
-    for q in ctx.ids(*PUMP_CLASSES):
-        if q != p:
-            common |= ctx.passed(q)
     for n in fwd.by_node:
         if n == p or not ctx.is_obj(n) or ctx.eff(n) not in NRV_CLASSES:
             continue
@@ -465,7 +552,7 @@ def _discharge_nrv(ctx: RuleContext, p: str) -> _NrvCheck:
         nodes, _ = fwd.path(good[0])
         if any(ctx.is_obj(m) and ctx.eff(m) in NRV_CLASSES for m in nodes[1:-1]):
             continue  # report the nearest non-return valve(s) only
-        (res.shared if any(m in common for m in nodes[1:-1]) else res.ok).append(n)
+        (res.shared if any(ctx.on_other_pump_branch(p, m) for m in nodes[1:-1]) else res.ok).append(n)
     if not res.ok:
         # an NRV drawn backwards right on the pump's own line
         for lk in lks:
@@ -487,8 +574,10 @@ def _discharge_nrv(ctx: RuleContext, p: str) -> _NrvCheck:
 
 
 def _parallel_with(ctx: RuleContext, p: str) -> list[str]:
-    mine = ctx.passed(p)
-    return [q for q in ctx.ids(*PUMP_CLASSES) if q != p and mine & ctx.passed(q)]
+    """Pumps whose discharge branch shares a node with ``p``'s (document order)."""
+    through = ctx.pumps_through()
+    hit = {q for n in ctx.passed(p) for q in through.get(n, ()) if q != p}
+    return [q for q in ctx.ids(*PUMP_CLASSES) if q in hit]
 
 
 def _size_key(size: Optional[str]) -> Optional[tuple[int, str]]:
@@ -574,10 +663,6 @@ def _r_pd_relief(ctx: RuleContext, r: Rule) -> list[Finding]:
             out.append(r.make(V.INSUFFICIENT_DATA, f"{name} has no process connections.", [p], ctx.conf([p])))
             continue
         fwd = ctx.pump_forward(p)
-        common: set[str] = set()
-        for q in ctx.ids(*PUMP_CLASSES):
-            if q != p:
-                common |= ctx.passed(q)
         own, shared, reversed_ = [], [], []
         for n in fwd.by_node:
             if n == p or not ctx.is_obj(n) or ctx.eff(n) != S.SAFETY_VALVE:
@@ -587,7 +672,7 @@ def _r_pd_relief(ctx: RuleContext, r: Rule) -> list[Finding]:
                 reversed_.append(n)
                 continue
             nodes, _ = fwd.path(good[0])
-            (shared if any(m in common for m in nodes[1:-1]) else own).append(n)
+            (shared if any(ctx.on_other_pump_branch(p, m) for m in nodes[1:-1]) else own).append(n)
         if own:
             out.append(r.make(V.PASS, f"{name}: relief valve {ctx.names(own)} on the discharge side.", [p, *own],
                               ctx.conf([p, *own])))
@@ -751,7 +836,7 @@ def _r_bilge_nrv(ctx: RuleContext, r: Rule) -> list[Finding]:
         if ctx.has_system(ST.BILGE):
             return [_none_shown(ctx, r, ST.BILGE, "bilge well / suction")]
         return [r.na("No bilge suctions on this drawing.")]
-    nrvs = [n for n in object_ids(ctx.G) if ctx.eff(n) in NRV_CLASSES]
+    nrvs = [n for n in ctx.object_ids() if ctx.eff(n) in NRV_CLASSES]
     out = []
     for w in wells:
         name = ctx.name(w)
@@ -855,8 +940,8 @@ def _r_overboard(ctx: RuleContext, r: Rule) -> list[Finding]:
     obs = ctx.ids(S.OVERBOARD)
     if not obs:
         return [r.na("No overboard discharges on this drawing.")]
-    nrv = [n for n in object_ids(ctx.G) if _is_nrv_like(ctx, n)]
-    closing = [n for n in object_ids(ctx.G) if _is_closing_valve(ctx, n)]
+    nrv = [n for n in ctx.object_ids() if _is_nrv_like(ctx, n)]
+    closing = [n for n in ctx.object_ids() if _is_closing_valve(ctx, n)]
     out = []
     for ob in obs:
         name = ctx.name(ob)
@@ -914,7 +999,7 @@ def _r_strainer(ctx: RuleContext, r: Rule) -> list[Finding]:
     if not sources:
         return [r.na("No sea chests or bilge suctions on this drawing.")]
     pumps = ctx.ids(*PUMP_CLASSES)
-    strainers = [n for n in object_ids(ctx.G) if ctx.eff(n) in STRAINER_CLASSES]
+    strainers = [n for n in ctx.object_ids() if ctx.eff(n) in STRAINER_CLASSES]
     fed: dict[str, list[str]] = defaultdict(list)
     unstrained: dict[str, list[str]] = defaultdict(list)
     for s in sources:
@@ -1125,12 +1210,23 @@ def _r_pump_isolation(ctx: RuleContext, r: Rule) -> list[Finding]:
 # --------------------------------------------------------------------------- drawing quality
 
 
+def _nothing_extracted(ctx: RuleContext, r: Rule, what: str) -> Finding:
+    """INSUFFICIENT_DATA: the document has no ``what`` to check (nothing extracted, e.g. a scanned
+    page); never a vacuous PASS."""
+    note = skipped_pages_note(ctx.doc.meta)
+    return r.make(V.INSUFFICIENT_DATA, f"No {what} were extracted from this document; the check could not be "
+                                       f"evaluated." + (f" {note[0].upper()}{note[1:]}" if note else ""))
+
+
 @rule("DQ_UNCONNECTED_OBJECTS", "Objects without any pipe connection", "배관 연결이 없는 객체", Severity.WARNING,
       "Drawing quality", group="quality")
 def _q_unconnected(ctx: RuleContext, r: Rule) -> list[Finding]:
-    lonely = [n for n in object_ids(ctx.G) if not ctx.links(n, ALL_KINDS)]
+    objs = ctx.object_ids()
+    if not objs:
+        return [_nothing_extracted(ctx, r, "objects")]
+    lonely = [n for n in objs if not ctx.links(n, ALL_KINDS)]
     if not lonely:
-        return [r.make(V.PASS, f"All {len(object_ids(ctx.G))} objects are connected.")]
+        return [r.make(V.PASS, f"All {len(objs)} objects are connected.")]
     by_cat = Counter(_value(ctx.cat(n)) for n in lonely)
     detail = ", ".join(f"{k}: {v}" for k, v in sorted(by_cat.items()))
     return [r.make(V.FAIL, f"{len(lonely)} objects have no pipe or signal connection ({detail}): {ctx.names(lonely, 12)}.",
@@ -1140,11 +1236,15 @@ def _q_unconnected(ctx: RuleContext, r: Rule) -> list[Finding]:
 @rule("DQ_OPEN_INLINE_ITEMS", "Valves / fittings connected on one side only", "한쪽만 연결된 밸브·부속",
       Severity.INFO, "Drawing quality", group="quality")
 def _q_open_inline(ctx: RuleContext, r: Rule) -> list[Finding]:
-    items = [n for n in object_ids(ctx.G)
-             if ctx.cat(n) in (Category.VALVE, Category.FITTING) and ctx.eff(n) != S.SAFETY_VALVE
-             and len(ctx.links(n)) == 1]
+    if not ctx.object_ids():
+        return [_nothing_extracted(ctx, r, "objects")]
+    inline = [n for n in ctx.object_ids()
+              if ctx.cat(n) in (Category.VALVE, Category.FITTING) and ctx.eff(n) != S.SAFETY_VALVE]
+    if not inline:
+        return [r.na("No in-line valves or fittings on this drawing.")]
+    items = [n for n in inline if len(ctx.links(n)) == 1]
     if not items:
-        return [r.make(V.PASS, "Every in-line valve and fitting is connected on both sides.")]
+        return [r.make(V.PASS, f"All {len(inline)} in-line valves and fittings are connected on both sides.")]
     return [r.make(V.FAIL, f"{len(items)} valves/fittings have a single process connection (open end or missed "
                            f"connection): {ctx.names(items, 12)}.", items)]
 
@@ -1152,9 +1252,12 @@ def _q_open_inline(ctx: RuleContext, r: Rule) -> list[Finding]:
 @rule("DQ_DANGLING_PIPE_ENDS", "Pipe ends not connected to anything", "연결되지 않은 배관 끝단", Severity.WARNING,
       "Drawing quality", group="quality")
 def _q_dangling(ctx: RuleContext, r: Rule) -> list[Finding]:
+    if not ctx.doc.pipes:
+        return [_nothing_extracted(ctx, r, "pipe runs")]
     free = [n for n, d in ctx.G.nodes(data=True) if d.get("kind") == "free"]
     if not free:
-        return [r.make(V.PASS, f"All {ctx.G.number_of_edges()} pipe runs end at an object or a junction.")]
+        # (document pipe runs only: cross-sheet link edges are not pipes)
+        return [r.make(V.PASS, f"All {len(ctx.doc.pipes)} pipe runs end at an object or a junction.")]
     pipes = list(dict.fromkeys(ctx.G.nodes[n]["pipe_id"] for n in free))
     refs = sorted({ctx.G.nodes[n]["ref"] for n in free if ctx.G.nodes[n].get("ref")})
     extra = f" ({len(refs)} reference ids that do not exist: {', '.join(refs[:8])})" if refs else ""
@@ -1170,10 +1273,14 @@ def _norm_tag(t: str) -> str:
 
 @rule("DQ_DUPLICATE_TAGS", "Duplicate tags", "중복 태그", Severity.WARNING, "Drawing quality", group="quality")
 def _q_duplicates(ctx: RuleContext, r: Rule) -> list[Finding]:
+    if not ctx.object_ids():
+        return [_nothing_extracted(ctx, r, "objects")]
     by_tag: dict[str, list[str]] = defaultdict(list)
-    for n in object_ids(ctx.G):
+    for n in ctx.object_ids():
         if ctx.tag(n):
             by_tag[_norm_tag(ctx.tag(n))].append(n)
+    if not by_tag:
+        return [r.na("No object carries a tag on this drawing (missing tags: DQ_MISSING_TAGS).")]
     dups = {t: ns for t, ns in by_tag.items() if len(ns) > 1}
     if not dups:
         return [r.make(V.PASS, f"All {len(by_tag)} tags are unique.")]
@@ -1183,8 +1290,13 @@ def _q_duplicates(ctx: RuleContext, r: Rule) -> list[Finding]:
 @rule("DQ_MISSING_TAGS", "Equipment / valves / instruments without identification", "식별 태그 누락",
       Severity.INFO, "Drawing quality (ISA 5.1 / yard tagging practice)", group="quality")
 def _q_missing_tags(ctx: RuleContext, r: Rule) -> list[Finding]:
+    if not ctx.object_ids():
+        return [_nothing_extracted(ctx, r, "objects")]
+    taggable = [n for n in ctx.object_ids() if ctx.cat(n) in (Category.EQUIPMENT, Category.VALVE, Category.INSTRUMENT)]
+    if not taggable:
+        return [r.na("No equipment, valves or instruments on this drawing.")]
     missing: dict[str, list[str]] = defaultdict(list)
-    for n in object_ids(ctx.G):
+    for n in taggable:
         c = ctx.cat(n)
         if c == Category.EQUIPMENT and not ctx.tag(n) and not ctx.label(n):
             missing["equipment"].append(n)
