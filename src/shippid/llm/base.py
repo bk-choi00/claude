@@ -112,8 +112,14 @@ class LLMBackend(ABC):
         temperature: float = 0.2,
         top_p: float = 0.95,
         max_tokens: int = 4096,
+        thinking: Optional[bool] = None,
     ) -> LLMResponse:
-        """Run one chat completion. ``json_schema`` requests constrained JSON output."""
+        """Run one chat completion.
+
+        ``json_schema`` requests constrained JSON output (guided decoding); ``thinking``
+        toggles Gemma 4's thinking mode (None = server default). Backends must place
+        image parts before the text of the same message (Gemma training convention).
+        """
 
 
 def schema_for(model: Type[BaseModel]) -> dict[str, Any]:
@@ -148,6 +154,7 @@ class LLMClient:
         json_mode: str = "json_schema",
         cache_dir: Optional[str | Path] = None,
         max_attempts: int = 3,
+        schema_in_prompt: bool = True,
     ):
         self.backend = backend
         self.temperature = temperature
@@ -158,6 +165,9 @@ class LLMClient:
         if self.cache_dir:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.max_attempts = max_attempts
+        # Guided decoding constrains the output but the model never sees the schema
+        # (vLLM recipe note for Gemma 4), so field semantics also go into the prompt.
+        self.schema_in_prompt = schema_in_prompt
         self.usage = LLMUsage(backend=backend.name, model=backend.model)
         self._lock = threading.Lock()
 
@@ -167,8 +177,8 @@ class LLMClient:
         return self.backend.model
 
     def generate_text(self, messages: Sequence[Message], *, max_tokens: Optional[int] = None,
-                      temperature: Optional[float] = None) -> str:
-        resp = self._call(messages, None, "text", temperature, max_tokens)
+                      temperature: Optional[float] = None, thinking: Optional[bool] = None) -> str:
+        resp = self._call(messages, None, "text", temperature, max_tokens, thinking)
         return strip_thinking(resp.text).strip()
 
     def generate_json(
@@ -179,6 +189,7 @@ class LLMClient:
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         validator: Optional[Callable[[T], Optional[str]]] = None,
+        thinking: Optional[bool] = None,
     ) -> T:
         """Ask for an object matching ``output_model``; retries with error feedback.
 
@@ -186,13 +197,12 @@ class LLMClient:
         (e.g. unknown object ids); that also triggers a repair round.
         """
         schema = schema_for(output_model)
-        msgs = list(messages)
-        if self.json_mode != "json_schema":
-            msgs = _with_schema_instructions(msgs, schema)
+        describe = self.schema_in_prompt or self.json_mode != "json_schema"
+        msgs = _with_schema_instructions(list(messages), schema) if describe else list(messages)
         last_err = ""
         for attempt in range(1, self.max_attempts + 1):
             resp = self._call(msgs, schema if self.json_mode == "json_schema" else None,
-                              output_model.__name__, temperature, max_tokens)
+                              output_model.__name__, temperature, max_tokens, thinking)
             try:
                 data = extract_json(resp.text)
                 obj = output_model.model_validate(data)
@@ -210,15 +220,15 @@ class LLMClient:
                 Message("user", "Your previous answer was not valid. Problem:\n" + last_err +
                         "\nReturn ONLY the corrected JSON object that satisfies the schema."),
             ]
-            if self.json_mode != "json_schema":
+            if describe:
                 msgs = _with_schema_instructions(msgs, schema)
         raise LLMError(f"{output_model.__name__}: no valid output after {self.max_attempts} attempts: {last_err}")
 
     # -- internals ---------------------------------------------------------------
     def _cache_key(self, messages: Sequence[Message], schema: Optional[dict], temperature: float,
-                   max_tokens: int) -> str:
+                   max_tokens: int, thinking: Optional[bool]) -> str:
         h = hashlib.sha256()
-        h.update(json.dumps([self.backend.name, self.backend.model, temperature, max_tokens, schema],
+        h.update(json.dumps([self.backend.name, self.backend.model, temperature, max_tokens, schema, thinking],
                             sort_keys=True, default=str).encode())
         for m in messages:
             h.update(m.role.encode())
@@ -227,10 +237,11 @@ class LLMClient:
         return h.hexdigest()
 
     def _call(self, messages: Sequence[Message], schema: Optional[dict], schema_name: str,
-              temperature: Optional[float], max_tokens: Optional[int]) -> LLMResponse:
+              temperature: Optional[float], max_tokens: Optional[int],
+              thinking: Optional[bool] = None) -> LLMResponse:
         temperature = self.temperature if temperature is None else temperature
         max_tokens = max_tokens or self.max_tokens
-        key = self._cache_key(messages, schema, temperature, max_tokens) if self.cache_dir else None
+        key = self._cache_key(messages, schema, temperature, max_tokens, thinking) if self.cache_dir else None
         if key:
             f = self.cache_dir / f"{key}.json"
             if f.is_file():
@@ -239,7 +250,8 @@ class LLMClient:
                                    cached=True)
         t0 = time.time()
         resp = self.backend.complete(messages, json_schema=schema, schema_name=schema_name,
-                                     temperature=temperature, top_p=self.top_p, max_tokens=max_tokens)
+                                     temperature=temperature, top_p=self.top_p, max_tokens=max_tokens,
+                                     thinking=thinking)
         resp.seconds = resp.seconds or (time.time() - t0)
         with self._lock:
             self.usage.calls += 1
@@ -281,7 +293,7 @@ class MockBackend(LLMBackend):
         self.calls: list[tuple[list[Message], Optional[dict], str]] = []
 
     def complete(self, messages, *, json_schema=None, schema_name="output", temperature=0.2, top_p=0.95,
-                 max_tokens=4096) -> LLMResponse:
+                 max_tokens=4096, thinking=None) -> LLMResponse:
         self.calls.append((list(messages), json_schema, schema_name))
         out = self.responder(messages, json_schema, schema_name)
         text = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False)

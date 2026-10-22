@@ -360,9 +360,17 @@ class Severity(str, Enum):
     ERROR = "error"
 
 
+class Verdict(str, Enum):
+    PASS = "pass"
+    FAIL = "fail"
+    NOT_APPLICABLE = "not_applicable"
+    INSUFFICIENT_DATA = "insufficient_data"
+
+
 class Finding(_Base):
     id: str
     rule_id: str
+    verdict: Verdict = Verdict.FAIL
     severity: Severity
     title: str
     description: str

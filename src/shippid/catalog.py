@@ -65,19 +65,28 @@ def detect_system(text: str) -> Optional[SystemType]:
 
 
 # ISO 14726:2008 "Ships and marine technology - Identification colours for the content of
-# piping systems": main colour per medium (RGB 0-1 for rendering).
-MEDIUM_COLORS: dict[Medium, tuple[str, tuple[float, float, float]]] = {
-    Medium.FRESH_WATER: ("blue", (0.11, 0.36, 0.75)),
-    Medium.SEA_WATER: ("green", (0.13, 0.55, 0.25)),
-    Medium.BALLAST_WATER: ("green", (0.30, 0.66, 0.38)),
-    Medium.BILGE: ("black", (0.12, 0.12, 0.12)),
-    Medium.FUEL_OIL: ("brown", (0.47, 0.27, 0.11)),
-    Medium.LUBE_OIL: ("yellow", (0.93, 0.78, 0.12)),
-    Medium.COMPRESSED_AIR: ("light blue", (0.55, 0.78, 0.93)),
-    Medium.STEAM: ("silver grey", (0.70, 0.72, 0.75)),
-    Medium.FIRE_WATER: ("red", (0.80, 0.12, 0.12)),
-    Medium.UNKNOWN: ("grey", (0.55, 0.55, 0.55)),
+# piping systems". Main colours: RD fire fighting, SR steam, BK waste media (bilge),
+# OG oils other than fuel (lube/hydraulic), BN fuel, GN sea water (incl. ballast), BU fresh
+# water, GY non-flammable gases (compressed air), MN air/sounding pipes, YE flammable gases,
+# VT acids/alkalis, WH ventilation air. Marking = main / additional band / main.
+# Value: (main colour name, additional-colour code, RGB 0-1 used for rendering).
+MEDIUM_COLORS: dict[Medium, tuple[str, str, tuple[float, float, float]]] = {
+    Medium.FRESH_WATER: ("blue", "BU-VT-BU (cooling fresh water)", (0.11, 0.36, 0.75)),
+    Medium.SEA_WATER: ("green", "GN-YE-GN (cooling sea water)", (0.13, 0.55, 0.25)),
+    Medium.BALLAST_WATER: ("green", "GN-VT-GN (ballast water)", (0.36, 0.70, 0.40)),
+    Medium.BILGE: ("black", "BK-GN-BK (bilge water)", (0.15, 0.15, 0.15)),
+    Medium.FUEL_OIL: ("brown", "BN-BK-BN (heavy fuel oil)", (0.47, 0.27, 0.11)),
+    Medium.LUBE_OIL: ("orange", "OG (lubricating oil; sub-code yard specific)", (0.95, 0.55, 0.10)),
+    Medium.COMPRESSED_AIR: ("grey", "GY-OG-GY (low-pressure compressed air)", (0.62, 0.64, 0.66)),
+    Medium.STEAM: ("silver", "SR (steam)", (0.78, 0.80, 0.83)),
+    Medium.FIRE_WATER: ("red", "RD (fire fighting)", (0.80, 0.12, 0.12)),
+    Medium.UNKNOWN: ("grey", "-", (0.55, 0.55, 0.55)),
 }
+
+
+def medium_rgb(medium: Medium) -> tuple[float, float, float]:
+    return MEDIUM_COLORS.get(medium, MEDIUM_COLORS[Medium.UNKNOWN])[2]
+
 
 # ISA 5.1 first / succeeding letters most used on ship P&IDs
 ISA_FIRST_LETTER = {
@@ -188,7 +197,9 @@ TYPICAL_DIMENSIONS: dict[SymbolClass, tuple[float, float, float]] = {
 }
 
 # Engine-room deck levels above base line (metres) for a large ship (VLCC / large
-# container ship order of magnitude); used as defaults by the 3D planners.
+# container ship order of magnitude). HEURISTIC defaults (no primary source for yard deck
+# heights); tank top follows the SOLAS II-1/9 double-bottom height (B/20, max 2.0 m) plus the
+# usual raised engine-room double bottom. Override per ship in the 3D planner config.
 DEFAULT_DECKS: list[tuple[str, float]] = [
     ("tank_top", 2.5),
     ("floor", 4.5),

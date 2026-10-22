@@ -14,13 +14,15 @@ _THINK_PATTERNS = [
     re.compile(r"<\|channel\|?>thought.*?<channel\|>", re.S),
     re.compile(r"<\|think\|>.*?<\|/think\|>", re.S),
 ]
+# Gemma 4 turn / channel control tokens that occasionally leak into content
+_CONTROL_TOKENS = re.compile(r"<turn\|>|<\|turn>(?:model|user|system)?|<\|channel>|<channel\|>|<\|think\|>")
 _FENCE = re.compile(r"```(?:json|JSON)?\s*(.*?)```", re.S)
 
 
 def strip_thinking(text: str) -> str:
     for pat in _THINK_PATTERNS:
         text = pat.sub("", text)
-    return text
+    return _CONTROL_TOKENS.sub("", text)
 
 
 def _match_end(text: str, start: int) -> int:
