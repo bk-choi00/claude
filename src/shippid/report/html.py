@@ -18,6 +18,8 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
+from ..analysis.graph import object_labels
+from ..analysis.rules import RULES
 from ..catalog import MEDIUM_COLORS, SYSTEMS, medium_rgb
 from ..model import (
     AnalysisReport,
@@ -284,12 +286,6 @@ def _object_tip(o: Any, label: str) -> str:
     return "\n".join(lines)
 
 
-def _labels(doc: PIDDocument) -> dict[str, str]:
-    from ..analysis.graph import object_labels
-
-    return object_labels(doc)
-
-
 def _svg(doc: PIDDocument, page: int, w: float, h: float, image: Optional[bytes], labels: dict[str, str],
          node_names: dict[str, str]) -> str:
     fs = max(4.0, min(w, h) / 230.0)
@@ -478,15 +474,15 @@ def _legend(doc: PIDDocument) -> str:
 
 
 def write_html_report(report: AnalysisReport, out_html: str | Path, pdf_path: Optional[str | Path] = None,
-                      viewer_href: Optional[str] = None, layout: Optional[Layout3D] = None, *,
+                      viewer_href: Optional[str] = None, layout: Optional[Layout3D | dict] = None, *,
                       max_image_px: int = 3000) -> Path:
     """Write the self-contained HTML report and return its path."""
-    from ..analysis.rules import RULES
-
+    if isinstance(layout, dict):
+        layout = Layout3D.model_validate(layout)
     out_html = Path(out_html)
     out_html.parent.mkdir(parents=True, exist_ok=True)
     doc = report.document
-    labels = _labels(doc)
+    labels = object_labels(doc)
     node_names: dict[str, str] = {}
     for o in doc.objects:
         lab = labels.get(o.id)

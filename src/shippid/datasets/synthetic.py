@@ -30,7 +30,7 @@ from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import Iterable, Optional, Sequence
 
-from ..catalog import SYSTEMS, medium_rgb
+from ..catalog import medium_rgb
 from ..model import (
     ActuatorType,
     BBox,
@@ -53,8 +53,8 @@ from ..model import (
 from ..symbols import Placement, get_symbol, placed_bbox
 from .blueprints import Branch, Item, SystemTopology, Tap, Train, build_topology
 from .pdf_writer import CircleDraw, DrawingSpec, PathDraw, SymbolDraw, TextDraw
-from .sheet import PAPER_ORDER, PAPERS, Sheet, SheetStyle, build_sheet
-from .text import BOLD_FONTS, font_metrics, line_height, origin_for_box, text_bbox, text_width
+from .sheet import PAPER_ORDER, Sheet, SheetStyle, build_sheet
+from .text import font_metrics, line_height, origin_for_box, text_bbox, text_width
 
 S = SymbolClass
 A = ActuatorType
@@ -63,6 +63,7 @@ Rect = tuple[float, float, float, float]
 
 ALL_SYSTEMS: tuple[SystemType, ...] = tuple(s for s in SystemType if s != SystemType.UNKNOWN)
 MAX_ATTEMPTS = 8
+MIN_SCALE, MAX_SCALE = 14.0, 24.0  # symbol scale range (points per symbol unit)
 
 
 class LayoutError(RuntimeError):
@@ -101,6 +102,8 @@ class DrawingStyle:
     valve_mirror: float = 0.0  # probability that a valve is drawn with its actuator below the pipe
     flow_arrows: bool = False
     spacing: float = 1.0  # base spacing multiplier
+    split_pipes: bool = False  # one PDF path per straight segment instead of one polyline per pipe
+    interleave: bool = False  # graphics emitted in mixed order instead of pipes-then-symbols
     paper: Optional[str] = None  # force "A1" | "A2" | "A3"; default: smallest sheet that fits
 
 
@@ -110,7 +113,7 @@ LAYER_SETS = (("PIPE", "SYMBOL", "TEXT", "FRAME"), ("M-PIPE", "M-SYMB", "M-TEXT"
 
 def random_style(rng: random.Random) -> DrawingStyle:
     """Random drawing style so the extractor cannot overfit one CAD look."""
-    s = rng.uniform(14.0, 24.0)
+    s = rng.uniform(MIN_SCALE, MAX_SCALE)
     k = (s / 18.0) ** 0.5
     pw = rng.uniform(0.7, 1.6)
     return DrawingStyle(
@@ -141,6 +144,8 @@ def random_style(rng: random.Random) -> DrawingStyle:
         valve_mirror=rng.choice([0.0, 0.0, 0.08]),
         flow_arrows=rng.random() < 0.5,
         spacing=rng.uniform(0.9, 1.25),
+        split_pipes=rng.random() < 0.3,
+        interleave=rng.random() < 0.3,
     )
 
 
@@ -237,8 +242,13 @@ class _Obj:
         return get_symbol(self.item.cls)
 
     def bbox(self) -> Rect:
+        cached = self.__dict__.get("_bb")
+        if cached is not None and cached[0] is self.pl:
+            return cached[1]
         act = self.item.actuator if self.spec.category == Category.VALVE else A.NONE
-        return placed_bbox(self.spec, self.pl, act)
+        bb = placed_bbox(self.spec, self.pl, act)
+        self.__dict__["_bb"] = (self.pl, bb)
+        return bb
 
 
 @dataclass
@@ -418,27 +428,19 @@ class _Gen:
         self.rng = rng
         self.seed = seed
         self.font = style.font
-        self.bold = BOLD_FONTS.get(style.font, "hebo")
-        self.code = topo.code
-        self.medium = topo.medium
         self._gap_cache: dict[str, list[float]] = {}
         self._tpl_cache: dict[str, dict[str, float]] = {}
         self._mirror: dict[str, bool] = {}
-        self._stage_of: dict[str, int] = {}
-        for k, stg in enumerate(topo.stages):
-            for tr in stg.trains:
-                self._stage_of[tr.key] = k
         self.stage_index = {id(stg): k for k, stg in enumerate(topo.stages)}
         self.drain_stages = {self.stage_index[id(d.stage)] for d in topo.drains if id(d.stage) in self.stage_index}
         sizes = topo.sizes or {"main": 100}
-        sample = topo.namer.line_style.format(size=max(sizes.values()), c=self.code, n=999, spec=topo.namer.spec)
+        sample = topo.namer.line_style.format(size=max(sizes.values()), c=topo.code, n=999, spec=topo.namer.spec)
         self.slot = text_width(sample, self.font, style.lineno_size) + 10.0
         self.ret_targets = {r.target for r in topo.returns}
         self.side_ports: dict[str, list[str]] = {}
         for sl in topo.side_links:
             self.side_ports.setdefault(sl.item, []).append(sl.port)
         self.set_scale(style.scale)
-        self.lh_tag = line_height(self.font, style.tag_size)
         self.lh_label = line_height(self.font, style.label_size)
         self.fanout_stage = self._fanout_stage()
 
@@ -921,9 +923,7 @@ class _Gen:
                     p = (p[0], y0 + (y1 - y0) * (0.25 if q[1] > p[1] else 0.75))
                 else:
                     p = (x0 + (x1 - x0) * (0.25 if q[0] > p[0] else 0.75), p[1])
-        if o.item.cls == S.AIR_RECEIVER and n[0] == 0:
-            pass  # top / bottom of the capsule: centre is on the outline
-        elif o.item.cls == S.AIR_RECEIVER:
+        if o.item.cls == S.AIR_RECEIVER and n[0] != 0:  # capsule: only the straight sides are vertical
             p = (p[0], (y0 + y1) / 2)
         it = at.obj
         po = net.bport(o.key, p, n)
@@ -1131,19 +1131,12 @@ class _Gen:
         return best
 
     def _headers(self, scene: "_Scene", k: int, xh: float, fu: float) -> dict[int, float]:
-        """Header x per group between stage k and k+1 (separate columns for overlapping groups)."""
-        hdr: dict[int, float] = {}
+        """Header x per group between stage k and k+1. Each group gets its own column, so headers of
+        groups whose vertical spans overlap never share a line (their pipes cross instead)."""
         ends = [e for e in scene.ends if e[0] == k and not e[1].end_return]
         groups = sorted({e[1].group for e in ends} | {t.group for t in self.topo.stages[k + 1].trains
                                                        if t.source is None})
-        spans = []
-        for g in groups:
-            ysg = [e[3][1] for e in ends if e[1].group == g]
-            spans.append((g, ysg))
-        x = xh
-        for g, ysg in spans:
-            hdr[g] = x
-            x += 0.8 * self.s * fu
+        hdr = {g: xh + i * 0.8 * self.s * fu for i, g in enumerate(groups)}
         scene.headers[k] = hdr
         return hdr
 
@@ -1224,10 +1217,10 @@ class _Gen:
                     chosen = (paper, pick)
                     break
             if chosen is None:
-                if scale <= 13.0:
+                if scale <= MIN_SCALE:
                     w, h = options[-1][1]
                     raise LayoutError(f"drawing does not fit A1 ({w:.0f} x {h:.0f})")
-                scale = max(13.0, scale * 0.88)
+                scale = max(MIN_SCALE, scale * 0.88)
         paper, (_, split, bw, bh) = chosen
         if not st.paper and paper != "A1" and self.rng.random() < 0.15:
             paper = PAPER_ORDER[PAPER_ORDER.index(paper) + 1]
@@ -2229,10 +2222,16 @@ def _generate(topo: SystemTopology, st: DrawingStyle, rng: random.Random, seed: 
     crossings = _crossings(run_pts, runs)
     for _, _, _, _, p in crossings:
         idx.add(_expand((p[0], p[1], p[0], p[1]), st.hop_radius + 1.5), ("hop", 0))
+    dot_r = max(1.1, 1.5 * st.pipe_width)
+    for r in runs:
+        for n in (r.nodes[0], r.nodes[-1]):
+            if n not in net.port_of:
+                x, y = net.pos[n]
+                idx.add((x - dot_r - 0.5, y - dot_r - 0.5, x + dot_r + 0.5, y + dot_r + 0.5), ("dot", 0))
     fin.inside_texts(idx)
     tag_drawn = fin.object_labels(idx)
     drawn_lines = fin.line_numbers(idx, runs, run_pts, numbers)
-    _check_texts(fin, sheet)
+    _check_texts(fin)
 
     # ---- ground truth
     page_w, page_h = sheet.width, sheet.height
@@ -2341,18 +2340,23 @@ def _generate(topo: SystemTopology, st: DrawingStyle, rng: random.Random, seed: 
         yi, yj = (hi, hj) if st.hop_on == "h" else (vi, vj)
         cuts.setdefault(yi, {}).setdefault(yj, []).append(p)
     pipe_layer = lay[0] if lay else None
+    n_sheet_paths = len(spec.paths)
     for i, r in enumerate(runs):
         pts = run_pts[i]
         color = (0.0, 0.0, 0.0)
         if st.color_pipes and r.kind != PipeKind.SIGNAL:
             color = medium_rgb(pipes[i].medium)
-        spec.paths.append(PathDraw(_pipe_segs(pts, cuts.get(i, {}), st), width=fin._pipe_width(r), color=color,
-                                   dashes=st.signal_dashes if r.kind == PipeKind.SIGNAL else None, layer=pipe_layer))
+        segs = _pipe_segs(pts, cuts.get(i, {}), st)
+        kw = dict(width=fin._pipe_width(r), color=color,
+                  dashes=st.signal_dashes if r.kind == PipeKind.SIGNAL else None, layer=pipe_layer)
+        if st.split_pipes and r.kind != PipeKind.SIGNAL:
+            spec.paths.extend(PathDraw([sg], **kw) for sg in segs)
+        else:
+            spec.paths.append(PathDraw(segs, **kw))
     if st.junction_dots:
         for j in junctions:
             if j.dotted:
-                rad = max(1.1, 1.5 * st.pipe_width)
-                spec.circles.append(CircleDraw(j.position.x, j.position.y, rad, width=0.3, layer=pipe_layer))
+                spec.circles.append(CircleDraw(j.position.x, j.position.y, dot_r, width=0.3, layer=pipe_layer))
     if st.flow_arrows:
         spec.paths.extend(_flow_arrows(fin, runs, run_pts, idx, pipe_layer))
     sym_layer = lay[1] if lay else None
@@ -2360,6 +2364,13 @@ def _generate(topo: SystemTopology, st: DrawingStyle, rng: random.Random, seed: 
         act = o.item.actuator if o.spec.category == Category.VALVE else A.NONE
         spec.symbols.append(SymbolDraw(o.item.cls, o.pl, act, width=st.symbol_width, layer=sym_layer))
     spec.texts = draw_texts
+    if st.interleave:  # sheet furniture first, then the drawing graphics in a seeded random order
+        items = ([("path", i) for i in range(n_sheet_paths, len(spec.paths))]
+                 + [("symbol", i) for i in range(len(sheet.symbols), len(spec.symbols))]
+                 + [("circle", i) for i in range(len(spec.circles))])
+        random.Random(f"{seed}:order").shuffle(items)
+        spec.order = ([("path", i) for i in range(n_sheet_paths)] + [("symbol", i) for i in range(len(sheet.symbols))]
+                      + items)
     return doc, spec
 
 
@@ -2420,8 +2431,11 @@ def _check_pipes(net: _Net, runs: list[_Run], run_pts: list[list[Pt]], s: float)
         idx.add(_expand(o.bbox(), -0.4), k)
     H, V = [], []
     for i, pts in enumerate(run_pts):
+        # a pipe may enter the outline of the symbols it connects to (e.g. the plates of a spectacle
+        # flange sit inside the bbox of its ball), never any other symbol
+        own = tuple(net.port_of[n][0] for n in (runs[i].nodes[0], runs[i].nodes[-1]) if n in net.port_of)
         for a, b in zip(pts, pts[1:]):
-            for hit in idx.hits(_seg_rect(a, b, 0.0)):
+            for hit in idx.hits(_seg_rect(a, b, 0.0), ignore=own):
                 raise LayoutError(f"pipe {i} passes through symbol {idx.tags[hit]}")
             if abs(a[1] - b[1]) < 1e-9:
                 H.append((a[1], min(a[0], b[0]), max(a[0], b[0]), i))
@@ -2460,7 +2474,7 @@ def _check_pipes(net: _Net, runs: list[_Run], run_pts: list[list[Pt]], s: float)
                     raise LayoutError("pipe passes through a junction / port")
 
 
-def _check_texts(fin: _Finisher, sheet: Sheet) -> None:
+def _check_texts(fin: _Finisher) -> None:
     idx = _Index(48.0)
     for i, t in enumerate(fin.texts):
         for j in idx.hits(_expand(t.bbox, 0.2)):

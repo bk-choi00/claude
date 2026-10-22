@@ -401,7 +401,7 @@ def random_sheet(seed: int, n_rows: int = 4, width: float = 1684.0, height: floa
             spec = get_symbol(cls)
             mir = rng.random() < 0.3 and act != A.NONE
             tag = f"{code}-V{next(cnt.valve):03d}" if spec.category == Category.VALVE and rng.random() < 0.8 else None
-            sc = u * (st.eq_scale if spec.category == Category.EQUIPMENT else 1.0)
+            sc = u * (st.eq_scale if spec.category == Category.EQUIPMENT and not spec.stretchable else 1.0)
             half = (spec.extent[2] - spec.extent[0]) * sc / 2
             if cls == S.HEATER:
                 half = 0.7 * sc
@@ -435,8 +435,9 @@ def random_sheet(seed: int, n_rows: int = 4, width: float = 1684.0, height: floa
             prev_inline = True
             x = p_out[0] + rng.uniform(1.6, 3.2) * u
             # an instrument tap on the pipe after this element
-            if rng.random() < 0.25 and spec.category != Category.FITTING:
-                tx = cur_pt[0] + 1.0 * u
+            tx = cur_pt[0] + 1.0 * u
+            clear = cross is None or abs(tx - cross[0]) > 3.0 * u  # keep the crossing column free
+            if rng.random() < 0.25 and spec.category != Category.FITTING and clear:
                 j = sh.junction(tx, y, dot=False)
                 bub = _bubble(sh, rng, tx, y - 2.6 * u, cnt)
                 sh.line([(tx, y), (tx, y - 2.6 * u + 0.4 * u)], width=st.pipe_width * 0.7)
@@ -497,7 +498,7 @@ def random_sheet(seed: int, n_rows: int = 4, width: float = 1684.0, height: floa
             sh.crossing_line(((xx, y0), (xx, ymid)), (xx, rows_y[0]), horizontal=False)
             sh.edges.append((("o", a.key), ("o", b.key)))
         sh.text(xx + 0.6 * u, y0 - 0.8 * u, "TO SLUDGE TK", TextRole.CONNECTOR, a.key)
-        a.tag = "TO SLUDGE TK"
+        a.name = "TO SLUDGE TK"
 
     if st.vertical:
         vx = max(row_right + 6 * u, width * 0.62)
@@ -515,7 +516,7 @@ def random_sheet(seed: int, n_rows: int = 4, width: float = 1684.0, height: floa
     sh.line([cv.ports["out"], snk.ports["in"]])
     sh.edges.append((("o", cv.key), ("o", snk.key)))
     sh.text(cx + 12 * u - 0.6 * u, cy + 0.2 * u, "TO F.O. SYS", TextRole.CONNECTOR, snk.key, size=st.font * 0.8)
-    snk.tag = "TO F.O. SYS"
+    snk.name = "TO F.O. SYS"
     tt = sh.symbol(S.INSTRUMENT_SHARED, cx + 6 * u, cy - 4 * u)
     f = st.font * 0.9
     sh.text(cx + 6 * u - 0.3 * f * 3, cy - 4 * u - 0.15 * u, "TIC", TextRole.INSTRUMENT, tt.key, size=f)
@@ -633,7 +634,7 @@ def _place_endpoint(sh: Sheet, rng: random.Random, cls: SymbolClass, x: float, y
         txt = "FROM SEA" if side == "src" else "TO BILGE"
         f = sh.style.font * 0.75
         sh.text(o.bbox[0] + 0.15 * u + (0.25 * u if side == "src" else 0), y + 0.3 * f, txt, TextRole.CONNECTOR, o.key, size=f)
-        o.tag = txt
+        o.name = txt
         return o
     if cls == S.AIR_RECEIVER:
         o = sh.symbol(cls, x + 0.4 * u, y, stretch=(1.0, 1.0))

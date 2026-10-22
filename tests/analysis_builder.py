@@ -109,6 +109,9 @@ class DocBuilder:
             return (j.position.x, j.position.y), Endpoint(junction_id=nid)
         o = self._o(nid)
         names = {p.name: p for p in o.ports}
+        if port is None and default_port == "@nearest" and names:
+            port = min(names, key=lambda n: (names[n].position.x - other_xy[0]) ** 2 +
+                       (names[n].position.y - other_xy[1]) ** 2)
         port = port or (default_port if default_port in names else None)
         if port in names:
             p = names[port].position
@@ -142,8 +145,10 @@ class DocBuilder:
              send_port: bool = True, a_xy: Optional[tuple[float, float]] = None,
              b_xy: Optional[tuple[float, float]] = None, page: int = 0) -> str:
         ca, cb = self._center(a, a_xy), self._center(b, b_xy)
-        pa, ea = self._point(a, cb, self._default(a, True), a_xy)
-        pb, eb = self._point(b, ca, self._default(b, False), b_xy)
+        da = self._default(a, True) if send_port else "@nearest"
+        db = self._default(b, False) if send_port else "@nearest"
+        pa, ea = self._point(a, cb, da, a_xy)
+        pb, eb = self._point(b, ca, db, b_xy)
         if not send_port:
             ea = Endpoint(object_id=ea.object_id, junction_id=ea.junction_id)
             eb = Endpoint(object_id=eb.object_id, junction_id=eb.junction_id)

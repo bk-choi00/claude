@@ -96,6 +96,8 @@ class DrawingSpec:
     texts: list[TextDraw] = field(default_factory=list)
     metadata: dict[str, str] = field(default_factory=dict)  # standard PDF info keys only
     style: Any = None  # synthetic.DrawingStyle (kept for previews / statistics)
+    # optional drawing order of graphics: ("path" | "symbol" | "circle", index); texts always follow
+    order: Optional[list[tuple[str, int]]] = None
 
 
 _INFO_KEYS = ("title", "author", "subject", "keywords", "creator", "producer")
@@ -111,7 +113,8 @@ def render(spec: DrawingSpec) -> pymupdf.Document:
         return ocg.get(layer, 0) if layer else 0
 
     shape = page.new_shape()
-    for p in spec.paths:
+
+    def path(p: PathDraw) -> None:
         for s in p.segs:
             if s[0] == "l":
                 shape.draw_line((s[1], s[2]), (s[3], s[4]))
@@ -119,12 +122,26 @@ def render(spec: DrawingSpec) -> pymupdf.Document:
                 shape.draw_bezier((s[1], s[2]), (s[3], s[4]), (s[5], s[6]), (s[7], s[8]))
         shape.finish(width=p.width, color=p.color, fill=p.fill, dashes=p.dashes, closePath=p.closed,
                      oc=oc(p.layer))
-    for sd in spec.symbols:
+
+    def symbol(sd: SymbolDraw) -> None:
         draw_symbol(shape, get_symbol(sd.cls), sd.placement, sd.actuator, width=sd.width, color=sd.color,
                     oc=oc(sd.layer))
-    for c in spec.circles:
+
+    def circle(c: CircleDraw) -> None:
         shape.draw_circle((c.x, c.y), c.r)
         shape.finish(width=c.width, color=c.color, fill=c.fill, oc=oc(c.layer))
+
+    order = spec.order
+    if order is None:
+        order = ([("path", i) for i in range(len(spec.paths))] + [("symbol", i) for i in range(len(spec.symbols))]
+                 + [("circle", i) for i in range(len(spec.circles))])
+    for kind, i in order:
+        if kind == "path":
+            path(spec.paths[i])
+        elif kind == "symbol":
+            symbol(spec.symbols[i])
+        else:
+            circle(spec.circles[i])
     for t in spec.texts:
         shape.insert_text((t.x, t.y), t.text, fontsize=t.size, fontname=t.font, rotate=t.rotate, color=t.color,
                           oc=oc(t.layer))

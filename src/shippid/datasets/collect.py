@@ -28,7 +28,7 @@ import logging
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 from urllib.parse import unquote, urlparse
 
 import httpx

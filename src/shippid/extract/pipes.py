@@ -208,7 +208,12 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2) -> S
     for i, j in ps.pairs_within(core, touch):
         if prim_distance(prims[i], prims[j]) <= touch:
             dsu.union(i, j)
-    core_boxes = [bbox_union(prims[m].bbox for m in g) for g in dsu.groups(core).values()]
+    core_boxes = []
+    for g in dsu.groups(core).values():
+        bb = bbox_union(prims[m].bbox for m in g)
+        if all(prims[m].filled for m in g) and max(bb[2] - bb[0], bb[3] - bb[1]) <= 0.35 * unit:
+            continue  # junction dots and arrow heads are not symbol bodies
+        core_boxes.append(bb)
     core_tree = shapely.STRtree([shapely.box(*b) for b in core_boxes]) if core_boxes else None
 
     def inside_core(x: float, y: float) -> bool:
@@ -307,26 +312,30 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2) -> S
         if (m.dashed and L >= 0.6 * unit) or (not m.dashed and L >= seed_units * unit):
             m.pipe = True
 
-    # ---- extensions (fixed point)
+    # ---- extensions (fixed point): short lines continuing a pipe, outside symbol bodies
+    line_tree = shapely.STRtree([shapely.box(*m.bbox).buffer(touch) for m in lines]) if lines else None
+
     def touching_pipe(x: float, y: float, me: MLine) -> bool:
-        for o in lines:
-            if o.pipe and o is not me and o.dashed == me.dashed:
-                b = o.bbox
-                if b[0] - touch <= x <= b[2] + touch and b[1] - touch <= y <= b[3] + touch and o.dist(x, y) <= touch:
-                    return True
+        if line_tree is None:
+            return False
+        for k in line_tree.query(shapely.Point(x, y)).tolist():
+            o = lines[k]
+            if o.pipe and o is not me and o.dashed == me.dashed and o.dist(x, y) <= touch:
+                return True
         return False
 
+    pending = [m for m in lines if not m.pipe]
     changed = True
-    while changed:
+    while changed and pending:
         changed = False
-        for m in lines:
-            if m.pipe:
-                continue
-            for x, y in m.endpoints():
-                if not inside_core(x, y) and touching_pipe(x, y, m):
-                    m.pipe = True
-                    changed = True
-                    break
+        rest = []
+        for m in pending:
+            if any(not inside_core(x, y) and touching_pipe(x, y, m) for x, y in m.endpoints()):
+                m.pipe = True
+                changed = True
+            else:
+                rest.append(m)
+        pending = rest
 
     # ---- stubs between two symbol outlines
     others = [i for i in work if prims[i].role in ("", "inner")]
@@ -425,11 +434,13 @@ def separate(ps: PrimSet, unit: float, tol: float, seed_units: float = 1.2) -> S
             continue
         bb = ring.bbox
         size = max(bb[2] - bb[0], bb[3] - bb[1])
-        if size > 0.6 * unit:
+        if size > 0.9 * unit:
             continue
         pts = ring.pts
         sides = [math.dist(pts[i], pts[(i + 1) % 3]) for i in range(3)]
-        k = int(np.argmin(sides))  # base = shortest side for a slim arrow; apex opposite
+        k = int(np.argmin(sides))  # base = shortest side of a slim arrow head; apex opposite
+        if sorted(sides)[1] < 1.4 * sides[k]:
+            continue  # not pointed enough to be an arrow head
         base_mid = ((pts[k][0] + pts[(k + 1) % 3][0]) / 2, (pts[k][1] + pts[(k + 1) % 3][1]) / 2)
         apex = pts[(k + 2) % 3]
         dx, dy = apex[0] - base_mid[0], apex[1] - base_mid[1]

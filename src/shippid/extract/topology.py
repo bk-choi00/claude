@@ -302,17 +302,19 @@ def build_network(lines: Sequence[MLine], bodies: Sequence[Body], dots: Sequence
         ids = live_pieces(dashed)
         if not ids:
             continue
-        geoms = [shapely.LineString([(pieces[i].x0, pieces[i].y0), (pieces[i].x1, pieces[i].y1)]) for i in ids]
-        tree = shapely.STRtree(geoms)
+        tree = shapely.STRtree([shapely.LineString([(pieces[i].x0, pieces[i].y0), (pieces[i].x1, pieces[i].y1)]) for i in ids])
+        n_indexed = len(pieces)
         for n in list(nodes):
             if not n.ends or n.body is not None or pieces[n.ends[0][0]].dashed != dashed:
                 continue
             own = {i for i, _ in n.ends}
+            probe = shapely.Point(n.x, n.y).buffer(tee_tol)
+            # pieces created by earlier splits are not in the tree: check them directly
+            cand = [ids[k] for k in tree.query(probe).tolist()] + list(range(n_indexed, len(pieces)))
             best = None
-            for k in tree.query(shapely.Point(n.x, n.y).buffer(tee_tol)).tolist():
-                i = ids[k]
+            for i in cand:
                 p = pieces[i]
-                if i in own or not p.alive:
+                if i in own or not p.alive or p.dashed != dashed:
                     continue
                 d = point_seg_dist(n.x, n.y, p.x0, p.y0, p.x1, p.y1)
                 if d > tee_tol:
@@ -328,10 +330,11 @@ def build_network(lines: Sequence[MLine], bodies: Sequence[Body], dots: Sequence
                 x, y = pieces[i].point(t)
                 n.x, n.y = x, y
                 split_piece(i, t, n)
-                # the split may have created new pieces: refresh the tree lazily
+            if len(pieces) - n_indexed > 64:  # keep the linear tail short
                 ids = live_pieces(dashed)
-                geoms = [shapely.LineString([(pieces[j].x0, pieces[j].y0), (pieces[j].x1, pieces[j].y1)]) for j in ids]
-                tree = shapely.STRtree(geoms)
+                tree = shapely.STRtree([shapely.LineString([(pieces[j].x0, pieces[j].y0), (pieces[j].x1, pieces[j].y1)])
+                                        for j in ids])
+                n_indexed = len(pieces)
 
     # ---- 6. classify nodes
     junctions: list[Junc] = []

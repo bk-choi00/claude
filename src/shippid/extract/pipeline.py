@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -100,11 +101,20 @@ class Detection:
 # --------------------------------------------------------------------------- classification
 
 
-def _shape_for(ps: PrimSet, prim_ids: Sequence[int]) -> CandidateShape:
+def _rings_of(ps: PrimSet, prim_ids: Sequence[int]) -> list:
+    """Rings all of whose primitives are among ``prim_ids``."""
     ids = set(prim_ids)
-    prims = [ps.prims[i] for i in prim_ids]
-    rings = [r for r in ps.rings.values() if r.prim_ids and all(i in ids for i in r.prim_ids)]
-    return candidate_shape(prims, rings)
+    rids = {ps.prims[i].ring for i in prim_ids if ps.prims[i].ring >= 0}
+    out = []
+    for rid in sorted(rids):
+        r = ps.rings.get(rid)
+        if r is not None and r.prim_ids and all(i in ids for i in r.prim_ids):
+            out.append(r)
+    return out
+
+
+def _shape_for(ps: PrimSet, prim_ids: Sequence[int]) -> CandidateShape:
+    return candidate_shape([ps.prims[i] for i in prim_ids], _rings_of(ps, prim_ids))
 
 
 def _detect(ps: PrimSet, prim_ids: list[int], lib: TemplateLibrary, unit: float, cache: MatchCache) -> Detection:
@@ -186,63 +196,123 @@ def _try_split(ps: PrimSet, c: Candidate, whole: Detection, lib, unit, cache, ac
 
 def _decompose(ps: PrimSet, whole: Detection, lib, unit, cache, accept) -> Optional[list[Detection]]:
     """Symbols bolted flange-to-flange form one touching candidate. Try cuts across
-    the candidate's main axis (never through a closed outline, which stays whole)
-    and keep a split when the point-weighted match score improves."""
-    import shapely
+    the candidate at the boundaries of its closed outlines (never through one),
+    rank the partitions by coarse score and keep the best split when the
+    point-weighted fine score improves."""
+    from .symbols_match import coarse_scores
 
     prims = ps.prims
-    ids = set(whole.prim_ids)
-    atoms: list[tuple[list[int], tuple[float, float, float, float], bool]] = []  # (prim ids, bbox, closed outline)
+    atoms: list[tuple[list[int], tuple[float, float, float, float], bool]] = []  # (prim ids, bbox, solid)
     in_ring: set[int] = set()
-    for ring in ps.rings.values():
-        if ring.prim_ids and all(i in ids for i in ring.prim_ids):
-            atoms.append((list(ring.prim_ids), ring.bbox, not ring.filled))
-            in_ring.update(ring.prim_ids)
+    for ring in _rings_of(ps, whole.prim_ids):
+        if ring.prim_ids[0] in in_ring:
+            continue
+        atoms.append((list(ring.prim_ids), ring.bbox, True))
+        in_ring.update(ring.prim_ids)
     for i in whole.prim_ids:
         if i not in in_ring:
             p = prims[i]
             atoms.append(([i], p.bbox, p.kind == "circle" and not p.filled and p.r >= 0.12 * unit))
+    # strokes well inside a closed outline can never be cut away from it: merge them in
+    m = 0.06 * unit
+    solid_idx = [k for k, a in enumerate(atoms) if a[2]]
+    merged: list[tuple[list[int], tuple[float, float, float, float], bool]] = []
+    absorbed: set[int] = set()
+    for k, a in enumerate(atoms):
+        if a[2]:
+            continue
+        cx, cy = (a[1][0] + a[1][2]) / 2, (a[1][1] + a[1][3]) / 2
+        for s_ in solid_idx:
+            b = atoms[s_][1]
+            if b[0] + m < cx < b[2] - m and b[1] + m < cy < b[3] - m:
+                atoms[s_][0].extend(a[0])
+                absorbed.add(k)
+                break
+    merged = [a for k, a in enumerate(atoms) if k not in absorbed]
+    atoms = merged
     if len(atoms) < 2 or len(atoms) > 80:
         return None
-    bb = whole.shape.bbox
 
     def score(d: Detection) -> float:
         return d.best.score if d.best else 0.0
 
-    def split_group(group: list[int], current: Detection, depth: int) -> list[Detection]:
-        if len(group) < 2 or depth > 3:
-            return [current]
-        best = None
-        tried: set[tuple] = set()
+    coarse_memo: dict[tuple[int, ...], tuple[float, float]] = {}
+
+    def coarse(group: list[int]) -> tuple[float, float]:
+        key = tuple(sorted(group))
+        if key not in coarse_memo:
+            cs = _shape_for(ps, [i for a in group for i in atoms[a][0]])
+            sc, _, _ = coarse_scores(lib, cs, unit)
+            coarse_memo[key] = (float(sc.max()) if len(sc) else 0.0, float(len(cs.pts)))
+        return coarse_memo[key]
+
+    def partitions(group: list[int], axis: int) -> list[tuple[list[int], list[int]]]:
+        centre = {a: (atoms[a][1][axis] + atoms[a][1][axis + 2]) / 2 for a in group}
         solid = [atoms[a][1] for a in group if atoms[a][2]]
-        splits = []
-        for axis in (0, 1):
-            centre = {a: (atoms[a][1][axis] + atoms[a][1][axis + 2]) / 2 for a in group}
-            cuts = sorted({v for a in group for v in (atoms[a][1][axis], atoms[a][1][axis + 2], centre[a])})
-            eps = 0.02 * unit
-            for c in cuts:
-                if any(b[axis] + 0.05 * unit < c < b[axis + 2] - 0.05 * unit for b in solid):
-                    continue  # never cut through a closed outline
-                left = [a for a in group if centre[a] <= c + eps]
-                right = [a for a in group if centre[a] > c + eps]
-                key = tuple(sorted(left))
-                if not left or not right or key in tried or tuple(sorted(right)) in tried:
+        cuts = sorted({v for a in group for v in (atoms[a][1][axis], atoms[a][1][axis + 2], centre[a])})
+        eps = 0.02 * unit
+        out, seen = [], set()
+        for c in cuts:
+            if any(b[axis] + 0.05 * unit < c < b[axis + 2] - 0.05 * unit for b in solid):
+                continue  # never cut through a closed outline
+            on_cut = [a for a in group if abs(centre[a] - c) <= eps]
+            options = [set()]
+            if len(on_cut) >= 2:  # a shared flange face drawn twice: one copy for each symbol
+                options.append(set(on_cut[1::2]))
+            for to_right in options:
+                left = tuple(sorted(a for a in group if centre[a] <= c + eps and a not in to_right))
+                right = tuple(sorted(a for a in group if centre[a] > c + eps or a in to_right))
+                if left and right and left not in seen:
+                    seen.add(left)
+                    out.append((list(left), list(right)))
+        return out
+
+    def weighted(parts: list[Detection]) -> float:
+        w = [float(len(p.shape.pts)) for p in parts]
+        return sum(score(p) * wi for p, wi in zip(parts, w)) / max(sum(w), 1e-9)
+
+    budget = [24]  # match calls allowed for this candidate
+
+    def detect(side: list[int]) -> Detection:
+        budget[0] -= 1
+        return _detect(ps, [i for a in side for i in atoms[a][0]], lib, unit, cache)
+
+    def splittable(side: list[int], d: Detection) -> bool:
+        """Worth splitting further: poorly matched and large enough for two symbols."""
+        if score(d) >= 0.85 or budget[0] <= 0 or sum(1 for a in side if atoms[a][2]) < 1:
+            return False
+        b = bbox_union(atoms[a][1] for a in side)
+        return max(b[2] - b[0], b[3] - b[1]) >= 1.1 * unit
+
+    def split_group(group: list[int], current: Detection, depth: int) -> list[Detection]:
+        """Best decomposition of ``group`` (``[current]`` when no split helps)."""
+        if len(group) < 2 or depth > 3 or budget[0] <= 0:
+            return [current]
+        gb = bbox_union(atoms[a][1] for a in group)
+        main = 0 if (gb[2] - gb[0]) >= (gb[3] - gb[1]) else 1
+        best_parts, best_val = [current], score(current) + 0.06
+        for axis in (main, 1 - main):
+            ranked = []
+            for left, right in partitions(group, axis):
+                (sa, wa), (sb, wb) = coarse(left), coarse(right)
+                ranked.append(((sa * wa + sb * wb) / max(wa + wb, 1e-9), left, right))
+            ranked.sort(key=lambda r: -r[0])
+            for _, left, right in ranked[: (3 if depth == 0 else 2)]:
+                if budget[0] <= 1:
+                    break
+                leaves = []
+                for side in (left, right):
+                    d = detect(side)
+                    # a part that is itself several symbols is split further (chains of three or more)
+                    leaves.extend(split_group(side, d, depth + 1) if splittable(side, d) else [d])
+                if min(score(p) for p in leaves) < accept:
                     continue
-                tried.add(key)
-                splits.append((left, right))
-        for left, right in splits:
-            pa = _detect(ps, [i for a in left for i in atoms[a][0]], lib, unit, cache)
-            pb = _detect(ps, [i for a in right for i in atoms[a][0]], lib, unit, cache)
-            wa, wb = float(len(pa.shape.pts)), float(len(pb.shape.pts))
-            val = (score(pa) * wa + score(pb) * wb) / max(wa + wb, 1e-9)
-            if best is None or val > best[0]:
-                best = (val, left, right, pa, pb)
-        if best is None:
-            return [current]
-        val, left, right, pa, pb = best
-        if val < score(current) + 0.06 or min(score(pa), score(pb)) < accept:
-            return [current]
-        return split_group(left, pa, depth + 1) + split_group(right, pb, depth + 1)
+                val = weighted(leaves)
+                if val > best_val:
+                    best_parts, best_val = leaves, val
+            if len(best_parts) > 1:
+                break
+        return best_parts
 
     parts = split_group(list(range(len(atoms))), whole, 0)
     return parts if len(parts) > 1 else None
@@ -375,6 +445,9 @@ def _analyse(pc: PageContent, lines: list[TextLine], cfg: Config, opts: ExtractO
     if unit is None:
         free_ids = [p.id for p in ps.prims if p.role == ""]
         unit = estimate_unit(ps.prims, free_ids, max(0.6, 0.5 * tol), default=unit0)
+        probed = _probe_unit(ps, free_ids, unit, tol, lib, cache)
+        if probed is not None:
+            unit = probed
     timing["regions"] = timing.get("regions", 0.0) + time.perf_counter() - t
 
     t = time.perf_counter()
@@ -390,6 +463,44 @@ def _analyse(pc: PageContent, lines: list[TextLine], cfg: Config, opts: ExtractO
     dets.sort(key=lambda d: (round(d.bbox[1], 1), round(d.bbox[0], 1)))
     timing["symbols"] = timing.get("symbols", 0.0) + time.perf_counter() - t
     return _Stage(ps, regions, sep, cands, dets, diag_lines, unit)
+
+
+def _probe_unit(ps: PrimSet, ids: Sequence[int], unit: float, tol: float, lib: TemplateLibrary,
+                cache: MatchCache, top: int = 6) -> Optional[float]:
+    """Symbol unit from the most frequent symbol-only stroke clusters (valve bodies:
+    bow-ties, discs) matched against the library; None when nothing valve-like repeats."""
+    from collections import Counter
+
+    from .primitives import DSU, prim_distance
+    from .symbols_match import _prim_signature
+
+    prims = ps.prims
+    touch = max(0.6, 0.5 * tol)
+    core = [i for i in ids if prims[i].is_core and not prims[i].dashed]
+    if len(core) < 6:
+        return None
+    dsu = DSU(len(prims))
+    for i, j in ps.pairs_within(core, touch):
+        if prim_distance(prims[i], prims[j]) <= touch:
+            dsu.union(i, j)
+    groups: dict[bytes, list[list[int]]] = {}
+    for members in dsu.groups(core).values():
+        bb = bbox_union(prims[m].bbox for m in members)
+        D = max(bb[2] - bb[0], bb[3] - bb[1])
+        if not (0.4 * unit <= D <= 3.0 * unit):
+            continue
+        mset = set(members)
+        rings = [r for r in ps.rings.values() if r.prim_ids and all(i in mset for i in r.prim_ids)]
+        groups.setdefault(_prim_signature([prims[m] for m in members], rings, bb, D), []).append(members)
+    counts = Counter({k: len(v) for k, v in groups.items() if len(v) >= 2})
+    scales: list[float] = []
+    for key, n in counts.most_common(top):
+        res = match_candidate(_shape_for(ps, groups[key][0]), lib, None, cache=cache)
+        if res and res[0].score >= 0.7 and res[0].variant.spec.category == Category.VALVE:
+            scales.extend([res[0].scale] * n)
+    if len(scales) < 3:
+        return None
+    return float(np.median(scales))
 
 
 def _valve_unit(dets: Sequence[Detection]) -> Optional[float]:
@@ -533,7 +644,6 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
             kind=kind, medium=_medium_from_color(r.color) if kind != PipeKind.SIGNAL else Medium.UNKNOWN,
             confidence=1.0, source="vector",
         ))
-    _flow_directions(pipes, runs, net, sep, objects)
     timing["assemble"] = time.perf_counter() - t
 
     # ---- texts
@@ -568,17 +678,22 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
                 pipes[res.owner[1]].text_ids.append(tid)
     for k, tag in ta.object_tags.items():
         objects[k].tag = tag
-    for k, name in ta.object_names.items():
-        objects[k].attributes["name"] = name
+    for k, attrs in ta.object_attrs.items():
+        objects[k].attributes.update(attrs)
+    label_pos: dict[int, tuple[float, float]] = {}
     for k, ln in ta.pipe_line_numbers.items():
         _set_line_number(pipes[k], ln)
+    for kk, res in enumerate(ta.results):
+        if res.role == TextRole.LINE_NUMBER and res.owner is not None and res.owner[0] == "pipe":
+            label_pos.setdefault(res.owner[1], (lines[kk].cx, lines[kk].cy))
     if opts.propagate_line_numbers:
-        _propagate_line_numbers(pipes, objects)
+        _propagate_line_numbers(pipes, objects, label_pos)
+    _flow_directions(pipes, runs, net, sep, objects)
     timing["text"] = time.perf_counter() - t
 
     title_lines = [tl for k, tl in enumerate(lines) if ta.results[k].role == TextRole.TITLE_BLOCK
                    and regions.kind_at(tl.bbox, 0.5) == "title_block"]
-    doc.info = drawing_info(title_lines, lines, [p.line_number for p in pipes if p.line_number])
+    doc.info = drawing_info(title_lines, lines, [p.line_number for p in pipes if p.line_number], regions.cell_at)
     da = regions.drawing_area
     for tb in regions.title_blocks:  # drop a full-width title strip from the drawing area
         if tb[2] - tb[0] >= 0.9 * (da[2] - da[0]) and tb[1] > (da[1] + da[3]) / 2:
@@ -617,48 +732,120 @@ def _set_line_number(p: PipeRun, ln: str) -> None:
         p.medium = med
 
 
-def _propagate_line_numbers(pipes: list[PipeRun], objects: list[PIDObject]) -> None:
-    """A line number labels the whole line between equipment: copy it across inline
-    two-port symbols (valves, fittings, strainers...) to unlabelled runs."""
-    by_obj: dict[str, list[int]] = defaultdict(list)
+def _incidence(pipes: list[PipeRun]) -> dict[str, list[tuple[int, str, tuple[float, float]]]]:
+    """node id -> [(pipe index, 'start' | 'end', unit direction leaving the node along the pipe)]."""
+    out: dict[str, list[tuple[int, str, tuple[float, float]]]] = defaultdict(list)
     for k, p in enumerate(pipes):
-        if p.kind != PipeKind.PROCESS:
-            continue
-        for e in (p.start, p.end):
-            if e.object_id:
-                by_obj[e.object_id].append(k)
-    inline = {o.id for o in objects if o.category in (Category.VALVE, Category.FITTING)
-              or o.cls in (SymbolClass.STRAINER, SymbolClass.FILTER, SymbolClass.DUPLEX_FILTER, SymbolClass.FLOW_METER)}
-    changed = True
-    while changed:
-        changed = False
-        for oid in inline:
-            ks = by_obj.get(oid, [])
-            if len(ks) != 2:
+        pts = p.points
+        for which, e, a, b in (("start", p.start, pts[0], pts[1] if len(pts) > 1 else pts[0]),
+                               ("end", p.end, pts[-1], pts[-2] if len(pts) > 1 else pts[-1])):
+            node = e.object_id or e.junction_id
+            if not node:
                 continue
-            a, b = (pipes[k] for k in ks)
-            if a.line_number and not b.line_number:
-                _set_line_number(b, a.line_number)
-                changed = True
-            elif b.line_number and not a.line_number:
-                _set_line_number(a, b.line_number)
-                changed = True
+            dx, dy = b.x - a.x, b.y - a.y
+            n = math.hypot(dx, dy) or 1.0
+            out[node].append((k, which, (dx / n, dy / n)))
+    return out
 
 
-_FLOW_IN = {"in", "suction"}
-_FLOW_OUT = {"out", "discharge"}
+def _straight_pairs_at(inc: list[tuple[int, str, tuple[float, float]]], pipes: list[PipeRun]) -> list[tuple[int, int]]:
+    """Pairs of process runs leaving a junction in opposite directions (the run continues through)."""
+    proc = [(k, d) for k, _, d in inc if pipes[k].kind == PipeKind.PROCESS]
+    pairs = []
+    for i in range(len(proc)):
+        for j in range(i + 1, len(proc)):
+            (a, da), (b, db) = proc[i], proc[j]
+            if da[0] * db[0] + da[1] * db[1] < -0.97:
+                pairs.append((a, b))
+    return pairs
+
+
+def _propagate_line_numbers(pipes: list[PipeRun], objects: list[PIDObject], labels: dict[int, tuple[float, float]]) -> None:
+    """A line number labels the whole line between equipment. Unlabelled runs take the
+    number of the nearest label measured along the pipe network, crossing only inline
+    valves / fittings and continuing straight through tees (``labels``: run index ->
+    label position)."""
+    import heapq
+
+    inc = _incidence(pipes)
+    by_id = {o.id: o for o in objects}
+    lengths = [max(p.length, 1e-6) for p in pipes]
+    links: dict[tuple[int, str], list[tuple[int, str]]] = defaultdict(list)  # (run, end) -> [(run, end)]
+
+    def link(a: int, wa: str, b: int, wb: str) -> None:
+        links[(a, wa)].append((b, wb))
+        links[(b, wb)].append((a, wa))
+
+    for node, lst in inc.items():
+        o = by_id.get(node)
+        proc = [(k, w) for k, w, _ in lst if pipes[k].kind == PipeKind.PROCESS]
+        if o is not None:
+            if o.category in (Category.VALVE, Category.FITTING) and len({k for k, _ in proc}) == 2:
+                (a, wa), (b, wb) = proc
+                link(a, wa, b, wb)
+            continue
+        ends = {k: w for k, w, _ in lst}
+        for a, b in _straight_pairs_at(lst, pipes):
+            link(a, ends[a], b, ends[b])
+
+    dist: dict[tuple[int, str], float] = {}
+    best_mid: dict[int, tuple[float, str]] = {}
+    heap: list[tuple[float, int, str, str]] = []
+    for k, p in enumerate(pipes):
+        if not p.line_number or k not in labels:
+            continue
+        pos = _arc_position(p, labels[k])
+        for w, d in (("start", pos), ("end", lengths[k] - pos)):
+            heapq.heappush(heap, (d, k, w, p.line_number))
+    while heap:
+        d, k, w, ln = heapq.heappop(heap)
+        if (k, w) in dist:
+            continue
+        dist[(k, w)] = d
+        for b, wb in links.get((k, w), ()):
+            if pipes[b].line_number and b in labels:
+                continue
+            mid = d + lengths[b] / 2
+            if b not in best_mid or mid < best_mid[b][0]:
+                best_mid[b] = (mid, ln)
+            far = "end" if wb == "start" else "start"
+            if (b, far) not in dist:
+                heapq.heappush(heap, (d + lengths[b], b, far, ln))
+    for b, (_, ln) in best_mid.items():
+        if not pipes[b].line_number:
+            _set_line_number(pipes[b], ln)
+
+
+def _arc_position(p: PipeRun, xy: tuple[float, float]) -> float:
+    """Arc length from the run's start to the point of the run closest to ``xy``."""
+    best, acc, pos = None, 0.0, 0.0
+    for a, b in zip(p.points, p.points[1:]):
+        L = a.dist(b)
+        if L > 0:
+            t = max(0.0, min(1.0, ((xy[0] - a.x) * (b.x - a.x) + (xy[1] - a.y) * (b.y - a.y)) / (L * L)))
+            d = math.hypot(a.x + t * (b.x - a.x) - xy[0], a.y + t * (b.y - a.y) - xy[1])
+            if best is None or d < best:
+                best, pos = d, acc + t * L
+        acc += L
+    return pos
+
+
+_FLOW_IN = {"in", "suction", "tube_in", "shell_in", "a_in", "b_in"}
+_FLOW_OUT = {"out", "discharge", "tube_out", "shell_out", "a_out", "b_out"}
 _DIRECTIONAL = {SymbolClass.CHECK_VALVE, SymbolClass.SDNR_VALVE, SymbolClass.PUMP_CENTRIFUGAL, SymbolClass.PUMP_SCREW,
-                SymbolClass.SAFETY_VALVE}
+                SymbolClass.SAFETY_VALVE, SymbolClass.COMPRESSOR}
 
 
 def _flow_directions(pipes: list[PipeRun], runs, net: Network, sep: Separation, objects: list[PIDObject]) -> None:
+    """Flow direction of process runs: seeded by flow arrows and directional symbols
+    (pumps, check valves, relief valves), then propagated through two-port symbols,
+    straight through instrument-tap tees and by flow conservation at tees."""
     by_id = {o.id: o for o in objects}
     piece_run: dict[int, int] = {}
     for k, r in enumerate(runs):
         for i in r.pieces:
             piece_run[i] = k
     votes: dict[int, int] = defaultdict(int)
-    # arrows drawn on the line
     for a in sep.arrows:
         for i, pc in enumerate(net.pieces):
             if not pc.alive or i not in piece_run or pc.line_id != a.line_id:
@@ -672,7 +859,6 @@ def _flow_directions(pipes: list[PipeRun], runs, net: Network, sep: Separation, 
                     votes[k] += 2 if (x1 - x0) * a.dx + (y1 - y0) * a.dy > 0 else -2
                     break
             break
-    # directional symbols
     for k, p in enumerate(pipes):
         for e, sign in ((p.end, 1), (p.start, -1)):
             if not e.object_id or by_id[e.object_id].cls not in _DIRECTIONAL:
@@ -681,9 +867,68 @@ def _flow_directions(pipes: list[PipeRun], runs, net: Network, sep: Separation, 
                 votes[k] += sign
             elif e.port in _FLOW_OUT:
                 votes[k] -= sign
-    for k, v in votes.items():
-        if v:
-            pipes[k].flow_direction = 1 if v > 0 else -1
+    # sources and sinks: 'FROM ...' / 'TO ...' connectors, sea chests, overboard discharges
+    for k, p in enumerate(pipes):
+        if p.kind != PipeKind.PROCESS:
+            continue
+        for e, sign in ((p.end, 1), (p.start, -1)):
+            o = by_id.get(e.object_id) if e.object_id else None
+            if o is None:
+                continue
+            name = str(o.attributes.get("name", "")).upper()
+            if o.cls == SymbolClass.SEA_CHEST or (o.cls == SymbolClass.OFF_PAGE_CONNECTOR and name.startswith("FROM")):
+                votes[k] -= sign  # flow leaves the source
+            elif o.cls == SymbolClass.OVERBOARD or (o.cls == SymbolClass.OFF_PAGE_CONNECTOR and name.startswith("TO")):
+                votes[k] += sign  # flow enters the sink
+    flow: dict[int, int] = {k: (1 if v > 0 else -1) for k, v in votes.items() if v}
+
+    def into(k: int, which: str) -> Optional[bool]:
+        f = flow.get(k)
+        if f is None:
+            return None
+        return (f > 0) == (which == "end")
+
+    def set_into(k: int, which: str, value: bool) -> bool:
+        if k in flow:
+            return False
+        flow[k] = (1 if value else -1) if which == "end" else (-1 if value else 1)
+        return True
+
+    inc = _incidence(pipes)
+    changed = True
+    while changed:
+        changed = False
+        for node, lst in inc.items():
+            proc = [(k, w, d) for k, w, d in lst if pipes[k].kind == PipeKind.PROCESS]
+            o = by_id.get(node)
+            if o is not None:
+                if len(proc) != 2 or o.category == Category.INSTRUMENT or o.cls == SymbolClass.TANK:
+                    continue
+                (a, wa, _), (b, wb, _) = proc
+                ia, ib = into(a, wa), into(b, wb)
+                if ia is not None and ib is None:
+                    changed |= set_into(b, wb, not ia)
+                elif ib is not None and ia is None:
+                    changed |= set_into(a, wa, not ib)
+                continue
+            if len(proc) == 2 and len(lst) > 2:  # tee whose branch is not a process line (instrument tap)
+                (a, wa, _), (b, wb, _) = proc
+                ia, ib = into(a, wa), into(b, wb)
+                if ia is not None and ib is None:
+                    changed |= set_into(b, wb, not ia)
+                elif ib is not None and ia is None:
+                    changed |= set_into(a, wa, not ib)
+                continue
+            known = [into(k, w) for k, w, _ in proc]
+            unknown = [(k, w) for (k, w, _), v in zip(proc, known) if v is None]
+            if len(proc) >= 3 and len(unknown) == 1:
+                vals = [v for v in known if v is not None]
+                if all(vals):
+                    changed |= set_into(*unknown[0], False)
+                elif not any(vals):
+                    changed |= set_into(*unknown[0], True)
+    for k, f in flow.items():
+        pipes[k].flow_direction = f
 
 
 # --------------------------------------------------------------------------- document

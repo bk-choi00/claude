@@ -597,11 +597,6 @@ def flow_paths(doc: PIDDocument, G: Optional[nx.MultiGraph] = None, max_paths: i
     return out
 
 
-def count_flow_paths(doc: PIDDocument, G: Optional[nx.MultiGraph] = None, *, net: Optional[FlowNet] = None) -> int:
-    """Number of distinct flow paths before the ``max_paths`` cap."""
-    return len(flow_paths(doc, G, max_paths=10 ** 9, net=net))
-
-
 # --------------------------------------------------------------------------- isolation
 
 

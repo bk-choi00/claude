@@ -47,7 +47,9 @@ MARGIN = 0.3  # grid margin around the bbox, relative to the max dimension
 TAU = 0.045  # soft chamfer scale, relative to the template's max dimension
 TAU_FILL = 0.07
 N_SAMPLES = 40  # outline samples per max dimension
-FINE_TOP = 8
+N_COARSE = 20  # outline samples per max dimension in the coarse pass
+MAX_COARSE_CAND = 90  # candidate points used in the coarse pass
+FINE_TOP = 6
 
 
 @dataclass
@@ -262,9 +264,11 @@ class TemplateLibrary:
         self.stretch = np.array([v.stretchable for v in self.variants])
         self.has_fill = np.array([len(v.fill_pts) > 0 for v in self.variants])
         self.cls_idx = np.array([list(SymbolClass).index(v.cls) for v in self.variants])
-        counts = [len(v.pts) for v in self.variants]
+        # the coarse pass uses every k-th outline sample (about N_COARSE per max dimension)
+        coarse = [v.pts[:: max(1, int(round(N_SAMPLES * (2.5 if v.stretchable else 1.0) / N_COARSE)))] for v in self.variants]
+        counts = [len(c) for c in coarse]
         self.pt_var = np.repeat(np.arange(V), counts)
-        self.pts_all = np.concatenate([v.pts for v in self.variants])
+        self.pts_all = np.concatenate(coarse)
         self.pt_count = np.array(counts, dtype=float)
         # distance grids in relative units (distance / D) over [-E/2, E/2]^2, E = 1 + 2*MARGIN
         E = 1.0 + 2 * MARGIN
@@ -323,7 +327,7 @@ class CandidateShape:
     n_circles: int = 0
     tree: Optional[cKDTree] = None
     fill_tree: Optional[cKDTree] = None
-    extra: dict = field(default_factory=dict)
+    signature: Optional[bytes] = None  # quantised primitive geometry (cache key)
 
     @property
     def w(self) -> float:
@@ -365,7 +369,25 @@ def candidate_shape(prims, rings) -> CandidateShape:
     cs = CandidateShape(arr, farr, bb, n_circ)
     cs.tree = cKDTree(arr)
     cs.fill_tree = cKDTree(farr) if len(farr) else None
+    cs.signature = _prim_signature(prims, rings, bb, D)
     return cs
+
+
+def _prim_signature(prims, rings, bb, D: float) -> bytes:
+    """Order-independent, translation/scale-normalised description of the strokes;
+    identical symbol drawings get identical keys despite float noise."""
+    q = 48.0 / D
+    items = []
+    for p in prims:
+        if p.kind == "circle":
+            items.append(("c", round((p.cx - bb[0]) * q), round((p.cy - bb[1]) * q), round(p.r * q), p.filled))
+        else:
+            a = (round((p.x0 - bb[0]) * q), round((p.y0 - bb[1]) * q))
+            b = (round((p.x1 - bb[0]) * q), round((p.y1 - bb[1]) * q))
+            items.append(("s",) + (a + b if a <= b else b + a) + (p.filled,))
+    items.sort()
+    head = (round((bb[2] - bb[0]) / D, 2), round((bb[3] - bb[1]) / D, 2), sum(1 for r in rings if r.filled))
+    return repr((head, items)).encode()
 
 
 # --------------------------------------------------------------------------- matching
@@ -417,7 +439,8 @@ def coarse_scores(lib: TemplateLibrary, cs: CandidateShape, unit: Optional[float
     recall = np.bincount(pv, weights=_soft(d_tc, TAU), minlength=V)[vsel] / lib.pt_count[vsel]
 
     # candidate -> template (precision): look up each variant's grid
-    rel = cs.pts - cs.center  # (M, 2)
+    cpts = cs.pts if len(cs.pts) <= MAX_COARSE_CAND else cs.pts[:: int(math.ceil(len(cs.pts) / MAX_COARSE_CAND))]
+    rel = cpts - cs.center  # (M, 2)
     cellv = E / GRID
     gx = (rel[None, :, 0] / (sx[vsel, None] * lib.Dv[vsel, None]) + E / 2) / cellv  # (Vs, M)
     gy = (rel[None, :, 1] / (sy[vsel, None] * lib.Dv[vsel, None]) + E / 2) / cellv
@@ -513,6 +536,9 @@ class MatchCache:
         self.misses = 0
 
     def key(self, cs: CandidateShape) -> bytes:
+        """Normalised geometry signature: primitives relative to the bbox, quantised."""
+        if cs.signature is not None:
+            return cs.signature
         D = cs.D
         n = self.RES
         rel = (cs.pts - (cs.bbox[0], cs.bbox[1])) / D
@@ -559,8 +585,9 @@ def match_candidate(cs: CandidateShape, lib: Optional[TemplateLibrary] = None, u
     order = np.argsort(-score)
     picked: list[int] = []
     per_cls: dict[int, int] = {}
+    floor = max(0.05, 0.6 * float(score[order[0]])) if len(order) else 0.05
     for k in order[: 4 * top]:
-        if score[k] <= 0.05:
+        if score[k] <= floor:
             break
         c = int(lib.cls_idx[k])
         if per_cls.get(c, 0) >= 4:

@@ -45,7 +45,6 @@ from ..model import (
 )
 from .graph import (
     ALL_KINDS,
-    CONNECT_KINDS,
     DRIVER_CLASSES,
     INLET_PORTS,
     INLINE_EQUIPMENT,
@@ -54,7 +53,6 @@ from .graph import (
     PROCESS_KINDS,
     PUMP_CLASSES,
     STRAINER_CLASSES,
-    TERMINAL_CLASSES,
     FlowNet,
     Link,
     Search,
@@ -111,6 +109,7 @@ class RuleContext:
         self.G = G if G is not None else (net.G if net is not None else build_graph(doc))
         self.net = net if net is not None else FlowNet(doc, self.G)
         self.systems, self.system_basis = drawing_systems(doc)
+        self.objs = doc.object_by_id()
         self._links: dict[tuple[str, frozenset], list[Link]] = {}
         self._pump_fwd: dict[str, Search] = {}
         self._passed: dict[str, set[str]] = {}
@@ -161,6 +160,10 @@ class RuleContext:
     def has_system(self, *systems: SystemType) -> bool:
         return any(s in self.systems for s in systems)
 
+    def is_primary(self, *systems: SystemType) -> bool:
+        """The drawing's main system (``info.system``, else the first listed / inferred one)."""
+        return bool(self.systems) and self.systems[0] in systems
+
     @property
     def systems_known(self) -> bool:
         return bool(self.systems)
@@ -208,7 +211,7 @@ class RuleContext:
         """Nodes the forward search from driver ``p`` passes through (not merely reaches)."""
         if p not in self._passed:
             res = self.pump_forward(p)
-            self._passed[p] = {prev[0] for v in res.parent.values() if v for prev in [v[0]]} - {p}
+            self._passed[p] = {parent[0][0] for parent in res.parent.values() if parent} - {p}
         return self._passed[p]
 
 
@@ -288,7 +291,7 @@ _FUEL_LUBE_RE = re.compile(
 _QC_FUNC_RE = re.compile(r"STOR|SETT|SERV|DAILY|\bDAY\b|저장|침전|서비스")
 _QC_EXCL_RE = re.compile(r"SUMP|DRAIN|SLUDGE|OVERFLOW|BILGE|LEAK|WASTE|DIRTY|EXPANSION|CYL|SAMPL|SPILL|RETURN")
 _SERVICE_RE = re.compile(r"SERV|DAILY|\bDAY\b|서비스")
-_CAPACITY_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(M3|M³|㎥|CUM|L\b|LTR|LITRE|LITER)")
+_CAPACITY_RE = re.compile(r"(?<![\w.])(\d[\d,]*(?:\.\d+)?)\s*(M3|M³|㎥|CUM|LTR|LITRES?|LITERS?|L)(?![\w.])")
 _SEA_INLET_RE = re.compile(r"SEA\s*CHEST|SEA\s*INLET|씨체스트")
 _SW_PUMP_RE = re.compile(r"S\.?\s?W\.?|SEA\s*W|COOLING")
 _BILGE_DEST_RE = re.compile(r"BILGE|HOLDING|\bWELL\b|SLUDGE|OWS|SEPARATOR")
@@ -339,7 +342,7 @@ def _leaves(ctx: RuleContext, start: str, blocked: Iterable[str] = (),
 
 
 def _fire_pumps(ctx: RuleContext) -> list[str]:
-    fire_sys = ctx.has_system(ST.FIRE_MAIN)
+    fire_sys = ctx.is_primary(ST.FIRE_MAIN)  # other pumps count only on a drawing *of* the fire main
     out = []
     for p in ctx.ids(*PUMP_CLASSES):
         lab = ctx.label(p)
@@ -366,6 +369,14 @@ def _bilge_wells(ctx: RuleContext) -> tuple[list[str], set[str]]:
             wells.append(t)
             uncertain.add(t)
     return wells, uncertain
+
+
+def _none_shown(ctx: RuleContext, r: Rule, system: SystemType, what: str) -> Finding:
+    """The rule's system applies but none of the equipment it counts is shown: insufficient data
+    on a drawing *of* that system, not applicable when the system is only listed as secondary."""
+    if ctx.is_primary(system):
+        return r.make(V.INSUFFICIENT_DATA, f"No {what} recognised on this {SYSTEMS[system].name_en.lower()} drawing.")
+    return r.na(f"{SYSTEMS[system].name_en} is only a secondary system of this drawing and no {what} is shown.")
 
 
 def _driver_crossable_states(ctx: RuleContext, res: Search, d: str) -> list:
@@ -482,9 +493,11 @@ def _r_pump_nrv(ctx: RuleContext, r: Rule) -> list[Finding]:
         else:
             par = _parallel_with(ctx, p)
             if par:
+                shared = (f" (only the common non-return valve {ctx.names(chk.shared)} downstream of the header)"
+                          if chk.shared else "")
                 out.append(r.make(V.FAIL, f"{name} discharges into a common line with {ctx.names(par)} but has no "
-                                          f"non-return valve on its own discharge branch; an idle pump would be "
-                                          f"back-fed.", [p, *par], conf))
+                                          f"non-return valve on its own discharge branch{shared}; an idle pump would "
+                                          f"be back-fed.", [p, *par, *chk.shared], conf))
             else:
                 out.append(r.make(V.NOT_APPLICABLE, f"{name} does not run in parallel with another pump on this "
                                                     f"drawing; a discharge non-return valve is not required by this "
@@ -501,7 +514,7 @@ def _r_pd_relief(ctx: RuleContext, r: Rule) -> list[Finding]:
     out = []
     for p in pumps:
         name = ctx.name(p)
-        obj_attrs = ctx.doc.object_by_id()[p].attributes
+        obj_attrs = ctx.objs[p].attributes
         if obj_attrs.get("integral_relief") or obj_attrs.get("relief_valve"):
             out.append(r.make(V.PASS, f"{name}: integral relief valve recorded in the object attributes.", [p]))
             continue
@@ -539,7 +552,7 @@ def _r_qc_valve(ctx: RuleContext, r: Rule) -> list[Finding]:
     tanks: list[tuple[str, float, str]] = []  # (id, confidence factor, kind)
     for t in ctx.ids(S.TANK):
         lab = ctx.label(t)
-        media = {lk_d for lk_d in (ctx.G.edges[t, lk.other, lk.pipe_id]["medium"] for lk in ctx.links(t))}
+        media = {ctx.G.edges[t, lk.other, lk.pipe_id]["medium"] for lk in ctx.links(t)}
         oily = bool(media & {Medium.FUEL_OIL, Medium.LUBE_OIL})
         if lab:
             if _QC_EXCL_RE.search(lab):
@@ -623,7 +636,7 @@ def _r_fo_service(ctx: RuleContext, r: Rule) -> list[Finding]:
     if not applicable:
         return [r.na("Not a fuel oil supply / service drawing.")]
     if not tanks:
-        return [r.make(V.INSUFFICIENT_DATA, "No named fuel oil service tank found on this drawing.")]
+        return [_none_shown(ctx, r, ST.FUEL_OIL_SUPPLY, "named fuel oil service tank")]
     if len(tanks) >= 2:
         return [r.make(V.PASS, f"{len(tanks)} fuel oil service tanks: {ctx.names(tanks)}.", tanks, ctx.conf(tanks))]
     return [r.make(V.FAIL, f"Only one fuel oil service tank ({ctx.names(tanks)}); two service tanks for each fuel type "
@@ -637,7 +650,7 @@ def _r_bilge_nrv(ctx: RuleContext, r: Rule) -> list[Finding]:
     wells, uncertain = _bilge_wells(ctx)
     if not wells:
         if ctx.has_system(ST.BILGE):
-            return [r.make(V.INSUFFICIENT_DATA, "Bilge drawing, but no bilge wells / suction tanks recognised.")]
+            return [_none_shown(ctx, r, ST.BILGE, "bilge well / suction")]
         return [r.na("No bilge suctions on this drawing.")]
     nrvs = [n for n in object_ids(ctx.G) if ctx.eff(n) in NRV_CLASSES]
     out = []
@@ -686,7 +699,7 @@ def _r_bilge_pumps(ctx: RuleContext, r: Rule) -> list[Finding]:
                  if "BILGE" in ctx.label(p) and not _BILGE_PUMP_EXCL_RE.search(ctx.label(p))]
         basis = "named as bilge pumps"
     if not pumps:
-        return [r.make(V.INSUFFICIENT_DATA, "No bilge pump recognised on this bilge drawing.")]
+        return [_none_shown(ctx, r, ST.BILGE, "bilge pump")]
     if len(pumps) >= 2:
         return [r.make(V.PASS, f"{len(pumps)} power pumps {basis}: {ctx.names(pumps)}.", pumps, ctx.conf(pumps))]
     return [r.make(V.FAIL, f"Only one power pump {basis} ({ctx.names(pumps)}). At least two power bilge pumps "
@@ -701,7 +714,7 @@ def _r_fire_pumps(ctx: RuleContext, r: Rule) -> list[Finding]:
     if not (ctx.has_system(ST.FIRE_MAIN) or (not ctx.systems_known and pumps)):
         return [r.na("Not a fire main drawing.")]
     if not pumps:
-        return [r.make(V.INSUFFICIENT_DATA, "No fire pump recognised on this fire main drawing.")]
+        return [_none_shown(ctx, r, ST.FIRE_MAIN, "fire pump")]
     if len(pumps) >= 2:
         return [r.make(V.PASS, f"{len(pumps)} fire pumps: {ctx.names(pumps)}.", pumps, ctx.conf(pumps))]
     return [r.make(V.FAIL, f"Only one fire pump on this drawing ({ctx.names(pumps)}); at least two independently "
@@ -782,7 +795,7 @@ def _r_sea_chests(ctx: RuleContext, r: Rule) -> list[Finding]:
     inlets = chests + [c for c in ctx.ids(S.OFF_PAGE_CONNECTOR) if _SEA_INLET_RE.search(ctx.label(c))
                        and "FROM" in ctx.label(c)]
     if not inlets:
-        return [r.make(V.INSUFFICIENT_DATA, "No sea chest / sea inlet recognised on this cooling drawing.")]
+        return [_none_shown(ctx, r, ST.SEA_WATER_COOLING, "sea chest / sea inlet")]
     if len(inlets) >= 2:
         return [r.make(V.PASS, f"{len(inlets)} sea inlets: {ctx.names(inlets)}.", inlets, ctx.conf(inlets))]
     return [r.make(V.FAIL, f"Only one sea inlet ({ctx.names(inlets)}) feeds the sea water cooling system; at least two "
@@ -896,7 +909,7 @@ def _r_ows_alarm(ctx: RuleContext, r: Rule) -> list[Finding]:
                                     if ctx.is_obj(x.other) and ctx.cat(x.other) == Category.INSTRUMENT]
         meters = []
         for i in dict.fromkeys(instruments):
-            letters = (ctx.doc.object_by_id()[i].attributes.get("letters") or ctx.tag(i) or "").upper()
+            letters = (ctx.objs[i].attributes.get("letters") or ctx.tag(i) or "").upper()
             if re.match(r"^[QA]", letters) or re.search(r"PPM|OIL\s*CONTENT|OCM|BILGE\s*ALARM", ctx.label(i)):
                 meters.append(i)
         if meters:
@@ -920,7 +933,7 @@ def _r_air_comp(ctx: RuleContext, r: Rule) -> list[Finding]:
         return [r.na("Not a compressed / starting air drawing.")]
     comps = ctx.ids(S.COMPRESSOR)
     if not comps:
-        return [r.make(V.INSUFFICIENT_DATA, "No air compressor recognised on this compressed air drawing.")]
+        return [_none_shown(ctx, r, ST.COMPRESSED_AIR, "air compressor")]
     if len(comps) >= 2:
         return [r.make(V.PASS, f"{len(comps)} air compressors: {ctx.names(comps)}.", comps, ctx.conf(comps))]
     return [r.make(V.FAIL, f"Only one starting air compressor ({ctx.names(comps)}); at least two are required.", comps,
@@ -934,7 +947,7 @@ def _r_air_recv(ctx: RuleContext, r: Rule) -> list[Finding]:
         return [r.na("Not a compressed / starting air drawing.")]
     recs = ctx.ids(S.AIR_RECEIVER)
     if not recs:
-        return [r.make(V.INSUFFICIENT_DATA, "No air receiver recognised on this compressed air drawing.")]
+        return [_none_shown(ctx, r, ST.COMPRESSED_AIR, "air receiver")]
     if len(recs) >= 2:
         return [r.make(V.PASS, f"{len(recs)} air receivers: {ctx.names(recs)}.", recs, ctx.conf(recs))]
     return [r.make(V.FAIL, f"Only one starting air receiver ({ctx.names(recs)}); at least two are required.", recs,
@@ -1094,8 +1107,8 @@ def _q_size_change(ctx: RuleContext, r: Rule) -> list[Finding]:
             if sa != sb:
                 issues.append((n, [a.pipe_id, b.pipe_id], f"{sa[0]}{'A' if sa[1] == 'mm' else 'B'} / "
                                                           f"{sb[0]}{'A' if sb[1] == 'mm' else 'B'}"))
-    if not checked:
-        return [r.make(V.INSUFFICIENT_DATA, "No pipe sizes known on consecutive pipe runs.")]
+    if not any(_pipe_size(ctx, d) for _, _, d in ctx.G.edges(data=True) if d["kind"] == PipeKind.PROCESS):
+        return [r.make(V.INSUFFICIENT_DATA, "No pipe sizes known on this drawing.")]
     if not issues:
         return [r.make(V.PASS, f"No size change without a reducer ({checked} run-to-run transitions checked).")]
     return [r.make(V.FAIL, f"Size changes at {node_name(ctx.G, n)} ({sizes}) between {a} and {b} without a reducer.",

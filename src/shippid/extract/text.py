@@ -70,7 +70,7 @@ class TextResult:
 class TextAssignment:
     results: list[TextResult]
     object_tags: dict[int, str] = field(default_factory=dict)
-    object_names: dict[int, str] = field(default_factory=dict)
+    object_attrs: dict[int, dict[str, str]] = field(default_factory=dict)  # name / rating / ref
     pipe_line_numbers: dict[int, str] = field(default_factory=dict)
 
 
@@ -173,6 +173,7 @@ def assign_texts(lines: Sequence[TextLine], regions: Regions, objects: Sequence[
             results[k] = TextResult(TextRole.INSTRUMENT, ("obj", host.index))
             inside_instr.setdefault(host.index, []).append(k)
             continue
+        inside = True
         for o in objects:
             if o.category == Category.CONNECTOR and _inside_obj(t, o, 0.1 * unit):
                 host = o
@@ -182,10 +183,10 @@ def assign_texts(lines: Sequence[TextLine], regions: Regions, objects: Sequence[
             # free text right next to an off-page connector (and closer to it than to anything else)
             near = min(objects, key=lambda o: text_distance(t, o.bbox), default=None)
             if near is not None and near.category == Category.CONNECTOR and text_distance(t, near.bbox) <= 0.8 * unit:
-                host = near
+                host, inside = near, False
         if host is not None:
             results[k] = TextResult(TextRole.CONNECTOR, ("obj", host.index))
-            inside_conn.setdefault(host.index, []).append(k)
+            inside_conn.setdefault(host.index, []).append((k, inside))
             continue
         if kind == "line_number":
             results[k].role = TextRole.LINE_NUMBER
@@ -202,9 +203,17 @@ def assign_texts(lines: Sequence[TextLine], regions: Regions, objects: Sequence[
         if tag:
             out.object_tags[oi] = tag
     for oi, ks in inside_conn.items():
-        txt = " ".join(normalize(lines[k].text) for k in sorted(ks, key=lambda k: (lines[k].bbox[1], lines[k].bbox[0])))
-        if txt:
-            out.object_tags[oi] = txt
+        # off-page connectors: the drawing / sheet reference is written inside, the destination beside
+        order = sorted(ks, key=lambda ki: (lines[ki[0]].bbox[1], lines[ki[0]].bbox[0]))
+        ref = " ".join(normalize(lines[k].text) for k, inside in order if inside)
+        name = " ".join(normalize(lines[k].text) for k, inside in order if not inside)
+        attrs = out.object_attrs.setdefault(oi, {})
+        if ref and name:
+            attrs["ref"], attrs["name"] = ref, name
+        elif ref or name:
+            # one text only: a destination phrase is the name, a short code the reference
+            txt = ref or name
+            attrs["name" if re.search(r"\b(TO|FROM)\b", txt) or len(txt) > 12 else "ref"] = txt
 
     # ---- tags -> symbols (one-to-one)
     eligible = [o for o in objects if o.index not in out.object_tags and o.category != Category.CONNECTOR
@@ -236,27 +245,34 @@ def assign_texts(lines: Sequence[TextLine], regions: Regions, objects: Sequence[
             results[k].owner = ("obj", o.index)
             out.object_tags[o.index] = normalize(lines[k].text)
 
-    # ---- labels -> equipment (names); several lines may belong to one object
-    equipment = [o for o in objects if o.category in (Category.EQUIPMENT,) or o.cls == SymbolClass.UNKNOWN]
-    names: dict[int, list[int]] = {}
-    for k in label_texts:
-        t = lines[k]
+    # ---- labels -> equipment: stacked label lines form one block (name, then rating lines)
+    equipment = [o for o in objects if o.category == Category.EQUIPMENT or o.cls == SymbolClass.UNKNOWN]
+    for block in _label_blocks([lines[k] for k in label_texts], label_texts):
+        bb = (min(lines[k].bbox[0] for k in block), min(lines[k].bbox[1] for k in block),
+              max(lines[k].bbox[2] for k in block), max(lines[k].bbox[3] for k in block))
         best = None
         for o in equipment:
-            if _inside_obj(t, o):
+            if any(_inside_obj(lines[k], o) for k in block):
                 d = 0.0
             else:
-                d = text_distance(t, o.bbox)
+                d = math.hypot(max(0.0, max(bb[0], o.bbox[0]) - min(bb[2], o.bbox[2])),
+                               max(0.0, max(bb[1], o.bbox[1]) - min(bb[3], o.bbox[3])))
                 if d > 1.2 * unit:
                     continue
             if best is None or d < best[0]:
                 best = (d, o)
-        if best is not None:
-            results[k].owner = ("obj", best[1].index)
-            names.setdefault(best[1].index, []).append(k)
-    for oi, ks in names.items():
-        ks.sort(key=lambda k: (lines[k].bbox[1], lines[k].bbox[0]))
-        out.object_names[oi] = " ".join(normalize(lines[k].text) for k in ks)
+        if best is None:
+            continue
+        o = best[1]
+        names, ratings = [], []
+        for k in block:  # first line: the name; following lines: capacity / rating / type
+            results[k].owner = ("obj", o.index)
+            (ratings if names else names).append(normalize(lines[k].text))
+        attrs = out.object_attrs.setdefault(o.index, {})
+        if names:
+            attrs["name"] = " ".join(names) if "name" not in attrs else attrs["name"] + " " + " ".join(names)
+        if ratings:
+            attrs["rating"] = " ".join(ratings)
 
     # ---- line numbers -> nearest parallel pipe segment
     for k, t in enumerate(lines):
@@ -292,6 +308,26 @@ def assign_texts(lines: Sequence[TextLine], regions: Regions, objects: Sequence[
     return out
 
 
+def _label_blocks(block_lines: Sequence[TextLine], keys: Sequence[int]) -> list[list[int]]:
+    """Group label lines written as one stacked block (same column, line pitch gaps)."""
+    items = sorted(zip(keys, block_lines), key=lambda kt: (kt[1].bbox[1], kt[1].bbox[0]))
+    blocks: list[list[tuple[int, TextLine]]] = []
+    for k, t in items:
+        placed = False
+        for b in blocks:
+            last = b[-1][1]
+            h = max(line_height(last), line_height(t), 1.0)
+            gap = t.bbox[1] - last.bbox[3]
+            overlap = min(t.bbox[2], last.bbox[2]) - max(t.bbox[0], last.bbox[0])
+            if t.rotation == last.rotation and -0.3 * h <= gap <= 0.8 * h and overlap > 0:
+                b.append((k, t))
+                placed = True
+                break
+        if not placed:
+            blocks.append([(k, t)])
+    return [[k for k, _ in b] for b in blocks]
+
+
 def _compat(kind: Optional[str], cat: Category) -> Optional[float]:
     table = {
         "valve": {Category.VALVE: 0.0, Category.FITTING: 1.0, Category.EQUIPMENT: 2.5},
@@ -318,42 +354,58 @@ def _side_penalty(t: TextLine, o: ObjRef) -> float:
 # --------------------------------------------------------------------------- drawing information
 
 _LABELS = {
-    "drawing_no": re.compile(r"\b(DWG\.?\s*NO|DRAWING\s*(NO|NUMBER)|DOC(UMENT)?\.?\s*NO)\b\.?\s*[:.]?\s*", re.I),
-    "title": re.compile(r"\b(DRAWING\s+TITLE|TITLE)\b\s*[:.]?\s*", re.I),
-    "hull_no": re.compile(r"\b(HULL\s*(NO|NUMBER)|SHIP\s*NO|YARD\s*NO|S\.\s*NO)\b\.?\s*[:.]?\s*", re.I),
-    "ship_type": re.compile(r"\b(SHIP\s*TYPE|VESSEL\s*TYPE|TYPE\s*OF\s*SHIP)\b\s*[:.]?\s*", re.I),
+    "drawing_no": re.compile(r"^\s*(DWG\.?\s*NO|DRAWING\s*(NO|NUMBER)|DOC(UMENT)?\.?\s*NO)\b\.?\s*[:.]?\s*", re.I),
+    "title": re.compile(r"^\s*(DRAWING\s+TITLE|TITLE)\b\s*[:.]?\s*", re.I),
+    "hull_no": re.compile(r"^\s*(HULL\s*(NO|NUMBER)|SHIP\s*NO|YARD\s*NO|S\.\s*NO)\b\.?\s*[:.]?\s*", re.I),
+    "ship_type": re.compile(r"^\s*(SHIP\s*TYPE|VESSEL\s*TYPE|TYPE\s*OF\s*SHIP)\b\s*[:.]?\s*", re.I),
     "revision": re.compile(r"^\s*(REV(ISION)?\.?(\s*NO)?)\b\.?\s*[:.]?\s*", re.I),
-    "sheet": re.compile(r"\b(SHEET|SHT)\b\.?\s*(NO)?\.?\s*[:.]?\s*", re.I),
-    "scale": re.compile(r"\bSCALE\b\s*[:.]?\s*", re.I),
+    "sheet": re.compile(r"^\s*(SHEET|SHT)\b\.?\s*(NO)?\.?\s*[:.]?\s*", re.I),
+    "scale": re.compile(r"^\s*SCALE\b\s*[:.]?\s*", re.I),
+    "date": re.compile(r"^\s*DATE\b\s*[:.]?\s*", re.I),
+    "owner": re.compile(r"^\s*OWNER\b\s*[:.]?\s*", re.I),
+    "paper": re.compile(r"^\s*(SIZE|PAPER\s*SIZE|FORMAT)\b\s*[:.]?\s*", re.I),
+    "system_code": re.compile(r"^\s*SYSTEM\s*CODE\b\s*[:.]?\s*", re.I),
 }
 _ANY_LABEL = re.compile(
     r"^\s*(DWG\.?\s*NO|DRAWING\s*(NO|NUMBER|TITLE)|TITLE|HULL\s*(NO|NUMBER)|SHIP\s*(NO|TYPE)|YARD\s*NO|VESSEL\s*TYPE|"
-    r"REV(ISION)?|SHEET|SHT|SCALE|DATE|DRAWN|CHECKED|APPROVED|DESIGNED|PROJECT|OWNER|BUILDER|CLASS|DESCRIPTION|BY)\b",
+    r"REV(ISION)?|SHEET|SHT|SCALE|DATE|DRAWN|CHECKED|APPROVED|DESIGNED|PROJECT|OWNER|BUILDER|CLASS|DESCRIPTION|BY|SIZE|"
+    r"SYSTEM\s*CODE|DWN|CHK|APP)\b\.?\s*[:.]?\s*$",
     re.I,
 )
+_YARD_RE = re.compile(r"SHIPBUILDING|HEAVY\s+INDUSTRIES|SHIPYARD|SHIP\s*YARD|MARINE|OFFSHORE|CO\.,?\s*LTD|WORKS|ENGINEERING", re.I)
 
 
-def drawing_info(title_lines: Sequence[TextLine], all_lines: Sequence[TextLine], line_numbers: Sequence[str]) -> DrawingInfo:
+def drawing_info(title_lines: Sequence[TextLine], all_lines: Sequence[TextLine], line_numbers: Sequence[str],
+                 cell_at=None) -> DrawingInfo:
+    """Title-block fields: a label's value is written after it, in the same table cell
+    (usually below it, often centred) or to its right; the largest-font candidate wins
+    (the main title-block cell over e.g. the revision table)."""
     info = DrawingInfo()
     tl = list(title_lines)
-    values: dict[str, str] = {}
-    for field_name, rx in _LABELS.items():
-        for t in tl:
-            m = rx.search(t.text)
+    best: dict[str, tuple[float, str]] = {}
+    for t in tl:
+        for field_name, rx in _LABELS.items():
+            m = rx.match(t.text)
             if not m:
                 continue
-            if field_name == "title" and "DRAWING NO" in t.text.upper():
-                continue
-            rest = t.text[m.end():].strip(" :.-")
+            rest = t.text[m.end():].strip()
+            cand: Optional[tuple[float, str]] = None
             if rest and not _ANY_LABEL.match(rest):
-                values.setdefault(field_name, rest)
-                break
-            v = _value_near(t, tl)
-            if v:
-                values.setdefault(field_name, v)
-                break
+                cand = (t.size, normalize(rest))
+            else:
+                vals = _cell_values(t, tl, cell_at) if cell_at is not None else []
+                if vals:
+                    cand = (max(v.size for v in vals), " ".join(normalize(v.text) for v in vals))
+                else:
+                    v = _value_near(t, tl)
+                    if v is not None:
+                        cand = (v.size * 0.9, normalize(v.text))
+            if cand and (field_name not in best or cand[0] > best[field_name][0]):
+                best[field_name] = cand
+            break
+    values = {k: v for k, (_, v) in best.items()}
     if "title" not in values:
-        big = [t for t in tl if not _ANY_LABEL.match(t.text) and len(t.text) >= 6]
+        big = [t for t in tl if not _ANY_LABEL.match(t.text) and len(t.text) >= 6 and not _YARD_RE.search(t.text)]
         sys_like = [t for t in big if re.search(r"SYSTEM|DIAGRAM|P\s*&\s*I\s*D|PIPING", t.text, re.I)]
         pool = sys_like or big
         if pool:
@@ -361,7 +413,7 @@ def drawing_info(title_lines: Sequence[TextLine], all_lines: Sequence[TextLine],
             parts = sorted((t for t in pool if t.size >= 0.95 * top), key=lambda t: (t.bbox[1], t.bbox[0]))
             values["title"] = " ".join(normalize(t.text) for t in parts[:3])
     info.drawing_no = values.get("drawing_no")
-    info.title = normalize(values["title"]) if values.get("title") else None
+    info.title = values.get("title")
     info.hull_no = values.get("hull_no")
     info.revision = values.get("revision")
     info.sheet = values.get("sheet")
@@ -377,12 +429,15 @@ def drawing_info(title_lines: Sequence[TextLine], all_lines: Sequence[TextLine],
     # systems: title first, then the rest of the title block, then line-number codes
     sys_votes: Counter = Counter()
     main = detect_system(info.title or "") if info.title else None
+    code = values.get("system_code")
+    if main is None and code and code.upper() in SYSTEM_BY_CODE:
+        main = SYSTEM_BY_CODE[code.upper()]
     if main is None:
         main = detect_system(" ".join(t.text for t in tl))
     for t in tl:
-        s = detect_system(t.text)
-        if s:
-            sys_votes[s] += 2
+        s_ = detect_system(t.text)
+        if s_:
+            sys_votes[s_] += 2
     for ln in line_numbers:
         li = line_number_info(ln)
         if li and li["system"] in SYSTEM_BY_CODE:
@@ -390,20 +445,38 @@ def drawing_info(title_lines: Sequence[TextLine], all_lines: Sequence[TextLine],
     if main is None and sys_votes:
         main = sys_votes.most_common(1)[0][0]
     info.system = main or SystemType.UNKNOWN
-    systems = [s for s, _ in sys_votes.most_common()]
-    if main and main not in systems:
-        systems.insert(0, main)
-    elif main:
-        systems.remove(main)
+    systems = [s_ for s_, _ in sys_votes.most_common()]
+    if main is not None:
+        if main in systems:
+            systems.remove(main)
         systems.insert(0, main)
     info.systems = systems
-    extra = {k: v for k, v in values.items() if k not in ("drawing_no", "title", "hull_no", "ship_type", "revision", "sheet", "scale")}
+    extra: dict[str, str] = {}
+    yards = [t for t in tl if _YARD_RE.search(t.text) and not _ANY_LABEL.match(t.text) and not _LABELS["owner"].match(t.text)]
+    if yards:
+        extra["yard"] = normalize(max(yards, key=lambda t: t.size).text)
+    for k in ("owner", "date", "paper", "system_code"):
+        if values.get(k):
+            extra[k] = values[k]
+    if main is not None:
+        extra["system_name"] = SYSTEMS[main].name_en
     info.extra = extra
     return info
 
 
-def _value_near(label: TextLine, lines: Sequence[TextLine]) -> Optional[str]:
-    """Value written to the right of a label (same row) or below it (same cell)."""
+def _cell_values(label: TextLine, lines: Sequence[TextLine], cell_at) -> list[TextLine]:
+    """Non-label texts sharing the label's table cell, in reading order."""
+    cell = cell_at(label.cx, label.cy)
+    if cell is None:
+        return []
+    vals = [t for t in lines if t is not label and cell[0] <= t.cx <= cell[2] and cell[1] <= t.cy <= cell[3]
+            and not _ANY_LABEL.match(t.text) and not any(rx.match(t.text) and not t.text[rx.match(t.text).end():].strip()
+                                                       for rx in _LABELS.values())]
+    return sorted(vals, key=lambda t: (round(t.bbox[1], 0), t.bbox[0]))
+
+
+def _value_near(label: TextLine, lines: Sequence[TextLine]) -> Optional[TextLine]:
+    """Value written to the right of a label (same row) or below it (same column)."""
     h = max(line_height(label), 1.0)
     best = None
     for t in lines:
@@ -419,4 +492,4 @@ def _value_near(label: TextLine, lines: Sequence[TextLine]) -> Optional[str]:
             continue
         if best is None or d < best[0]:
             best = (d, t)
-    return normalize(best[1].text) if best else None
+    return best[1] if best else None

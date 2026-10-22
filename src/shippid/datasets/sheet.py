@@ -14,7 +14,7 @@ from typing import Optional
 
 from ..catalog import SYSTEMS
 from ..model import ActuatorType, BBox, DrawingInfo, SymbolClass, TextRole
-from ..symbols import ACTUATOR_DESCRIPTIONS, Placement, get_symbol, placed_bbox
+from ..symbols import Placement, get_symbol, placed_bbox
 from .blueprints import SystemTopology
 from .pdf_writer import PathDraw, SymbolDraw, TextDraw
 from .text import BOLD_FONTS, line_height, origin_for_box, text_width, wrap

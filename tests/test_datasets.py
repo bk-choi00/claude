@@ -23,7 +23,7 @@ from shippid.model import (
     SystemType,
     TextRole,
 )
-from shippid.symbols import Placement, get_symbol, placed_bbox, placed_ports
+from shippid.symbols import get_symbol, placed_bbox, placed_ports
 
 SEEDS = [(seed, ALL_SYSTEMS[i % len(ALL_SYSTEMS)]) for i, seed in enumerate(range(100, 122))]  # 22 drawings
 
@@ -180,19 +180,22 @@ def test_no_symbol_overlaps(drawings):
 
 
 def test_pipes_do_not_cross_symbols(drawings):
+    """No pipe segment enters the interior of a symbol bbox, except the symbols it connects to."""
     for seed, system, doc, spec, pdf in drawings:
         for p in doc.pipes:
             own = {p.start.object_id, p.end.object_id}
             for a, b in zip(p.points, p.points[1:]):
-                sx0, sx1 = sorted((a.x, b.x))
-                sy0, sy1 = sorted((a.y, b.y))
+                x0, x1 = sorted((a.x, b.x))
+                y0, y1 = sorted((a.y, b.y))
                 for o in doc.objects:
+                    if o.id in own:
+                        continue
                     bb = o.bbox.expand(-0.5)
-                    hit = sx0 < bb.x1 and bb.x0 < sx1 and sy0 < bb.y1 and bb.y0 < sy1 if (sx1 - sx0) > 0 \
-                        else (bb.x0 < sx0 < bb.x1 and sy0 < bb.y1 and bb.y0 < sy1)
-                    if (sy1 - sy0) == 0 and (sx1 - sx0) > 0:
-                        hit = bb.y0 < sy0 < bb.y1 and sx0 < bb.x1 and bb.x0 < sx1
-                    assert not hit or o.id in own, (seed, p.id, o.id, o.cls)
+                    if abs(y1 - y0) < 1e-6:  # horizontal
+                        hit = bb.y0 < y0 < bb.y1 and x0 < bb.x1 and bb.x0 < x1
+                    else:  # vertical
+                        hit = bb.x0 < x0 < bb.x1 and y0 < bb.y1 and bb.y0 < y1
+                    assert not hit, (seed, p.id, o.id, o.cls)
 
 
 def test_texts_do_not_overlap_each_other_or_foreign_symbols(drawings):
@@ -286,12 +289,12 @@ def test_style_variety_and_layers():
         fonts |= {t.font for t in spec.texts}
         layered += bool(spec.layers)
         legends += any(t.role == TextRole.LEGEND for t in doc.texts)
-        scales.append(spec.style.scale)
+        scales.append(doc.meta["symbol_scale"])
         if spec.layers:
             d = pymupdf.open("pdf", to_bytes(spec))
             assert {v["name"] for v in d.get_ocgs().values()} == set(spec.layers)
     assert len(papers) >= 2 and len(fonts) >= 3 and layered > 0 and legends > 0
-    assert min(scales) >= 13.0 and max(scales) <= 24.0
+    assert min(scales) >= 14.0 and max(scales) <= 24.0
 
 
 def test_determinism():
@@ -313,6 +316,20 @@ def test_explicit_style_and_topology_complexity():
     small = build_topology(SystemType.BALLAST, random.Random(1), complexity=0.0)
     big = build_topology(SystemType.BALLAST, random.Random(1), complexity=1.0)
     assert small.train_count() <= big.train_count()
+
+
+def test_split_pipes_and_interleaved_order_render_the_same_geometry():
+    base = DrawingStyle(scale=18.0, junction_dots=True)
+    alt = DrawingStyle(scale=18.0, junction_dots=True, split_pipes=True, interleave=True)
+    d1, s1 = generate(11, SystemType.FUEL_OIL_SUPPLY, style=base)
+    d2, s2 = generate(11, SystemType.FUEL_OIL_SUPPLY, style=alt)
+    assert d1.objects == d2.objects and d1.pipes == d2.pipes and d1.texts == d2.texts
+    assert s2.order is not None and s1.order is None
+    p1, p2 = pymupdf.open("pdf", to_bytes(s1))[0], pymupdf.open("pdf", to_bytes(s2))[0]
+    assert len(p2.get_drawings()) > len(p1.get_drawings())  # one path per pipe segment
+    # same ink: identical rasterisation up to anti-aliasing of the drawing order
+    a, b = p1.get_pixmap(dpi=20).samples, p2.get_pixmap(dpi=20).samples
+    assert sum(x != y for x, y in zip(a, b)) < 0.01 * len(a)
 
 
 def test_json_roundtrip(drawings, tmp_path):

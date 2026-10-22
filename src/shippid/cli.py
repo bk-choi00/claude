@@ -146,9 +146,9 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
                         use_llm=cfg.llm.enabled and args.with_llm, systems=systems,
                         save_predictions=args.save_predictions)
     bench = res.get("benchmark", {})
-    _print({k: v for k, v in res.items() if k not in ("benchmark", "per_class", "per_document")} |
-           {"documents": bench.get("documents"), "errors": len(bench.get("errors", [])),
-            "seconds": bench.get("seconds"), "report_md": bench.get("report_md")})
+    _print({"micro": res.get("micro"), "macro": res.get("macro"), "documents": bench.get("documents"),
+            "errors": len(bench.get("errors", [])), "seconds": bench.get("seconds"),
+            "report_md": bench.get("report_md")})
     return 0
 
 

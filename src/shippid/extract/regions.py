@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
 from .primitives import DSU, Prim, PrimSet, bbox_inside, bbox_union, point_seg_dist, prim_distance
-from .textlines import TextLine, line_height, median
+from .textlines import TextLine, line_height
 
 BBox4 = tuple[float, float, float, float]
 
@@ -31,18 +31,19 @@ class Regions:
     tables: list[BBox4] = field(default_factory=list)  # other text tables (treated like notes)
     notes: list[BBox4] = field(default_factory=list)
     legends: list[BBox4] = field(default_factory=list)
+    grid: list[tuple[str, float, float, float]] = field(default_factory=list)  # (axis, coord, lo, hi) table lines
 
     def kind_at(self, bbox: Sequence[float], tol: float = 1.0) -> Optional[str]:
         """'title_block' | 'notes' | 'legend' | 'table' | 'margin' | None for a box."""
-        for b in self.title_blocks:
-            if bbox_inside(bbox, b, tol):
-                return "title_block"
         for b in self.legends:
             if bbox_inside(bbox, b, tol):
                 return "legend"
         for b in self.notes:
             if bbox_inside(bbox, b, tol):
                 return "notes"
+        for b in self.title_blocks:
+            if bbox_inside(bbox, b, tol):
+                return "title_block"
         for b in self.tables:
             if bbox_inside(bbox, b, tol):
                 return "table"
@@ -54,6 +55,24 @@ class Regions:
 
     def excluded(self, bbox: Sequence[float], tol: float = 1.0) -> bool:
         return self.kind_at(bbox, tol) is not None
+
+    def cell_at(self, x: float, y: float, tol: float = 0.5) -> Optional[BBox4]:
+        """Smallest table cell around a point (nearest table lines on all four sides)."""
+        left = right = top = bottom = None
+        for ax, c, lo, hi in self.grid:
+            if ax == "v" and lo - tol <= y <= hi + tol:
+                if c < x - tol and (left is None or c > left):
+                    left = c
+                elif c > x + tol and (right is None or c < right):
+                    right = c
+            elif ax == "h" and lo - tol <= x <= hi + tol:
+                if c < y - tol and (top is None or c > top):
+                    top = c
+                elif c > y + tol and (bottom is None or c < bottom):
+                    bottom = c
+        if None in (left, right, top, bottom):
+            return None
+        return (left, top, right, bottom)
 
 
 def _keyword_hits(lines: Sequence[TextLine]) -> int:
@@ -73,15 +92,17 @@ def detect_regions(ps: PrimSet, lines: Sequence[TextLine], width: float, height:
     page = (0.0, 0.0, width, height)
     segs = [p for p in prims if p.kind == "seg" and not p.curve]
 
-    # ---- frame: lines spanning most of the page close to the borders
+    # ---- frame: lines spanning most of the page close to the borders (a full-width strip line
+    # further inside, e.g. above a notes / title band, is a table line, not the frame)
+    m = 0.07 * min(width, height)
     long_h = [p for p in segs if p.axis == "h" and abs(p.x1 - p.x0) >= 0.8 * width]
     long_v = [p for p in segs if p.axis == "v" and abs(p.y1 - p.y0) >= 0.8 * height]
-    tops = [p.y0 for p in long_h if p.y0 < 0.2 * height]
-    bottoms = [p.y0 for p in long_h if p.y0 > 0.8 * height]
-    lefts = [p.x0 for p in long_v if p.x0 < 0.2 * width]
-    rights = [p.x0 for p in long_v if p.x0 > 0.8 * width]
-    frame_ids = {p.id for p in long_h if p.y0 < 0.2 * height or p.y0 > 0.8 * height}
-    frame_ids |= {p.id for p in long_v if p.x0 < 0.2 * width or p.x0 > 0.8 * width}
+    tops = [p.y0 for p in long_h if p.y0 < m]
+    bottoms = [p.y0 for p in long_h if p.y0 > height - m]
+    lefts = [p.x0 for p in long_v if p.x0 < m]
+    rights = [p.x0 for p in long_v if p.x0 > width - m]
+    frame_ids = {p.id for p in long_h if p.y0 < m or p.y0 > height - m}
+    frame_ids |= {p.id for p in long_v if p.x0 < m or p.x0 > width - m}
     inner = (
         max(lefts) if lefts else 0.0,
         max(tops) if tops else 0.0,
@@ -160,19 +181,40 @@ def detect_regions(ps: PrimSet, lines: Sequence[TextLine], width: float, height:
             regions.title_blocks.append(bb)
         else:
             regions.tables.append(bb)
-        for m in members:
-            prims[m].role = "table"
+        for k in members:
+            prims[k].role = "table"
+            p = prims[k]
+            if p.axis == "h":
+                regions.grid.append(("h", (p.y0 + p.y1) / 2, min(p.x0, p.x1), max(p.x0, p.x1)))
+            else:
+                regions.grid.append(("v", (p.x0 + p.x1) / 2, min(p.y0, p.y1), max(p.y0, p.y1)))
+    for f in frame_lines:  # frame lines bound the outer cells of tables attached to the frame
+        if f.axis == "h":
+            regions.grid.append(("h", (f.y0 + f.y1) / 2, min(f.x0, f.x1), max(f.x0, f.x1)))
+        elif f.axis == "v":
+            regions.grid.append(("v", (f.x0 + f.x1) / 2, min(f.y0, f.y1), max(f.y0, f.y1)))
 
     # ---- notes and legend blocks headed by a keyword line
-    used: set[int] = set()
     for t in lines:
-        if t.rotation != 0 or regions.kind_at(t.bbox, tol) is not None:
+        if t.rotation != 0:
             continue
-        if NOTES_RE.match(t.text) and len(t.text) <= 30:
+        where = regions.kind_at(t.bbox, tol)
+        is_notes = bool(NOTES_RE.match(t.text)) and len(t.text) <= 30
+        is_legend = bool(LEGEND_RE.search(t.text)) and len(t.text) <= 40 and not is_notes
+        if not (is_notes or is_legend):
+            continue
+        if where in ("title_block", "table"):
+            # a notes / symbol-list box inside the sheet's bottom band: its table cell
+            cell = regions.cell_at(t.cx, t.cy)
+            if cell is not None and (cell[2] - cell[0]) * (cell[3] - cell[1]) > 6 * (t.bbox[2] - t.bbox[0]) * (t.bbox[3] - t.bbox[1]):
+                (regions.notes if is_notes else regions.legends).append(cell)
+            continue
+        if where is not None:
+            continue
+        if is_notes:
             bb = _grow_block(t, lines, regions, column=True)
             regions.notes.append(_enclosing_box(ps, bb, t, da_area, tol) or bb)
-            used.add(t.order)
-        elif LEGEND_RE.search(t.text) and len(t.text) <= 40:
+        else:
             bb = _grow_block(t, lines, regions, column=False, unit=unit)
             box_bb = _enclosing_box(ps, bb, t, da_area, tol)
             if box_bb is None:
@@ -223,9 +265,3 @@ def _enclosing_box(ps: PrimSet, bb: BBox4, head: TextLine, da_area: float, tol: 
         if best is None or area < best[0]:
             best = (area, rb)
     return best[1] if best else None
-
-
-def mark_roles(prims: Sequence[Prim]) -> None:  # pragma: no cover - debugging helper
-    for p in prims:
-        if not p.role:
-            p.role = "free"

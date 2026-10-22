@@ -384,13 +384,17 @@ class _Builder:
     def pump_elements(self, pump: Item, suction: tuple[SymbolClass, ActuatorType],
                       discharge: tuple[SymbolClass, ActuatorType], *, strainer: bool, check: bool,
                       gauges: bool, transmitter: bool, relief: bool, gauge_side: int,
-                      check_cls: SymbolClass = S.CHECK_VALVE) -> list[Element]:
-        """Suction valve, [strainer], [PI], [relief tee], pump, [relief tee], [PI], [PT], [check], discharge valve."""
+                      check_cls: SymbolClass = S.CHECK_VALVE, flex: bool = False,
+                      reducer: bool = False) -> list[Element]:
+        """Suction valve, [strainer], [PI], [flexible joint], [relief tee], pump, [relief tee], [PI], [PT],
+        [reducer], [check], discharge valve."""
         el: list[Element] = [self.valve(*suction)]
         if strainer:
             el.append(self.equip(S.STRAINER))
         if gauges:
             el.append(self.tap("PI", side=gauge_side, service="pump suction"))
+        if flex:
+            el.append(Item(self.key("f"), S.FLEXIBLE_HOSE))
         b_in = b_out = None
         if relief:
             b_in = self.branch()
@@ -403,6 +407,8 @@ class _Builder:
             el.append(self.tap("PI", side=gauge_side, service="pump discharge"))
         if transmitter:
             el.append(self.tap("PT", side=gauge_side, cls=self.remote_cls, service="pump discharge"))
+        if reducer:
+            el.append(Item(self.key("f"), S.REDUCER))
         if check:
             el.append(self.check(check_cls))
         el.append(self.valve(*discharge))
@@ -422,6 +428,8 @@ class _Builder:
         relief = (cls == S.PUMP_SCREW and self.chance(0.85)) if relief is None else relief
         gauges = self.chance(0.9)
         transmitter = self.chance(0.4)
+        flex = self.chance(0.3)
+        reducer = self.chance(0.3)
         gauge_side = 1 if relief else self.rng.choice([-1, -1, 1])
         tpl = self.key("pumps")
         for i in range(n):
@@ -429,7 +437,8 @@ class _Builder:
             pump = self.equip(cls, name, capacity if self.chance(0.8) else "")
             self.train(st, self.pump_elements(pump, suction, discharge, strainer=strainer, check=check,
                                               gauges=gauges, transmitter=transmitter, relief=relief,
-                                              gauge_side=gauge_side, check_cls=check_cls),
+                                              gauge_side=gauge_side, check_cls=check_cls, flex=flex,
+                                              reducer=reducer),
                        group=group, template=tpl, size_class=size_class)
         return st
 
@@ -468,10 +477,13 @@ class _Builder:
         self.topo.returns.append(ReturnLine(target=tank.key, train=train.key,
                                             valve=self.valve(S.GLOBE_VALVE, A.HANDWHEEL) if valve else None))
 
+    def spectacle(self) -> Item:
+        return Item(self.key("f"), S.SPECTACLE_FLANGE)
+
     def drain(self, stage: Stage, labels: tuple[str, ...], p: float = 0.65) -> None:
         """Maybe add a drain line from the top train of ``stage`` (needs >= 2 rows to cross)."""
         if len(stage.trains) >= 2 and self.chance(p):
-            valve = self.valve(self.rng.choice([S.GLOBE_VALVE, S.GATE_VALVE]), A.HANDWHEEL,
+            valve = self.valve(self.rng.choice([S.GLOBE_VALVE, S.GATE_VALVE, S.BALL_VALVE]), A.HANDWHEEL,
                                tagged=self.chance(0.7))
             self.topo.drains.append(Drain(stage, self.connector(self.rng.choice(labels)), valve))
 
@@ -568,9 +580,13 @@ def _bilge(b: _Builder) -> None:
                 source=well, template="well", group=0)
     s0.trains.sort(key=lambda t: t.group)  # header groups must be vertically contiguous
     s1 = b.stage()
-    b.pump_stage(b.count(1, 2), "NO.{n} BILGE PUMP" if b.chance(0.6) else "BILGE, FIRE & G/S PUMP",
-                 r.choice([S.PUMP_CENTRIFUGAL, S.PUMP_SCREW]), _cap(r, (10, 15, 20, 25), "M3/H x 30 MTH"),
-                 (S.GLOBE_VALVE, A.HANDWHEEL), (S.GLOBE_VALVE, A.HANDWHEEL), strainer=False, stage=s1, group=0)
+    if b.chance(0.6):
+        name, cls, cap = "NO.{n} BILGE PUMP", r.choice([S.PUMP_CENTRIFUGAL, S.PUMP_SCREW]), \
+            _cap(r, (10, 15, 20, 25), "M3/H x 30 MTH")
+    else:  # the large general service pumps double as bilge pumps
+        name, cls, cap = "NO.{n} BILGE, FIRE & G/S PUMP", S.PUMP_CENTRIFUGAL, _cap(r, (150, 200, 250), "M3/H x 35 MTH")
+    b.pump_stage(b.count(1, 2), name, cls, cap, (S.GLOBE_VALVE, A.HANDWHEEL), (S.GLOBE_VALVE, A.HANDWHEEL),
+                 strainer=False, stage=s1, group=0)
     feed = b.equip(S.PUMP_SCREW, "OWS FEED PUMP" if b.chance(0.5) else "BILGE SEPARATOR PUMP",
                    _cap(r, (2.5, 5.0), "M3/H x 3.5 BAR"))
     els = b.pump_elements(feed, (S.GATE_VALVE, A.HANDWHEEL), (S.GATE_VALVE, A.HANDWHEEL), strainer=True,
@@ -580,8 +596,8 @@ def _bilge(b: _Builder) -> None:
     s2 = b.stage()
     b.train(s2, [b.check(S.SDNR_VALVE, tagged=True)], sink=b.equip(S.OVERBOARD, "OVERBOARD"), group=0)
     if b.chance(0.6):
-        b.train(s2, [b.valve(S.GLOBE_VALVE, A.HANDWHEEL)], sink=b.connector("TO SHORE CONN. (P&S)"), group=0,
-                size_class="branch")
+        b.train(s2, [b.valve(S.GLOBE_VALVE, A.HANDWHEEL)] + ([b.spectacle()] if b.chance(0.5) else []),
+                sink=b.connector("TO SHORE CONN. (P&S)"), group=0, size_class="branch")
     ows = b.equip(S.OILY_WATER_SEPARATOR, "OILY WATER SEPARATOR", _cap(r, (2.5, 5.0), "M3/H"),
                   size=(r.uniform(1.6, 2.2), r.uniform(1.2, 1.6)), inside=b.chance(0.4))
     three = b.valve(S.THREE_WAY_VALVE, A.ELECTRIC, tagged=True)
@@ -617,7 +633,8 @@ def _fo_transfer(b: _Builder) -> None:
         tanks.append(t)
         b.train(s0, [b.valve(*qc)], source=t, template="stor")
     if b.chance(0.4):
-        b.train(s0, [b.valve(S.GATE_VALVE, A.HANDWHEEL)], source=b.connector("FROM BUNKER STATION (P&S)"))
+        b.train(s0, [b.valve(S.GATE_VALVE, A.HANDWHEEL)] + ([b.spectacle()] if b.chance(0.6) else []),
+                source=b.connector("FROM BUNKER STATION (P&S)"))
     st = b.pump_stage(b.count(1, 2), "NO.{n} H.F.O. TRANSFER PUMP", S.PUMP_SCREW,
                       _cap(r, (50, 80, 100, 150), "M3/H x 4.0 BAR"), (S.GATE_VALVE, A.HANDWHEEL),
                       (S.GLOBE_VALVE, A.HANDWHEEL), strainer=True)
@@ -639,7 +656,7 @@ def _fo_transfer(b: _Builder) -> None:
         b.train(last, [b.valve(S.GLOBE_VALVE, A.HANDWHEEL)], sink=b.connector("TO F.O. PURIFIERS"),
                 size_class="branch")
     if b.chance(0.4):
-        b.train(last, [b.valve(S.GATE_VALVE, A.HANDWHEEL)], sink=b.connector("TO BUNKER STATION"),
+        b.train(last, [b.valve(S.GATE_VALVE, A.HANDWHEEL), b.spectacle()], sink=b.connector("TO BUNKER STATION"),
                 size_class="branch")
     if len(tanks) >= 2 and b.chance(0.6):  # recirculation back to a (lower) storage tank
         tr = b.train(last, [b.valve(S.GLOBE_VALVE, A.HANDWHEEL)], size_class="branch")
@@ -710,8 +727,8 @@ def _lube_oil(b: _Builder) -> None:
     b.level_gauge(sump, "LIA")
     b.train(s0, [b.valve(S.BUTTERFLY_VALVE, A.HANDWHEEL)], source=sump)
     if b.chance(0.4):
-        b.train(s0, [b.valve(S.GLOBE_VALVE, A.QUICK_CLOSING)], source=b.connector("FROM L.O. STOR. TK"),
-                size_class="branch")
+        b.train(s0, [b.valve(S.GLOBE_VALVE, A.QUICK_CLOSING)] + ([b.spectacle()] if b.chance(0.5) else []),
+                source=b.connector("FROM L.O. STOR. TK"), size_class="branch")
     s1 = b.pump_stage(b.count(1, 2), "NO.{n} M/E L.O. PUMP", r.choice([S.PUMP_SCREW, S.PUMP_CENTRIFUGAL]),
                       _cap(r, (400, 600, 800, 1000), "M3/H x 4.5 BAR"), (S.BUTTERFLY_VALVE, A.HANDWHEEL),
                       (S.BUTTERFLY_VALVE, A.HANDWHEEL), strainer=False)
@@ -856,8 +873,8 @@ def _fire_main(b: _Builder) -> None:
     items = [(b.connector(o), [b.valve(S.GLOBE_VALVE, A.HANDWHEEL)]) for o in outlets[: b.count(2, 5)]]
     b.sinks(last, items, size_class="branch")
     if b.chance(0.6):
-        b.train(last, [b.valve(S.GATE_VALVE, A.HANDWHEEL)], sink=b.connector("TO INT'L SHORE CONNECTION"),
-                size_class="branch")
+        b.train(last, [b.valve(S.GATE_VALVE, A.HANDWHEEL)] + ([b.spectacle()] if b.chance(0.5) else []),
+                sink=b.connector("TO INT'L SHORE CONNECTION"), size_class="branch")
     if b.chance(0.5):
         b.train(last, [b.valve(S.SAFETY_VALVE, A.NONE, tagged=b.chance(0.6))], sink=b.equip(S.OVERBOARD, "OVERBOARD"),
                 size_class="small")
@@ -899,8 +916,9 @@ def _compressed_air(b: _Builder) -> None:
         el = [b.valve(S.GLOBE_VALVE, A.HANDWHEEL), b.equip(S.FILTER), pcv,
               b.tap("PIC", side=-1, cls=b.remote_cls, signal_to=pcv.key, service="reduced air pressure")]
         b.train(last, el, sink=b.connector("TO CONTROL AIR SYSTEM (7 BAR)"), size_class="small")
+    out_cls = r.choice([S.GLOBE_VALVE, S.BALL_VALVE])
     for c in ["TO G/E STARTING AIR", "TO GENERAL SERVICE AIR", "TO WORKSHOP"][: b.count(1, 3)]:
-        b.train(last, [b.valve(S.GLOBE_VALVE, A.HANDWHEEL)], sink=b.connector(c), size_class="branch",
+        b.train(last, [b.valve(out_cls, A.HANDWHEEL)], sink=b.connector(c), size_class="branch",
                 template="ca_out")
     b.topo.notes += ["AIR RECEIVERS TO BE FITTED WITH SAFETY VALVES AND DRAIN VALVES.",
                      "STARTING AIR CAPACITY: 12 CONSECUTIVE STARTS WITHOUT REFILLING."]

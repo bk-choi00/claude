@@ -29,9 +29,22 @@ def font_metrics(name: str) -> tuple[float, float]:
     return float(f.ascender), float(f.descender)
 
 
-@lru_cache(maxsize=65536)
+_ADVANCE: dict[str, dict[str, float]] = {}
+
+
 def text_width(text: str, font: str, size: float) -> float:
-    return float(pymupdf.get_text_length(text, fontname=font, fontsize=size))
+    """Advance width in points; identical to ``pymupdf.get_text_length`` (base-14 widths are
+    additive, no kerning) but computed from a per-character cache."""
+    adv = _ADVANCE.get(font)
+    if adv is None:
+        adv = _ADVANCE[font] = {}
+    total = 0.0
+    for c in text:
+        w = adv.get(c)
+        if w is None:
+            w = adv[c] = float(pymupdf.get_text_length(c, fontname=font, fontsize=1.0))
+        total += w
+    return total * size
 
 
 def line_height(font: str, size: float) -> float:
