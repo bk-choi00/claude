@@ -11,6 +11,12 @@ Commands
     evaluate            benchmark extraction against a generated dataset
     llm-check           test the connection to the Gemma 4 31B endpoint
     symbols             write the symbol library legend as a PDF
+
+Exit codes: 0 success; 1 the command ran but reported a failure (``llm-check`` not ok, failed
+dataset items); 2 invalid arguments or input (missing / empty / damaged / encrypted PDF, page out
+of range, a JSON file of the wrong kind, ``--planner gemma`` or ``--with-llm`` without an LLM
+backend), printed as one ``shippid: error: ...`` line on stderr (``-v`` adds the traceback);
+130 interrupted. Anything else is a bug and ends in a traceback.
 """
 
 from __future__ import annotations
@@ -19,14 +25,32 @@ import argparse
 import json
 import logging
 import sys
+import traceback
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
 from .config import Config, load_config
 
+EXIT_OK, EXIT_FAILED, EXIT_INPUT, EXIT_INTERRUPTED = 0, 1, 2, 130
+
+
+class InputError(ValueError):
+    """Invalid command-line input (reported as ``shippid: error: ...``, exit code 2)."""
+
 
 def _print(obj: Any) -> None:
     print(json.dumps(obj, indent=1, ensure_ascii=False, default=str))
+
+
+def _pages_arg(value: str) -> list[int]:
+    """``--pages 0,2`` -> ``[0, 2]`` (0-based page indices)."""
+    try:
+        pages = [int(p) for p in value.split(",") if p.strip()]
+    except ValueError:
+        pages = []
+    if not pages or any(p < 0 for p in pages):
+        raise argparse.ArgumentTypeError(f"expected comma separated 0-based page indices (e.g. 0,2), not {value!r}")
+    return pages
 
 
 def _add_llm_args(p: argparse.ArgumentParser) -> None:
@@ -78,16 +102,17 @@ def cmd_collect_scan(args: argparse.Namespace) -> int:
 def cmd_collect_fetch(args: argparse.Namespace) -> int:
     from .datasets.collect import fetch_sources
 
-    _print(fetch_sources(args.sources, args.dest))
+    _print(fetch_sources(args.sources, args.dest, allow_private=args.allow_private))
     return 0
 
 
 def cmd_extract(args: argparse.Namespace) -> int:
     from .extract.pipeline import extract_pdf
 
+    from .pipeline import link_multisheet
+
     cfg = load_config(args.config)
-    pages = [int(p) for p in args.pages.split(",")] if args.pages else None
-    doc = extract_pdf(args.pdf, cfg, pages=pages)
+    doc = link_multisheet(extract_pdf(args.pdf, cfg, pages=args.pages))  # multi-page: pair the sheets as `run` does
     out = Path(args.output or Path(args.pdf).with_suffix(".extracted.json"))
     doc.save(out)
     _print({"output": str(out), "objects": len(doc.objects), "pipes": len(doc.pipes), "texts": len(doc.texts),
@@ -99,8 +124,8 @@ def cmd_run(args: argparse.Namespace, stages: Sequence[str]) -> int:
     from .pipeline import run_pipeline, summarize
 
     cfg = _config(args)
-    pages = [int(p) for p in args.pages.split(",")] if getattr(args, "pages", None) else None
-    result = run_pipeline(args.pdf, args.out, cfg, pages=pages, planner=getattr(args, "planner", "auto"),
+    result = run_pipeline(args.pdf, args.out, cfg, pages=getattr(args, "pages", None),
+                          planner=getattr(args, "planner", "auto"),
                           viewer=getattr(args, "viewer", "threejs"), stages=stages)
     _print(summarize(result))
     return 0
@@ -116,12 +141,20 @@ def cmd_model3d(args: argparse.Namespace) -> int:
     from .model3d.builder import build_layout
     from .model3d.scene import export_glb, layout_to_scene
     from .model3d.viewer import write_viewer_html
-    from .pipeline import _client
+    from .pipeline import _client, check_planner
 
-    data = json.loads(src.read_text(encoding="utf-8"))
-    doc = AnalysisReport.model_validate(data).document if "document" in data else PIDDocument.model_validate(data)
     cfg = _config(args)
     client = None if args.planner == "heuristic" else _client(cfg)
+    check_planner(args.planner, client)
+    try:
+        data = json.loads(src.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise InputError(f"{src}: not a PDF or JSON file ({exc})") from exc
+    if not isinstance(data, dict) or not ("document" in data or "objects" in data):
+        kind = "a 3D layout (layout3d.json)" if isinstance(data, dict) and "placements" in data else "not a P&ID document"
+        raise InputError(f"{src}: {kind}; model3d takes a PDF, a document JSON (extracted.json / document.json) "
+                         "or an analysis JSON (analysis.json)")
+    doc = AnalysisReport.model_validate(data).document if "document" in data else PIDDocument.model_validate(data)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     layout = build_layout(doc, client=client)
@@ -139,13 +172,14 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     from .benchmark import run_benchmark
 
     cfg = _config(args)
+    if args.with_llm and not cfg.llm.enabled:
+        raise InputError("--with-llm needs an LLM backend (set --llm / --base-url or SHIPPID_LLM_*)")
     systems = [s.strip() for s in args.systems.split(",")] if args.systems else None
     res = run_benchmark(args.data, args.out, split=args.split, limit=args.limit, workers=args.workers, cfg=cfg,
-                        use_llm=cfg.llm.enabled and args.with_llm, systems=systems,
-                        save_predictions=args.save_predictions)
+                        use_llm=args.with_llm, systems=systems, save_predictions=args.save_predictions)
     bench = res.get("benchmark", {})
     _print({"micro": res.get("micro"), "macro": res.get("macro"), "documents": bench.get("documents"),
-            "errors": len(bench.get("errors", [])), "seconds": bench.get("seconds"),
+            "errors": len(bench.get("errors", [])), "llm": bench.get("llm"), "seconds": bench.get("seconds"),
             "report_md": bench.get("report_md")})
     return 0
 
@@ -221,12 +255,14 @@ def build_parser() -> argparse.ArgumentParser:
     s = col.add_parser("fetch", help="download PDFs listed in a sources YAML")
     s.add_argument("--sources", required=True)
     s.add_argument("--dest", required=True)
+    s.add_argument("--allow-private", action="store_true",
+                   help="allow URLs / redirects to loopback, private and link-local addresses (intranet sources)")
     s.set_defaults(func=cmd_collect_fetch)
 
     s = sub.add_parser("extract", help="deterministic vector extraction to JSON")
     s.add_argument("pdf")
     s.add_argument("-o", "--output", default=None)
-    s.add_argument("--pages", default=None, help="comma separated 0-based page indices")
+    s.add_argument("--pages", type=_pages_arg, default=None, help="comma separated 0-based page indices")
     s.add_argument("--config", default=None)
     s.set_defaults(func=cmd_extract)
 
@@ -237,7 +273,7 @@ def build_parser() -> argparse.ArgumentParser:
         s = sub.add_parser(name, help=help_)
         s.add_argument("pdf")
         s.add_argument("-o", "--out", required=True, help="output directory")
-        s.add_argument("--pages", default=None)
+        s.add_argument("--pages", type=_pages_arg, default=None, help="comma separated 0-based page indices")
         s.add_argument("--planner", choices=["auto", "gemma", "heuristic"], default="auto")
         s.add_argument("--viewer", choices=["threejs", "plotly", "both"], default="threejs")
         _add_llm_args(s)
@@ -246,7 +282,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("model3d", help="3D model from a PDF, document JSON or analysis JSON")
     s.add_argument("input")
     s.add_argument("-o", "--out", required=True)
-    s.add_argument("--pages", default=None)
+    s.add_argument("--pages", type=_pages_arg, default=None, help="PDF input only: 0-based page indices")
     s.add_argument("--planner", choices=["auto", "gemma", "heuristic"], default="auto")
     s.add_argument("--viewer", choices=["threejs", "plotly", "both"], default="threejs")
     _add_llm_args(s)
@@ -274,12 +310,60 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _expected_errors() -> tuple[type[BaseException], ...]:
+    """Errors caused by the input or the environment (not bugs): one line + exit code 2."""
+    import pymupdf
+
+    from .llm.base import LLMError
+
+    errs: list[type[BaseException]] = [ValueError, IndexError, OSError, LLMError]
+    for name in ("FileDataError", "EmptyFileError", "FileNotFoundError"):  # pymupdf's own (RuntimeError) classes
+        cls = getattr(pymupdf, name, None)
+        if isinstance(cls, type) and issubclass(cls, BaseException):
+            errs.append(cls)
+    return tuple(errs)
+
+
+def error_message(exc: BaseException) -> str:
+    """One-line description of an expected error."""
+    import pymupdf
+    import pydantic
+
+    from .llm.base import LLMError
+
+    if isinstance(exc, pydantic.ValidationError):
+        first = exc.errors()[0] if exc.error_count() else {}
+        loc = ".".join(str(x) for x in first.get("loc", ())) or "(root)"
+        return (f"invalid {exc.title} JSON: {exc.error_count()} validation error(s), first at {loc}: "
+                f"{first.get('msg', '')}")
+    msg = " ".join(str(exc).split()) or type(exc).__name__
+    data_err = getattr(pymupdf, "FileDataError", None)
+    if isinstance(data_err, type) and isinstance(exc, data_err):
+        return f"cannot open PDF (empty, damaged or not a PDF): {msg}"
+    if isinstance(exc, FileNotFoundError) or type(exc).__name__ == "FileNotFoundError":
+        return f"file not found: {exc.filename}" if getattr(exc, "filename", None) else msg
+    if isinstance(exc, OSError) and getattr(exc, "filename", None):
+        return f"{exc.strerror or msg}: {exc.filename}"
+    if isinstance(exc, LLMError):
+        return f"LLM backend error: {msg}"
+    return msg
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.WARNING - 10 * min(args.verbose, 2),
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    return int(args.func(args) or 0)
+    try:
+        return int(args.func(args) or 0)
+    except KeyboardInterrupt:
+        print("shippid: interrupted", file=sys.stderr)
+        return EXIT_INTERRUPTED
+    except _expected_errors() as exc:
+        if args.verbose:
+            traceback.print_exc()
+        print(f"shippid: error: {error_message(exc)}", file=sys.stderr)
+        return EXIT_INPUT
 
 
 if __name__ == "__main__":  # pragma: no cover

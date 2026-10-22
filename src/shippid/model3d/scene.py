@@ -29,7 +29,8 @@ import trimesh
 
 from ..catalog import MEDIUM_COLORS, SYSTEMS
 from ..model import Category, Layout3D, Medium, PIDDocument, PipeKind, Placement3D, SymbolClass, SystemType
-from .heuristic import object_labels, object_systems, pipe_dn, pipe_medium, pipe_system, doc_system
+from .heuristic import (SHEET_LINK_PREFIX, doc_system, object_labels, object_systems, pipe_dn, pipe_medium,
+                        pipe_system)
 from .meshes import Part, deck_parts, make_material, object_parts, outline_part, pipe_color, pipe_mesh
 from .solver import axis_height
 
@@ -185,7 +186,14 @@ def scene_items(layout: Layout3D, doc: PIDDocument, outline: bool = True) -> lis
         mesh = pipe_mesh(pts, r.diameter)
         if mesh is None:
             continue
-        sys_ = pipe_system(pp, default_sys) if pp else default_sys
+        link = r.pipe_id.startswith(SHEET_LINK_PREFIX)
+        ends = r.pipe_id[len(SHEET_LINK_PREFIX):].split(":") if link else []
+        if pp:
+            sys_ = pipe_system(pp, default_sys)
+        elif link and len(ends) == 2:  # continuation between paired off-page connectors (no drawn pipe)
+            sys_ = systems.get(ends[0], default_sys)
+        else:
+            sys_ = default_sys
         length = sum(math.dist(a, b) for a, b in zip(pts, pts[1:]))
         mc = MEDIUM_COLORS.get(r.medium, MEDIUM_COLORS[Medium.UNKNOWN])
         extras = {
@@ -193,10 +201,11 @@ def scene_items(layout: Layout3D, doc: PIDDocument, outline: bool = True) -> lis
             "system": sys_.value, "line_number": r.line_number, "size": pp.size if pp else None,
             "medium": r.medium.value, "iso14726": f"{mc[0]} ({mc[1]})", "diameter_m": round(r.diameter, 4),
             "length_m": round(length, 2),
-            "from": (pp.start.object_id or pp.start.junction_id) if pp else None,
-            "to": (pp.end.object_id or pp.end.junction_id) if pp else None,
-            "pipe_kind": pp.kind.value if pp else None, "deck": None,
-            "rationale": "orthogonal route (A* on a voxel grid) between the placed items",
+            "from": (pp.start.object_id or pp.start.junction_id) if pp else (ends[0] if len(ends) == 2 else None),
+            "to": (pp.end.object_id or pp.end.junction_id) if pp else (ends[1] if len(ends) == 2 else None),
+            "pipe_kind": pp.kind.value if pp else ("sheet_link" if link else None), "deck": None,
+            "rationale": ("continuation across the sheet boundary between two paired off-page connectors"
+                          if link else "orthogonal route (A* on a voxel grid) between the placed items"),
         }
         base = f"{r.line_number}_{r.pipe_id}" if r.line_number else f"pipe_{r.pipe_id}"
         items.append(SceneItem(names.get(base), "pipe", sys_.value, "pipe", np.eye(4),

@@ -550,7 +550,8 @@ def write_html_report(report: AnalysisReport, out_html: str | Path, pdf_path: Op
     title = f"{info.drawing_no or ''} {info.title or Path(doc.source).name or 'P&ID'}".strip()
     rule_titles_ko = {rid: r.title_ko for rid, r in RULES.items()}
     flow_rows = []
-    drawn = {o.id for o in doc.objects} | {j.id for j in doc.junctions} | {p.id for p in doc.pipes}
+    drawn = ({o.id for o in doc.objects} | {j.id for j in doc.junctions}
+             | {p.id for p in doc.pipes if len(p.points) >= 2})  # the ids _svg() draws
     pairs = [(a, b) for a, b, _ in sheet_link_pairs(doc)]
     page_of = {o.id: o.page + 1 for o in doc.objects}
     for k, fp in enumerate(report.flow_paths, 1):

@@ -12,6 +12,11 @@ inspected (and resumed) stage by stage::
       model.glb         3D model (glTF binary)
       viewer.html       interactive 3D viewer
       report.html       analysis report with the drawing overlay
+
+A multi-page document gets its off-page connectors paired across the sheets
+(:func:`shippid.analysis.sheets.link_sheets`, ``meta["sheet_links"]``) before it is saved, so
+``extracted.json``, ``document.json`` and the document inside ``analysis.json`` carry the same
+cross-sheet links (with Gemma, ``document.json`` also holds its decisions on ambiguous pairs).
 """
 
 from __future__ import annotations
@@ -30,6 +35,9 @@ if TYPE_CHECKING:  # pragma: no cover
 
 log = logging.getLogger(__name__)
 
+PLANNERS = ("auto", "gemma", "heuristic")
+VIEWERS = ("threejs", "plotly", "both")
+
 
 @dataclass
 class RunResult:
@@ -47,6 +55,45 @@ def _client(cfg: Config):
     from .llm.factory import make_client
 
     return make_client(cfg.llm)
+
+
+def llm_label(client: Optional["LLMClient"]) -> str:
+    """``backend:model`` of the client that produced an output (``"none"`` without one): a mock
+    backend is recorded as ``mock:...``, never as Gemma."""
+    return f"{client.backend.name}:{client.model}" if client is not None else "none"
+
+
+def check_planner(planner: str, client: Optional["LLMClient"]) -> None:
+    """Fail early (before any stage runs) when the 3D planner cannot be honoured."""
+    if planner not in PLANNERS:
+        raise ValueError(f"planner must be one of {PLANNERS}, not {planner!r}")
+    if planner == "gemma" and client is None:
+        raise ValueError("planner='gemma' needs an LLM backend (set --llm / --base-url or SHIPPID_LLM_*, "
+                         "see `shippid llm-check`), or use --planner auto|heuristic")
+
+
+def make_gemma_analyzer(client: "LLMClient", cfg: Config):
+    """GemmaAnalyzer for an existing client, wired like :func:`shippid.analysis.gemma.make_analyzer`
+    (``max_image_side`` -> ``crop_max_side``, ``concurrency``)."""
+    from .analysis.gemma import GemmaAnalyzer
+
+    return GemmaAnalyzer(client, crop_max_side=cfg.llm.max_image_side, concurrency=max(1, int(cfg.llm.concurrency)))
+
+
+def page_count(doc: PIDDocument) -> int:
+    """Pages of a document, counted as :func:`shippid.analysis.analyzer.analyze` counts them."""
+    return len({p.index for p in doc.pages} | {o.page for o in doc.objects})
+
+
+def link_multisheet(doc: PIDDocument) -> PIDDocument:
+    """Pair the off-page connectors of a multi-page document in place, as ``analyze()`` does
+    (:func:`shippid.analysis.sheets.link_sheets`). No-op for a single page or when
+    ``doc.meta["sheet_links"]`` already exists (e.g. written by the Gemma refinement)."""
+    if page_count(doc) > 1 and "sheet_links" not in doc.meta:
+        from .analysis.sheets import link_sheets
+
+        link_sheets(doc)
+    return doc
 
 
 def extract(pdf_path: str | Path, cfg: Optional[Config] = None, pages: Optional[Iterable[int]] = None) -> PIDDocument:
@@ -68,35 +115,48 @@ def run_pipeline(
 ) -> RunResult:
     """Run the selected stages on one PDF. With ``cfg.llm.backend == 'none'`` every
     Gemma step is skipped and the deterministic path is used (recorded in the outputs).
-    ``client`` overrides the client built from ``cfg`` (tests, custom backends)."""
+    ``client`` overrides the client built from ``cfg`` (tests, custom backends).
+
+    Raises ``ValueError`` before any stage runs when ``planner='gemma'`` is asked for the 3D
+    stage without an LLM backend, or ``planner`` / ``viewer`` is unknown."""
     cfg = cfg or load_config()
     stages = set(stages)
+    if viewer not in VIEWERS:
+        raise ValueError(f"viewer must be one of {VIEWERS}, not {viewer!r}")
+    if planner not in PLANNERS:
+        raise ValueError(f"planner must be one of {PLANNERS}, not {planner!r}")
+    client = client if client is not None else _client(cfg)
+    if "model3d" in stages:
+        check_planner(planner, client)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     timings: dict[str, float] = {}
     paths: dict[str, Path] = {}
 
-    client = client if client is not None else _client(cfg)
-    analyzer = None
-    if client is not None:
-        from .analysis.gemma import GemmaAnalyzer
+    analyzer = make_gemma_analyzer(client, cfg) if client is not None else None
+    refine = analyzer is not None and "refine" in stages
 
-        analyzer = GemmaAnalyzer(client, crop_max_side=cfg.llm.max_image_side)
-
-    # 1. deterministic extraction
+    # 1. deterministic extraction (+ cross-sheet connector pairing for a multi-page set)
     t0 = time.perf_counter()
     doc = extract(pdf_path, cfg, pages)
     timings["extract"] = time.perf_counter() - t0
-    paths["extracted"] = doc.save(out / "extracted.json")
+    extracted = doc
+    if page_count(doc) > 1:
+        # with refinement the links are computed again on the refined document (Gemma may
+        # reclassify connectors); extracted.json gets the deterministic links of the vector result
+        t0 = time.perf_counter()
+        extracted = link_multisheet(doc.model_copy(deep=True) if refine else doc)
+        timings["link_sheets"] = time.perf_counter() - t0
+    paths["extracted"] = extracted.save(out / "extracted.json")
 
-    # 2. Gemma refinement of symbols / drawing info / text ownership
-    if analyzer is not None and "refine" in stages:
+    # 2. Gemma refinement of symbols / drawing info / text ownership (/ ambiguous sheet links)
+    if refine:
         t0 = time.perf_counter()
         doc = analyzer.refine_document(doc, pdf_path)
+        link_multisheet(doc)  # the Gemma sheet-link step failed or did not run
         timings["refine"] = time.perf_counter() - t0
     paths["document"] = doc.save(out / "document.json")
-    result = RunResult(document=doc, paths=paths, timings=timings,
-                       llm_backend=f"{client.backend.name}:{client.model}" if client else "none")
+    result = RunResult(document=doc, paths=paths, timings=timings, llm_backend=llm_label(client))
 
     # 3. analysis (deterministic rules + Gemma engineering review)
     if "analyze" in stages or "report" in stages:
@@ -119,8 +179,6 @@ def run_pipeline(
 
         t0 = time.perf_counter()
         plan_client = None if planner == "heuristic" else client
-        if planner == "gemma" and plan_client is None:
-            raise ValueError("planner='gemma' needs an LLM backend (see `shippid llm-check`)")
         layout = build_layout(doc, client=plan_client)
         paths["layout"] = layout.save(out / "layout3d.json")
         scene = layout_to_scene(layout, doc)

@@ -30,10 +30,10 @@ from typing import Optional, Sequence
 import numpy as np
 
 from ..catalog import TYPICAL_DIMENSIONS
-from ..model import Category, Endpoint, PIDDocument, PIDObject, Placement3D, SymbolClass, Vec3
+from ..model import Category, Endpoint, PIDDocument, PIDObject, PipeRun, Placement3D, SymbolClass, Vec3
 from ..symbols import get_symbol
 from .heuristic import (_BOILER, _GEN_ENGINE, _HIGH_TANK, _MAIN_ENGINE, Neighbor, drawing_positions,
-                        equipment_adjacency, object_labels, process_pipes)
+                        equipment_adjacency, object_labels, prepare_document, process_pipes)
 from .plan import LayoutPlan, PlanItem, effective_deck
 from .zones import Box3, EngineRoom
 
@@ -233,22 +233,67 @@ class _Placed:
     group: Optional[str]
 
 
-@dataclass
 class _Ctx:
-    room: EngineRoom
-    step: float
-    placed: list[_Placed] = field(default_factory=list)
-    arr: np.ndarray = field(default_factory=lambda: np.zeros((0, 6)))
-    clear: np.ndarray = field(default_factory=lambda: np.zeros(0))
-    struct: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=bool))
-    marker: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=bool))
+    """Placed boxes of one solve (growable arrays, amortised O(1) per added box)."""
+
+    def __init__(self, room: EngineRoom, step: float, placed: Sequence[_Placed] = ()):
+        self.room = room
+        self.step = step
+        self.placed: list[_Placed] = []
+        n = max(16, len(placed))
+        self._arr = np.zeros((n, 6))
+        self._clear = np.zeros(n)
+        self._struct = np.zeros(n, dtype=bool)
+        self._marker = np.zeros(n, dtype=bool)
+        for p in placed:
+            self.add(p)
 
     def add(self, p: _Placed) -> None:
+        n = len(self.placed)
+        if n == len(self._arr):
+            cap = 2 * n
+            self._arr = np.resize(self._arr, (cap, 6))
+            self._clear = np.resize(self._clear, cap)
+            self._struct = np.resize(self._struct, cap)
+            self._marker = np.resize(self._marker, cap)
         self.placed.append(p)
-        self.arr = np.vstack([self.arr, np.array(p.box.as_tuple())[None, :]])
-        self.clear = np.append(self.clear, p.clearance)
-        self.struct = np.append(self.struct, p.structural)
-        self.marker = np.append(self.marker, p.marker)
+        self._arr[n] = p.box.as_tuple()
+        self._clear[n] = p.clearance
+        self._struct[n] = p.structural
+        self._marker[n] = p.marker
+
+    @property
+    def arr(self) -> np.ndarray:
+        return self._arr[:len(self.placed)]
+
+    @property
+    def clear(self) -> np.ndarray:
+        return self._clear[:len(self.placed)]
+
+    @property
+    def struct(self) -> np.ndarray:
+        return self._struct[:len(self.placed)]
+
+    @property
+    def marker(self) -> np.ndarray:
+        return self._marker[:len(self.placed)]
+
+    def near(self, region: tuple[float, float, float, float], fx: float, fy: float, z0: float, z1: float,
+             c_self: float) -> np.ndarray:
+        """Indices of the placed boxes that can matter for a footprint (fx, fy) centred anywhere in
+        ``region`` on the level z0..z1: overlapping in z and within the largest clearance in x and y.
+        Only these boxes yield snug candidates inside the region or can conflict with a position in
+        it, so restricting candidates and the feasibility test to them changes no result."""
+        n = len(self.placed)
+        if n == 0:
+            return np.zeros(0, dtype=int)
+        a = self.arr
+        cmax = max(c_self, MARKER_CLEARANCE, float(self.clear.max())) + 0.02
+        cx0, cx1, cy0, cy1 = region
+        ok = (a[:, 2] < z1 - 1e-6) & (z0 < a[:, 5] - 1e-6)
+        ok &= (a[:, 3] > cx0 - fx / 2 - cmax) & (a[:, 0] < cx1 + fx / 2 + cmax)
+        ok &= (a[:, 4] > cy0 - fy / 2 - cmax) & (a[:, 1] < cy1 + fy / 2 + cmax)
+        return np.nonzero(ok)[0]
 
 
 def _region(room: EngineRoom, zone: str, side: Optional[str], long_: Optional[str], fx: float, fy: float
@@ -287,55 +332,133 @@ def _grid(a: float, b: float, step: float) -> np.ndarray:
     return np.unique(np.concatenate([vals, [(a + b) / 2]]))
 
 
+def _box_clearances(ctx: _Ctx, idx: np.ndarray, c_self: float, structural: bool, marker: bool) -> np.ndarray:
+    """Required gap to each placed box ``idx`` (markers keep MARKER_CLEARANCE, structural items may
+    share bulkheads with each other, else the larger of both clearances)."""
+    c = np.maximum(ctx.clear[idx], c_self)
+    if marker:
+        c = np.full_like(c, MARKER_CLEARANCE)
+    c = np.where(ctx.marker[idx], MARKER_CLEARANCE, c)
+    if structural:
+        c = np.where(ctx.struct[idx], 0.0, c)
+    return c
+
+
 def _candidates(ctx: _Ctx, region: tuple[float, float, float, float], fx: float, fy: float, z0: float, z1: float,
-                c_self: float, structural: bool) -> np.ndarray:
+                c_self: float, structural: bool, idx: Optional[np.ndarray] = None) -> np.ndarray:
+    """Grid positions in the region plus, per placed box on the level, the 12 "snug" positions
+    touching it at exactly the clearance (aligned with its sides or its centre), inside the region.
+    ``idx``: the boxes to use (default :meth:`_Ctx.near`)."""
     cx0, cx1, cy0, cy1 = region
     xs, ys = _grid(cx0, cx1, ctx.step), _grid(cy0, cy1, ctx.step)
     gx, gy = np.meshgrid(xs, ys, indexing="ij")
     pts = [np.stack([gx.ravel(), gy.ravel()], axis=1)]
-    if len(ctx.placed):
-        a = ctx.arr
-        zov = (a[:, 2] < z1 - 1e-6) & (z0 < a[:, 5] - 1e-6)
-        for i in np.nonzero(zov)[0]:
-            b = a[i]
-            if structural and ctx.struct[i]:
-                c = 0.0
-            else:
-                c = MARKER_CLEARANCE if ctx.marker[i] else max(c_self, ctx.clear[i])
-            c += 1e-3
-            xs_s = [b[3] + c + fx / 2, b[0] - c - fx / 2]
-            ys_s = [b[4] + c + fy / 2, b[1] - c - fy / 2]
-            ys_al = [b[1] + fy / 2, (b[1] + b[4]) / 2, b[4] - fy / 2]
-            xs_al = [b[0] + fx / 2, (b[0] + b[3]) / 2, b[3] - fx / 2]
-            pts.append(np.array([(x, y) for x in xs_s for y in ys_al] + [(x, y) for y in ys_s for x in xs_al]))
+    if idx is None:
+        idx = ctx.near(region, fx, fy, z0, z1, c_self)
+    if len(idx):
+        b = ctx.arr[idx]
+        if structural:
+            c = np.where(ctx.struct[idx], 0.0, np.where(ctx.marker[idx], MARKER_CLEARANCE,
+                                                        np.maximum(c_self, ctx.clear[idx])))
+        else:
+            c = np.where(ctx.marker[idx], MARKER_CLEARANCE, np.maximum(c_self, ctx.clear[idx]))
+        c = c + 1e-3
+        xs_s = np.stack([b[:, 3] + c + fx / 2, b[:, 0] - c - fx / 2], axis=1)  # (m, 2)
+        ys_al = np.stack([b[:, 1] + fy / 2, (b[:, 1] + b[:, 4]) / 2, b[:, 4] - fy / 2], axis=1)  # (m, 3)
+        ys_s = np.stack([b[:, 4] + c + fy / 2, b[:, 1] - c - fy / 2], axis=1)
+        xs_al = np.stack([b[:, 0] + fx / 2, (b[:, 0] + b[:, 3]) / 2, b[:, 3] - fx / 2], axis=1)
+        m = len(idx)
+        side_x = np.stack([np.repeat(xs_s, 3, axis=1), np.tile(ys_al, 2)], axis=2).reshape(m * 6, 2)
+        side_y = np.stack([np.tile(xs_al, 2), np.repeat(ys_s, 3, axis=1)], axis=2).reshape(m * 6, 2)
+        pts += [side_x, side_y]
     p = np.concatenate(pts, axis=0)
     ok = (p[:, 0] >= cx0 - 1e-9) & (p[:, 0] <= cx1 + 1e-9) & (p[:, 1] >= cy0 - 1e-9) & (p[:, 1] <= cy1 + 1e-9)
     return p[ok]
 
 
-def _feasible(ctx: _Ctx, pts: np.ndarray, fx: float, fy: float, z0: float, z1: float, c_self: float,
-              structural: bool, marker: bool) -> np.ndarray:
-    if len(pts) == 0 or len(ctx.placed) == 0:
-        return np.ones(len(pts), dtype=bool)
-    a = ctx.arr
-    zov = (a[:, 2] < z1 - 1e-6) & (z0 < a[:, 5] - 1e-6)
-    if not zov.any():
-        return np.ones(len(pts), dtype=bool)
-    a = a[zov]
-    c = np.maximum(ctx.clear[zov], c_self)
-    if marker:
-        c = np.full_like(c, MARKER_CLEARANCE)
-    c = np.where(ctx.marker[zov], MARKER_CLEARANCE, c)
-    if structural:
-        c = np.where(ctx.struct[zov], 0.0, c)
+_DENSE_LIMIT = 200_000  # candidate x box pairs tested at once; larger sets are binned in space
+_BIN = 2.5  # m
+_PAIR_CHUNK = 1_000_000
+
+
+def _conflicts(pts: np.ndarray, a: np.ndarray, c: np.ndarray, fx: float, fy: float) -> np.ndarray:
     x0 = pts[:, 0:1] - fx / 2
     x1 = pts[:, 0:1] + fx / 2
     y0 = pts[:, 1:2] - fy / 2
     y1 = pts[:, 1:2] + fy / 2
     gx = np.maximum(a[None, :, 0] - x1, x0 - a[None, :, 3])
     gy = np.maximum(a[None, :, 1] - y1, y0 - a[None, :, 4])
-    conflict = (gx < c[None, :] - 1e-6) & (gy < c[None, :] - 1e-6)
-    return ~conflict.any(axis=1)
+    return ((gx < c[None, :] - 1e-6) & (gy < c[None, :] - 1e-6)).any(axis=1)
+
+
+def _conflicts_binned(pts: np.ndarray, a: np.ndarray, c: np.ndarray, fx: float, fy: float) -> np.ndarray:
+    """:func:`_conflicts` for many candidates: candidates are grouped in _BIN x _BIN cells, each cell
+    is tested only against the boxes within its reach (a superset of the boxes any of its candidates
+    can conflict with), all pairs at once in flat arrays (chunked to bound memory)."""
+    K = len(pts)
+    ix = np.floor((pts[:, 0] - pts[:, 0].min()) / _BIN).astype(np.int64)
+    iy = np.floor((pts[:, 1] - pts[:, 1].min()) / _BIN).astype(np.int64)
+    key = ix * (int(iy.max()) + 1) + iy
+    order = np.argsort(key, kind="stable")
+    P = pts[order]
+    ks = key[order]
+    starts = np.flatnonzero(np.r_[True, ks[1:] != ks[:-1]])
+    sizes = np.diff(np.r_[starts, K])
+    qx0 = np.minimum.reduceat(P[:, 0], starts) - fx / 2
+    qx1 = np.maximum.reduceat(P[:, 0], starts) + fx / 2
+    qy0 = np.minimum.reduceat(P[:, 1], starts) - fy / 2
+    qy1 = np.maximum.reduceat(P[:, 1], starts) + fy / 2
+    reach = ((a[None, :, 0] < qx1[:, None] + c[None, :]) & (a[None, :, 3] > qx0[:, None] - c[None, :]) &
+             (a[None, :, 1] < qy1[:, None] + c[None, :]) & (a[None, :, 4] > qy0[:, None] - c[None, :]))
+    bad = np.zeros(K, dtype=bool)
+    n_box = reach.sum(axis=1)
+    pairs_per_group = n_box * sizes
+    g0 = 0
+    G = len(starts)
+    while g0 < G:  # chunks of whole groups with at most _PAIR_CHUNK pairs (at least one group)
+        acc = np.cumsum(pairs_per_group[g0:])
+        g1 = g0 + max(1, int(np.searchsorted(acc, _PAIR_CHUNK, side="right")))
+        gs = np.arange(g0, g1)
+        rows, boxes = np.nonzero(reach[g0:g1])  # row-major: boxes of each group, groups in order
+        if len(boxes):
+            indptr = np.r_[0, np.cumsum(n_box[g0:g1])]
+            cand = np.arange(starts[g0], starts[g1 - 1] + sizes[g1 - 1])
+            grp = np.repeat(gs - g0, sizes[g0:g1])
+            pc = n_box[g0:g1][grp]
+            total = int(pc.sum())
+            if total:
+                ci = np.repeat(cand, pc)
+                first = np.repeat(np.cumsum(pc) - pc, pc)
+                bj = boxes[np.repeat(indptr[grp], pc) + (np.arange(total) - first)]
+                x = P[ci, 0]
+                y = P[ci, 1]
+                gx = np.maximum(a[bj, 0] - (x + fx / 2), (x - fx / 2) - a[bj, 3])
+                gy = np.maximum(a[bj, 1] - (y + fy / 2), (y - fy / 2) - a[bj, 4])
+                hit = (gx < c[bj] - 1e-6) & (gy < c[bj] - 1e-6)
+                bad[ci[hit]] = True
+        g0 = g1
+    out = np.empty(K, dtype=bool)
+    out[order] = bad
+    return out
+
+
+def _feasible(ctx: _Ctx, pts: np.ndarray, fx: float, fy: float, z0: float, z1: float, c_self: float,
+              structural: bool, marker: bool, idx: Optional[np.ndarray] = None) -> np.ndarray:
+    """Positions keeping the required clearance to every placed box on the level. ``idx``: boxes to
+    test (default: every box overlapping z0..z1). Large tests are binned in space, each bin against
+    the boxes within its reach only (the same answer, bounded memory and work)."""
+    if len(pts) == 0 or len(ctx.placed) == 0:
+        return np.ones(len(pts), dtype=bool)
+    if idx is None:
+        a = ctx.arr
+        idx = np.nonzero((a[:, 2] < z1 - 1e-6) & (z0 < a[:, 5] - 1e-6))[0]
+    if len(idx) == 0:
+        return np.ones(len(pts), dtype=bool)
+    a = ctx.arr[idx]
+    c = _box_clearances(ctx, idx, c_self, structural, marker)
+    if len(pts) * len(idx) <= _DENSE_LIMIT:
+        return ~_conflicts(pts, a, c, fx, fy)
+    return ~_conflicts_binned(pts, a, c, fx, fy)
 
 
 def _gap(pts: np.ndarray, fx: float, fy: float, b: Box3) -> np.ndarray:
@@ -419,10 +542,11 @@ def _attempt(ctx: _Ctx, it: _ItemCtx, zone: str, side: Optional[str], long_: Opt
     if reg is None:
         return None
     cs = MARKER_CLEARANCE if relax else it.c_self
-    pts = _candidates(ctx, reg, fx, fy, z0, z1, cs, it.structural)
+    idx = ctx.near(reg, fx, fy, z0, z1, cs)
+    pts = _candidates(ctx, reg, fx, fy, z0, z1, cs, it.structural, idx)
     if len(pts) == 0:
         return None
-    pts = pts[_feasible(ctx, pts, fx, fy, z0, z1, cs, it.structural, it.marker or relax)]
+    pts = pts[_feasible(ctx, pts, fx, fy, z0, z1, cs, it.structural, it.marker or relax, idx)]
     if len(pts) == 0:
         return None
     tx = min(max(it.hint[0], reg[0]), reg[1])
@@ -515,13 +639,14 @@ def _diagnose(it: _ItemCtx, room: EngineRoom, res: tuple[float, float, float, st
 
 def solve_detailed(plan: LayoutPlan, doc: PIDDocument, room: EngineRoom, step: float = 0.5,
                    adjacency: Optional[dict[str, list[Neighbor]]] = None) -> SolveResult:
+    doc, _ = prepare_document(doc)  # sheet links as pipes (no-op for a prepared document)
     objs = doc.object_by_id()
     labels = object_labels(doc)
     dpos = drawing_positions(doc)
     planned_ids = [it.object_id for it in plan.items if it.object_id in objs]
     if adjacency is None:
         adjacency = equipment_adjacency(doc, set(planned_ids))
-    ctx = _Ctx(room=room, step=step)
+    ctx = _Ctx(room, step)
     placements: dict[str, Placement3D] = {}
     boxes: dict[str, Box3] = {}
     diags: dict[str, ItemDiag] = {}
@@ -591,12 +716,15 @@ def _nozzles_with_access(doc: PIDDocument, plan: LayoutPlan, room: EngineRoom, p
     objs = doc.object_by_id()
     zone_of = plan.item_by_id()
     moved: set[str] = set()
+    index = _DocIndex(doc)
     for attempt in range(3):
         blocked: list[NozzleBlock] = []
         for pl in placements.values():
             pl.nozzles = {}
+        near = _BoxIndex(placements)
         for oid, pl in placements.items():
-            noz, blk = compute_nozzles_detailed(doc, objs[oid], pl, placements, room, zone_of=zone_of)
+            noz, blk = compute_nozzles_detailed(doc, objs[oid], pl, placements, room, zone_of=zone_of, index=index,
+                                                near=near)
             pl.nozzles = noz
             blocked += blk
         if not blocked:
@@ -645,15 +773,9 @@ def _relocate(room: EngineRoom, step: float, placements: dict[str, Placement3D],
     it = item_ctx.get(mover)
     if it is None:
         return False
-    ctx = _Ctx(room=room, step=step)
-    for oid, bx in boxes.items():
-        if oid == mover:
-            continue
-        o = item_ctx.get(oid)
-        if o is None:
-            continue
-        ctx.add(_Placed(oid, bx, o.c_self, o.structural, o.marker, o.item.group))
-    ctx.add(_Placed("__nozzle_access__", keep_out, 0.0, False, True, None))
+    others = [_Placed(oid, bx, item_ctx[oid].c_self, item_ctx[oid].structural, item_ctx[oid].marker,
+                      item_ctx[oid].item.group) for oid, bx in boxes.items() if oid != mover and oid in item_ctx]
+    ctx = _Ctx(room, step, others + [_Placed("__nozzle_access__", keep_out, 0.0, False, True, None)])
     res, status, zone_used = _place(ctx, it)
     if status == "forced":
         return False
@@ -715,51 +837,81 @@ def _spec_face(cls: SymbolClass, port: str) -> Optional[tuple[str, float, float]
     return ("-y", a, 0.3)
 
 
-def _neighbor_targets(doc: PIDDocument, obj: PIDObject, placements: dict[str, Placement3D]
-                      ) -> dict[str, tuple[float, float, float]]:
+class _DocIndex:
+    """Lookups of one document for the nozzle computation, built once per solve: process pipes,
+    node adjacency and the pipe ends on each object (in pipe order, start before end)."""
+
+    def __init__(self, doc: PIDDocument):
+        self.objs = doc.object_by_id()
+        self.pipes = process_pipes(doc)
+        self.adj: dict[str, list[tuple[str, PipeRun]]] = defaultdict(list)
+        self.ends: dict[str, list[tuple[PipeRun, Endpoint, Endpoint]]] = defaultdict(list)
+        for p in self.pipes:
+            a, b = p.start.node_id, p.end.node_id
+            if a and b and a != b:
+                self.adj[a].append((b, p))
+                self.adj[b].append((a, p))
+            for end, other in ((p.start, p.end), (p.end, p.start)):
+                if end.object_id:
+                    self.ends[end.object_id].append((p, end, other))
+
+
+class _BoxIndex:
+    """World boxes of a set of placements (in their order) for "which boxes are near this one"."""
+
+    def __init__(self, placements: dict[str, Placement3D]):
+        self.ids = list(placements)
+        bx = [placement_box(q) for q in placements.values()]
+        self.lo = np.array([[b.x0, b.y0, b.z0] for b in bx], dtype=float).reshape(-1, 3)
+        self.hi = np.array([[b.x1, b.y1, b.z1] for b in bx], dtype=float).reshape(-1, 3)
+        self.boxes = dict(zip(self.ids, bx))
+
+    def near(self, box: Box3, margin: float) -> list[str]:
+        """Ids (in placement order) whose box comes within ``margin`` of ``box``."""
+        if not self.ids:
+            return []
+        lo = np.array([box.x0, box.y0, box.z0]) - margin
+        hi = np.array([box.x1, box.y1, box.z1]) + margin
+        ok = np.all((self.lo <= hi) & (self.hi >= lo), axis=1)
+        return [self.ids[i] for i in np.nonzero(ok)[0]]
+
+
+def _neighbor_targets(doc: PIDDocument, obj: PIDObject, placements: dict[str, Placement3D],
+                      index: Optional[_DocIndex] = None) -> dict[str, tuple[float, float, float]]:
     """Port key -> world point of the nearest placed object along that pipe (or a direction hint)."""
-    objs = doc.object_by_id()
-    adj: dict[str, list[tuple[str, object]]] = defaultdict(list)
-    pipes = process_pipes(doc)
-    for p in pipes:
-        a, b = p.start.node_id, p.end.node_id
-        if a and b and a != b:
-            adj[a].append((b, p))
-            adj[b].append((a, p))
+    index = index or _DocIndex(doc)
+    objs, adj = index.objs, index.adj
     me = placements[obj.id]
     out: dict[str, tuple[float, float, float]] = {}
-    for p in pipes:
-        for end, other in ((p.start, p.end), (p.end, p.start)):
-            if end.object_id != obj.id:
-                continue
-            key = port_key(end, p.id)
-            if key in out:
-                continue
-            target = None
-            start = other.node_id
-            if start and start != obj.id:
-                seen, q = {obj.id, start}, deque([start])
-                while q and target is None:
-                    n = q.popleft()
-                    if n in placements and n != obj.id:
-                        b = placement_box(placements[n])
-                        target = b.center
-                        break
-                    if n in objs and n not in placements and len(seen) > 200:
-                        break
-                    for nb, _ in adj.get(n, []):
-                        if nb not in seen:
-                            seen.add(nb)
-                            q.append(nb)
-            if target is None:
-                pts = p.points if end is p.start else list(reversed(p.points))
-                c = obj.center
-                far = pts[min(len(pts) - 1, 1)] if len(pts) > 1 else pts[0]
-                dx, dy = far.x - c.x, far.y - c.y
-                n = math.hypot(dx, dy) or 1.0
-                cx, cy, cz = placement_box(me).center
-                target = (cx + 5 * dx / n, cy - 5 * dy / n, cz)
-            out[key] = target
+    for p, end, other in index.ends.get(obj.id, []):
+        key = port_key(end, p.id)
+        if key in out:
+            continue
+        target = None
+        start = other.node_id
+        if start and start != obj.id:
+            seen, q = {obj.id, start}, deque([start])
+            while q and target is None:
+                n = q.popleft()
+                if n in placements and n != obj.id:
+                    b = placement_box(placements[n])
+                    target = b.center
+                    break
+                if n in objs and n not in placements and len(seen) > 200:
+                    break
+                for nb, _ in adj.get(n, []):
+                    if nb not in seen:
+                        seen.add(nb)
+                        q.append(nb)
+        if target is None:
+            pts = p.points if end is p.start else list(reversed(p.points))
+            c = obj.center
+            far = pts[min(len(pts) - 1, 1)] if len(pts) > 1 else pts[0]
+            dx, dy = far.x - c.x, far.y - c.y
+            n = math.hypot(dx, dy) or 1.0
+            cx, cy, cz = placement_box(me).center
+            target = (cx + 5 * dx / n, cy - 5 * dy / n, cz)
+        out[key] = target
     return out
 
 
@@ -770,20 +922,23 @@ NOZZLE_SPACING = 0.55  # m between the stubs of nozzles of different objects whe
 
 
 def _seg_dist(p1: Sequence[float], q1: Sequence[float], p2: Sequence[float], q2: Sequence[float]) -> float:
-    """Closest distance between two 3D segments."""
-    a0, a1, b0, b1 = (np.asarray(x, dtype=float) for x in (p1, q1, p2, q2))
-    d1, d2, r = a1 - a0, b1 - b0, a0 - b0
-    a, e, f = float(d1 @ d1), float(d2 @ d2), float(d2 @ r)
+    """Closest distance between two 3D segments (plain floats: called per candidate and stub)."""
+    d1 = (q1[0] - p1[0], q1[1] - p1[1], q1[2] - p1[2])
+    d2 = (q2[0] - p2[0], q2[1] - p2[1], q2[2] - p2[2])
+    r = (p1[0] - p2[0], p1[1] - p2[1], p1[2] - p2[2])
+    a = d1[0] * d1[0] + d1[1] * d1[1] + d1[2] * d1[2]
+    e = d2[0] * d2[0] + d2[1] * d2[1] + d2[2] * d2[2]
+    f = d2[0] * r[0] + d2[1] * r[1] + d2[2] * r[2]
     if a < 1e-12 and e < 1e-12:
-        return float(np.linalg.norm(r))
+        return math.sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2])
     if a < 1e-12:
         s_, t = 0.0, min(max(f / e, 0.0), 1.0)
     else:
-        c = float(d1 @ r)
+        c = d1[0] * r[0] + d1[1] * r[1] + d1[2] * r[2]
         if e < 1e-12:
             t, s_ = 0.0, min(max(-c / a, 0.0), 1.0)
         else:
-            b = float(d1 @ d2)
+            b = d1[0] * d2[0] + d1[1] * d2[1] + d1[2] * d2[2]
             den = a * e - b * b
             s_ = min(max((b * f - c * e) / den, 0.0), 1.0) if den > 1e-12 else 0.0
             t = (b * s_ + f) / e
@@ -791,7 +946,12 @@ def _seg_dist(p1: Sequence[float], q1: Sequence[float], p2: Sequence[float], q2:
                 t, s_ = 0.0, min(max(-c / a, 0.0), 1.0)
             elif t > 1.0:
                 t, s_ = 1.0, min(max((b - c) / a, 0.0), 1.0)
-    return float(np.linalg.norm((a0 + d1 * s_) - (b0 + d2 * t)))
+    dx = (p1[0] + d1[0] * s_) - (p2[0] + d2[0] * t)
+    dy = (p1[1] + d1[1] * s_) - (p2[1] + d2[1] * t)
+    dz = (p1[2] + d1[2] * s_) - (p2[2] + d2[2] * t)
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+
+
 _LOCAL_NORMALS = {"+x": (1, 0, 0), "-x": (-1, 0, 0), "+y": (0, 1, 0), "-y": (0, -1, 0), "top": (0, 0, 1)}
 
 
@@ -864,7 +1024,8 @@ def compute_nozzles(doc: PIDDocument, obj: PIDObject, pl: Placement3D, placement
 
 
 def compute_nozzles_detailed(doc: PIDDocument, obj: PIDObject, pl: Placement3D, placements: dict[str, Placement3D],
-                             room: EngineRoom, zone_of: Optional[dict[str, PlanItem]] = None
+                             room: EngineRoom, zone_of: Optional[dict[str, PlanItem]] = None,
+                             index: Optional[_DocIndex] = None, near: Optional[_BoxIndex] = None
                              ) -> tuple[dict[str, Vec3], list[NozzleBlock]]:
     """Nozzle positions (ports + pipe ends without port names) and the nozzles left covered.
 
@@ -877,28 +1038,33 @@ def compute_nozzles_detailed(doc: PIDDocument, obj: PIDObject, pl: Placement3D, 
     nozzle is probe-checked (0.1 / 0.25 / 0.4 m out along its normal); a covered one is returned
     as a :class:`NozzleBlock` naming the covering item.
     """
+    index = index or _DocIndex(doc)
     keys: list[str] = [p.name for p in obj.ports]
-    for p in process_pipes(doc):
-        for end in (p.start, p.end):
-            if end.object_id == obj.id:
-                k = port_key(end, p.id)
-                if k not in keys:
-                    keys.append(k)
+    for p, end, _ in index.ends.get(obj.id, []):
+        k = port_key(end, p.id)
+        if k not in keys:
+            keys.append(k)
     if not keys:
         return {}, []
-    targets = _neighbor_targets(doc, obj, placements)
+    targets = _neighbor_targets(doc, obj, placements, index)
     item = (zone_of or {}).get(obj.id)
     low = item is not None and item.zone in ("double_bottom", "bottom")
     box = placement_box(pl)
     cx, cy, cz = box.center
-    others = [(oid, placement_box(q).expand(0.05)) for oid, q in placements.items() if oid != obj.id]
-    near = box.expand(NOZZLE_STUB + NOZZLE_SPACING + 0.5)
-    stubs = []  # stubs of nozzles of nearby objects
-    for oid, q in placements.items():
+    # nozzle points lie on the box surface and the probes reach NOZZLE_PROBE out of it; only boxes that
+    # close can cover a nozzle (same first hit as testing all, in placement order)
+    if near is None or near.boxes.get(obj.id) != box:
+        near = _BoxIndex(placements)
+    close = near.near(box, NOZZLE_PROBE + 0.15)
+    others = [(oid, near.boxes[oid].expand(0.05)) for oid in close if oid != obj.id]
+    reach = box.expand(NOZZLE_STUB + NOZZLE_SPACING + 0.5)
+    stubs = []  # stubs of nozzles of nearby objects (their nozzles lie on their own boxes)
+    for oid in near.near(reach, 0.01):
         if oid == obj.id:
             continue
+        q = placements[oid]
         for nz in q.nozzles.values():
-            if near.contains(nz.x, nz.y, nz.z):
+            if reach.contains(nz.x, nz.y, nz.z):
                 nn = nozzle_normal(q, nz)
                 a = nz.as_tuple()
                 stubs.append((oid, a, (a[0] + NOZZLE_STUB * nn[0], a[1] + NOZZLE_STUB * nn[1],

@@ -42,8 +42,20 @@ INLINE_EQUIPMENT: frozenset[SymbolClass] = frozenset({SymbolClass.STRAINER, Symb
 INLINE_CATEGORIES: frozenset[Category] = frozenset({Category.VALVE, Category.INSTRUMENT, Category.FITTING})
 
 
+#: object attribute set by :func:`shippid.model3d.heuristic.prepare_document` on objects the class
+#: rules would plan but the 3D stage does not: paired off-page connectors (pass-through) and
+#: unrecognised symbols without pipes / beyond the cap (see ``heuristic.model3d_roles``)
+MODEL3D_ROLE = "model3d_role"
+UNPLANNED_ROLES: frozenset[str] = frozenset({"sheet_link", "unconnected_unknown", "unknown_over_cap",
+                                             "unknown_not_modelled"})
+
+
 def is_planned(obj: PIDObject) -> bool:
-    """Equipment-level object that the planner must place (equipment and off-page connectors)."""
+    """Equipment-level object that the planner must place (equipment and off-page connectors),
+    unless the 3D document preparation marked it as not planned (:data:`MODEL3D_ROLE`). For a
+    document that was not prepared, use :func:`shippid.model3d.heuristic.planned_ids`."""
+    if obj.attributes.get(MODEL3D_ROLE) in UNPLANNED_ROLES:
+        return False
     if obj.cls == SymbolClass.OFF_PAGE_CONNECTOR or obj.category == Category.CONNECTOR:
         return True
     return obj.category == Category.EQUIPMENT and obj.cls not in INLINE_EQUIPMENT
@@ -51,6 +63,8 @@ def is_planned(obj: PIDObject) -> bool:
 
 def is_optional_planned(obj: PIDObject) -> bool:
     """Inline-capable equipment the planner may place explicitly (strainer, filter, flow meter)."""
+    if obj.attributes.get(MODEL3D_ROLE) in UNPLANNED_ROLES:
+        return False
     return obj.category == Category.EQUIPMENT and obj.cls in INLINE_EQUIPMENT
 
 

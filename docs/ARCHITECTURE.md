@@ -54,10 +54,26 @@ tests. Keep runtime dependencies to those in `pyproject.toml` (+ stdlib).
 * `build.py` — mass generation with multiprocessing: `build_dataset(out_dir, count, seed, workers,
   systems=None)` → `<id>.pdf`, `<id>.json` (ground-truth `PIDDocument`), `manifest.jsonl`
   (id, pdf, gt, system, ship_type, page size, counts, split train/val/test), optional PNG previews.
-* `collect.py` — real-drawing collection: `scan_archive(root)` walks a directory tree of PDFs,
-  checks readability (text chars, vector path count, image coverage), SHA-256 dedupe, extracts
-  title-block keywords → system guess, writes `index.jsonl`; `fetch_sources(sources_yaml, dest)`
-  downloads listed URLs (httpx; resumable, size limit, content-type check).
+* `multisheet.py` — `generate_multisheet(seed, system=None, sheets=2|3, style=None) -> (PIDDocument, pdf bytes)`:
+  one system topology cut between stages onto 2–3 sheets of one drawing (one style, **one paper
+  size** — a later sheet that does not fit moves the whole set to the next larger paper), joined by
+  paired off-page connectors in three yard styles (`sheet`: `SH.j` inside the arrow, `mark`: shared
+  continuation mark `A1`, `dwg`: `CONT. ON DWG <no.> SH.j`); cut return lines get a tank-side
+  connector. Ground truth: all pages, page-ordered global ids, `meta["sheet_links"]` (`a` outgoing,
+  `b` incoming, `key`, `kind` header/return, `source="gt"`), `meta["sheets"]`, `meta["multisheet"]`.
+* `variants.py` — robustness suite: `VARIANTS` (plain, rotated_page, qu_bowties, pipes_through,
+  polyline_curves, styled_lines, fragmented_text, layers_off, scaled, yard_symbols + LEGEND,
+  shx_text, combined), `make_variant(seed, variant)` (re-rendered PDF + exact ground truth, nothing
+  leaked into the PDF), `build_variant_suite(out_dir, per_variant, seed)` → `<variant>/manifest.jsonl`
+  in the benchmark format (paired: item *i* of every variant starts from the same drawing).
+* `collect.py` — real-drawing collection: `scan_archive(root)` walks a directory tree of PDFs
+  iteratively (never follows symlinks — recorded as `skipped`; only regular files; directories
+  deeper than `max_depth` or unlistable → `error`, the scan continues), checks readability (text
+  chars, vector path count, image coverage), SHA-256 dedupe, extracts title-block keywords → system
+  guess, writes `index.jsonl`; `fetch_sources(sources_yaml, dest)` downloads listed URLs (httpx;
+  resumable, size limit, content-type check; redirects followed by the module, ≤ 5 hops, http/https,
+  every hop's host resolved and refused unless public — `allow_private` for intranet sources; total
+  deadline `max_seconds` + minimum rate; the sidecar records `final_url`).
 
 ### 2. `shippid.pdf` + `shippid.extract` — deterministic vector extraction
 * `pdf/reader.py` — `read_page(page) -> PageContent`: segments (from `get_drawings()` items `l`,
@@ -77,7 +93,13 @@ tests. Keep runtime dependencies to those in `pyproject.toml` (+ stdlib).
      hop/gap = crossing without connection), `PipeRun` with `Endpoint`s, dashed → `SIGNAL`;
   6. text assembly + role classification (`catalog.classify_tag`, inside-bubble, near-connector,
      title block) and association to the nearest owner (objects for tags, pipes for line numbers),
-     `size`/`medium` on pipes from parsed line numbers.
+     `size`/`medium` on pipes from parsed line numbers; per-character / per-word fragments are merged
+     into lines and hidden render-mode-3 / SHX-annotation duplicates resolved.
+* `extract/legend.py` — legend learning: LEGEND / SYMBOL LEGEND / 범례 blocks of the document (on
+  the sheet or a separate legend sheet) are read before matching; every row's glyph + description
+  (`CHECK VALVE`, `S.D.N.R`, `체크 밸브` …, bilingual keyword map → `SymbolClass` + `ActuatorType`)
+  becomes a document-local template matched alongside the built-in library (matches record
+  `attributes["template"] = "legend:<description>"`; unmapped rows → `meta["legend"]["unmapped"]`).
 
 ### 3. `shippid.llm` + `shippid.analysis.gemma` — Gemma 4 31B
 * `llm/openai_compat.py` — OpenAI-compatible `/chat/completions` backend (vLLM, SGLang, Ollama
@@ -102,11 +124,26 @@ tests. Keep runtime dependencies to those in `pyproject.toml` (+ stdlib).
 * `analysis/rules.py` — deterministic marine checks with references (SOLAS/class), each producing
   `Finding(rule_id, severity, reference, object_ids)`.
 * `analysis/lists.py` — equipment / valve / instrument / line lists.
-* `analysis/analyzer.py` — `analyze(doc, reviewer=None) -> AnalysisReport`.
+* `analysis/sheets.py` — multi-sheet sets: `link_sheets(doc)` pairs off-page connectors across (and
+  within) pages from normalised continuation keys (shared marks, `SH.n` / `SHEET n` against each
+  page's title-block sheet number, drawing-number references, `TO`/`FROM` names against the
+  equipment beside the partner, directions, equal line numbers); a pair is accepted one-to-one only
+  when both sides support it and it beats every competitor by `margin`. Stores `doc.meta`
+  `sheet_links` (`a`, `b`, `key`, `confidence`, `source` rule/gemma/manual, `directed`, `evidence`),
+  `sheet_links_ambiguous` (unresolved connectors + scored candidates — the Gemma step
+  `GemmaAnalyzer.resolve_sheet_links` chooses among them only, `apply_link_decisions` validates) and
+  `sheet_link_stats`. `graph.build_graph` adds one zero-length edge `kind="sheet_link"` (key
+  `sheet_link:<a>:<b>`) per link, so flow paths, isolation, adjacency, components and rules cross the
+  sheets; `FlowPath.pipe_ids` hold document pipe ids only, the cross-sheet hops come from
+  `graph.flow_path_sheet_links` (`flow_paths.csv` column `sheet_links`, report column).
+* `analysis/analyzer.py` — `analyze(doc, reviewer=None) -> AnalysisReport` (links a multi-page
+  document first when it has no `meta["sheet_links"]`; `report.meta["sheet_links"]` = number of
+  linked pairs, `["sheet_links_ambiguous"]` = number of unresolved connectors).
 * `report/html.py` — self-contained HTML report (page render + SVG overlay with hover, lists,
   findings, summaries, LLM usage, link to the 3D viewer); `report/export.py` — CSV/JSON.
 * `evaluate.py` — prediction vs ground truth: per-class P/R/F1 (IoU ≥ 0.5), tag accuracy,
-  connectivity (object-adjacency) P/R/F1, text-role accuracy; dataset aggregation → JSON + Markdown.
+  connectivity (object-adjacency, including the ground-truth sheet links) P/R/F1, text-role
+  accuracy; dataset aggregation → JSON + Markdown.
 
 ### 5. `shippid.model3d` — 3D generation and visualisation
 * `heuristic.py` — deterministic planner: drawing plane → deck plan, deck assignment by class,
@@ -121,7 +158,22 @@ tests. Keep runtime dependencies to those in `pyproject.toml` (+ stdlib).
 * `viewer.py` — standalone HTML (three.js via CDN importmap, embedded GLB, click-to-inspect,
   per-system/category toggles) and an offline plotly fallback.
 
-### 6. `shippid.cli` / `shippid.pipeline`
+### 6. `shippid.cli` / `shippid.pipeline` / `shippid.benchmark`
 `shippid collect synthetic|scan|fetch`, `shippid extract`, `shippid analyze`, `shippid model3d`,
 `shippid run` (all stages), `shippid evaluate`, `shippid llm-check` (connectivity test to the
 Gemma endpoint).
+
+* `pipeline.run_pipeline` validates `planner` / `viewer` (and `planner="gemma"` against the LLM
+  client) before any stage runs; a multi-page document is linked (`pipeline.link_multisheet`, after
+  the Gemma refinement when it runs) before `extracted.json` / `document.json` are saved, so both
+  carry the same `sheet_links` as the document inside `analysis.json`. The `GemmaAnalyzer` is wired
+  from `LLMConfig` (`max_image_side`, `concurrency`); `RunResult.llm_backend` = `backend:model`.
+* `benchmark.run_benchmark(data_dir, out_dir, cfg=..., use_llm=..., client=None)` extracts with the
+  given `Config` (also inside the worker processes), links multi-page predictions like the
+  pipeline, evaluates every document once (predictions parsed one at a time while scored) and
+  records `benchmark.llm` as `backend:model` (`mock:...` for a mock, never "gemma"); saved
+  predictions are named from the sanitised manifest id, always inside `predictions/`.
+* CLI exit codes: 0 ok; 1 the command reported a failure (`llm-check` not ok, failed dataset
+  items); 2 invalid arguments / input (missing, empty, damaged or encrypted PDF, page out of range,
+  wrong kind of JSON, `--planner gemma` / `--with-llm` without an LLM backend) printed as one
+  `shippid: error: ...` line (`-v` adds the traceback); 130 interrupted.

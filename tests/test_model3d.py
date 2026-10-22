@@ -35,10 +35,11 @@ class DocBuilder:
                                                 drawing_no="TEST-" + system.value.upper()))
         self._pos: dict[tuple[str, str], tuple[float, float]] = {}
         self._nb: dict[str, int] = {}
+        self._page: dict[str, int] = {}
 
     def obj(self, cls: SymbolClass, x: float, y: float, tag: Optional[str] = None, name: Optional[str] = None,
             rotation: int = 0, scale: float = 18.0, stretch: tuple[float, float] = (1.0, 1.0),
-            actuator: ActuatorType = ActuatorType.NONE) -> str:
+            actuator: ActuatorType = ActuatorType.NONE, page: int = 0) -> str:
         spec = get_symbol(cls)
         pl = Placement(x, y, scale=scale, rotation=rotation if spec.rotatable else 0, stretch=stretch)
         act = actuator if spec.category == Category.VALVE else ActuatorType.NONE
@@ -51,7 +52,8 @@ class DocBuilder:
         attrs = {"name": name} if name else {}
         self.doc.objects.append(PIDObject(id=oid, cls=cls, category=spec.category,
                                           bbox=BBox(x0=x0, y0=y0, x1=x1, y1=y1), rotation=pl.rotation, tag=tag,
-                                          actuator=act, ports=ports, attributes=attrs))
+                                          actuator=act, ports=ports, attributes=attrs, page=page))
+        self._page[oid] = page
         return oid
 
     def bport(self, oid: str, x: float, y: float) -> tuple[str, str]:
@@ -67,10 +69,11 @@ class DocBuilder:
         self._pos[(oid, name)] = (x, y)
         return (oid, name)
 
-    def junction(self, x: float, y: float) -> str:
+    def junction(self, x: float, y: float, page: int = 0) -> str:
         jid = f"j{len(self.doc.junctions) + 1}"
-        self.doc.junctions.append(Junction(id=jid, position=Point(x=x, y=y), dotted=True))
+        self.doc.junctions.append(Junction(id=jid, position=Point(x=x, y=y), dotted=True, page=page))
         self._pos[(jid, "")] = (x, y)
+        self._page[jid] = page
         return jid
 
     def _where(self, r: Ref) -> tuple[tuple[float, float], Endpoint]:
@@ -87,8 +90,9 @@ class DocBuilder:
             pts.append((ax, by) if vfirst else (bx, ay))
         pts.append((bx, by))
         pid = f"p{len(self.doc.pipes) + 1}"
+        page = self._page.get(a if isinstance(a, str) else a[0], 0)
         self.doc.pipes.append(PipeRun(id=pid, points=[Point(x=x, y=y) for x, y in pts], start=ea, end=eb,
-                                      kind=kind, line_number=line, size=size, medium=medium))
+                                      kind=kind, line_number=line, size=size, medium=medium, page=page))
         return pid
 
 
@@ -180,6 +184,44 @@ def fo_transfer_doc() -> PIDDocument:
         b.pipe((v, "out"), b.bport(t, 1450 - 45, y), "100A-FO-006", "100A", FO)
     opc = b.obj(S.OFF_PAGE_CONNECTOR, 1450, 500, name="TO F.O. PURIFIER")
     b.pipe(j_out, (opc, "in"), "80A-FO-007", "80A", FO)
+    return b.doc
+
+
+def two_sheet_doc() -> PIDDocument:
+    """Ballast system on two sheets: sheet 1 (A3) sea chest -> valve -> pump -> check valve -> off-page
+    connector "TO W.B. TANKS / SH.2"; sheet 2 (A1, larger than sheet 1) the partner connector "FROM
+    BALLAST PUMP / SH.1" -> junction -> two W.B. tanks and an overboard drawn beyond the A3 width.
+    ``meta["sheet_links"]`` pairs the two connectors."""
+    b = DocBuilder("BALLAST WATER SYSTEM", SystemType.BALLAST, "300K VLCC")
+    b.doc.pages = [PageInfo(index=0, width=1191, height=842, drawing_area=BBox(x0=20, y0=20, x1=1171, y1=700)),
+                   PageInfo(index=1, width=2384, height=1684, drawing_area=BBox(x0=20, y0=20, x1=2364, y1=1500))]
+    BW = Medium.BALLAST_WATER
+    sc = b.obj(S.SEA_CHEST, 120, 400, name="HIGH SEA CHEST (S)", stretch=(1.4, 1.2))
+    vi = b.obj(S.BUTTERFLY_VALVE, 300, 400, tag="BA-V001")
+    pump = b.obj(S.PUMP_CENTRIFUGAL, 480, 400, tag="BA-P001", name="NO.1 BALLAST PUMP")
+    cv = b.obj(S.CHECK_VALVE, 660, 340, tag="BA-V002")
+    ca = b.obj(S.OFF_PAGE_CONNECTOR, 950, 340, name="TO W.B. TANKS / SH.2")
+    b.pipe((sc, "out"), (vi, "in"), "300A-BA-001", "300A", BW)
+    b.pipe((vi, "out"), (pump, "suction"), "300A-BA-001", "300A", BW)
+    b.pipe((pump, "discharge"), (cv, "in"), "250A-BA-002", "250A", BW, vfirst=True)
+    b.pipe((cv, "out"), (ca, "in"), "250A-BA-002", "250A", BW)
+    cb = b.obj(S.OFF_PAGE_CONNECTOR, 150, 800, name="FROM BALLAST PUMP / SH.1", page=1)
+    j = b.junction(600, 800, page=1)
+    b.pipe((cb, "in"), j, "250A-BA-002", "250A", BW)
+    tanks = []
+    for k, (name, y) in enumerate((("NO.1 W.B.TK (P)", 500), ("NO.1 W.B.TK (S)", 1100))):
+        v = b.obj(S.BUTTERFLY_VALVE, 1000, y, tag=f"BA-V01{k}", page=1)
+        t = b.obj(S.TANK, 1400, y, name=name, scale=30, page=1)
+        b.pipe(j, (v, "in"), f"250A-BA-01{k}", "250A", BW, vfirst=True)
+        b.pipe((v, "out"), b.bport(t, 1400 - 45, y), f"250A-BA-01{k}", "250A", BW)
+        tanks.append(t)
+    vo = b.obj(S.GATE_VALVE, 1700, 800, tag="BA-V020", page=1)
+    ob = b.obj(S.OVERBOARD, 2100, 800, name="OVERBOARD (S)", page=1)
+    b.pipe(j, (vo, "in"), "250A-BA-020", "250A", BW)
+    b.pipe((vo, "out"), (ob, "in"), "250A-BA-020", "250A", BW)
+    b.doc.meta["sheet_links"] = [{"a": ca, "b": cb, "key": "sheet:1>2", "kind": "header", "directed": True,
+                                  "source": "rule"}]
+    b.doc.meta["sheets"] = [{"page": 0, "sheet": 1, "of": 2}, {"page": 1, "sheet": 2, "of": 2}]
     return b.doc
 
 
@@ -546,6 +588,116 @@ def test_solver_crowded_band_relocates_and_reports():
     assert len(placements) == len(plan.items) and notes
 
 
+def test_solver_spatial_filter_and_binning_are_exact():
+    """The solver tests candidates only against the placed boxes within reach of the region (and
+    bins large tests in space). Regression (review): it built 12 candidates per placed box anywhere
+    in the room and a dense candidates x boxes matrix per attempt (O(N^3) overall). The answer must
+    be exactly the brute-force one."""
+    import numpy as np
+    from shippid.model3d import solver as sv
+    from shippid.model3d.zones import Box3
+
+    rng = np.random.default_rng(7)
+    room = engine_room_for(DrawingInfo(ship_type="VLCC"))
+    ctx = sv._Ctx(room, 0.5)
+    for k in range(260):
+        x, y = rng.uniform(0, room.length), rng.uniform(-room.breadth / 2, room.breadth / 2)
+        l, w = rng.uniform(0.3, 2.5, 2)
+        z0 = float(rng.choice([room.deck_z("tank_top"), room.deck_z("floor")]))
+        ctx.add(sv._Placed(f"o{k}", Box3(x - l / 2, y - w / 2, z0, x + l / 2, y + w / 2, z0 + rng.uniform(0.5, 3)),
+                           float(rng.choice([0.6, 0.5, 0.8])), bool(rng.random() < 0.3), bool(rng.random() < 0.1),
+                           None))
+    z0, z1 = room.deck_z("floor"), room.deck_z("floor") + 1.5
+    a = ctx.arr
+    every = np.nonzero((a[:, 2] < z1 - 1e-6) & (z0 < a[:, 5] - 1e-6))[0]
+    n_free = n_big = 0
+    for region, (fx, fy), structural, marker in [((3.0, 9.0, 2.0, 6.0), (1.2, 0.8), False, False),
+                                                  ((0.6, room.length - 0.6, -9.0, 9.0), (2.5, 1.5), True, False),
+                                                  ((10.0, 30.0, -12.0, 12.0), (0.6, 0.6), False, True)]:
+        near = ctx.near(region, fx, fy, z0, z1, 0.6)
+        assert len(near) < len(every)
+        brute = sv._candidates(ctx, region, fx, fy, z0, z1, 0.6, structural, every)
+        fast = sv._candidates(ctx, region, fx, fy, z0, z1, 0.6, structural, near)
+        assert {tuple(p) for p in brute.tolist()} == {tuple(p) for p in fast.tolist()}
+        c = sv._box_clearances(ctx, every, 0.6, structural, marker)
+        expected = ~sv._conflicts(brute, a[every], c, fx, fy)  # dense test against every box on the level
+        assert not expected.all()
+        n_free += int(expected.sum())
+        got = sv._feasible(ctx, brute, fx, fy, z0, z1, 0.6, structural, marker, near)
+        assert np.array_equal(got, expected)
+        assert np.array_equal(sv._feasible(ctx, brute, fx, fy, z0, z1, 0.6, structural, marker), expected)
+        cn = sv._box_clearances(ctx, near, 0.6, structural, marker)
+        assert np.array_equal(~sv._conflicts_binned(brute, a[near], cn, fx, fy), expected)  # binned path
+        big = len(brute) * len(every) > sv._DENSE_LIMIT
+        if big:
+            assert np.array_equal(~sv._conflicts_binned(brute, a[every], c, fx, fy), expected)
+        n_big += big
+    assert n_free > 50 and n_big >= 1
+
+
+def test_solver_scales_to_hundreds_of_items():
+    """400 planned items (1300-object drawing): took ~17 s before the spatial filtering (review:
+    418 items 17.2 s, 640 items 119 s); now about a second. Generous bound against regressions."""
+    doc = large_doc(1300)
+    room = engine_room_for(doc.info)
+    plan = heuristic_plan(doc, room)
+    assert len(plan.items) >= 400
+    t0 = time.time()
+    res = solve_detailed(plan, doc, room)
+    dt = time.time() - t0
+    assert len(res.placements) == len(plan.items)
+    _check_no_overlap([p for p in res.placements if res.diagnostics[p.object_id].status != "forced"], room)
+    print(f"\nsolver: {len(plan.items)} items in {dt:.2f} s")
+    assert dt < 12.0, dt
+
+
+def test_unknown_symbols_are_not_planned_as_equipment():
+    """Regression (review): every unmatched stroke group (class unknown, category equipment) became a
+    0.4 m engine-room box for the solver and the router (1015 plan items from 999 fragments,
+    271 s layout). Unconnected ones are small markers placed by the router (one aggregated note),
+    pipe-connected ones are planned only up to the cap (largest first), the rest sit in their run."""
+    from shippid.model3d.heuristic import UNKNOWN_PLAN_MIN, model3d_roles, planned_ids
+
+    doc = ballast_doc()
+    recognised = planned_ids(doc)
+    for k in range(60):  # hatching / SHX text strokes: no pipes (the last ones a little larger)
+        x, y, d = 600 + 8 * (k % 10), 860 + 8 * (k // 10), 4 + 0.05 * k
+        doc.objects.append(PIDObject(id=f"o{100 + k}", cls=S.UNKNOWN, category=Category.EQUIPMENT,
+                                     bbox=BBox(x0=x, y0=y, x1=x + d, y1=y + d)))
+    loose = [f"o{100 + k}" for k in range(60)]
+    connected = []
+    for k in range(20):  # unmatched symbols with a pipe (free end): sizes 10..29 pt
+        oid, x, size = f"o{200 + k}", 200 + 60 * k, 10 + k
+        doc.objects.append(PIDObject(id=oid, cls=S.UNKNOWN, category=Category.EQUIPMENT,
+                                     bbox=BBox(x0=x, y0=1050, x1=x + size, y1=1050 + size)))
+        doc.pipes.append(PipeRun(id=f"p{900 + k}", points=[Point(x=x + size / 2, y=1050), Point(x=x + size / 2, y=1020)],
+                                 start=Endpoint(object_id=oid), end=Endpoint(), line_number="50A-BA-090", size="50A",
+                                 medium=Medium.BALLAST_WATER))
+        connected.append(oid)
+    roles = model3d_roles(doc)
+    cap = max(UNKNOWN_PLAN_MIN, len(recognised))
+    planned = planned_ids(doc)
+    assert [i for i in loose if roles[i] == "unconnected_unknown"] == loose[-cap:]  # largest: markers
+    assert all(roles[i] == "unknown_not_modelled" for i in loose[:-cap])
+    assert [i for i in planned if i in connected] == connected[-cap:]  # the largest symbols
+    assert set(planned) == set(recognised) | set(connected[-cap:])
+    room = engine_room_for(doc.info)
+    assert {it.object_id for it in heuristic_plan(doc, room).items} == set(planned)
+    layout = build_layout(doc)
+    pl = {p.object_id: p for p in layout.placements}
+    assert set(pl) == {o.id for o in doc.objects} - set(loose[:-cap])  # the noise is left out of the model
+    assert all(pl[i].rationale.startswith("[router] no piping") for i in loose[-cap:])
+    assert all(pl[i].rationale.startswith("[router]") for i in connected[:-cap])
+    assert all(pl[i].rationale.startswith("[heuristic]") for i in connected[-cap:])
+    notes = [n for n in layout.notes if "unrecognised symbol" in n]
+    assert len(notes) == 2 and notes[0].startswith(f"60 unrecognised symbol(s)")
+    assert f"{cap} largest shown as small markers" in notes[0] and f"{60 - cap} left out of the 3D model" in notes[0]
+    assert f"the {cap} largest planned as equipment, {20 - cap} placed in their pipe run" in notes[1]
+    assert not any(n.startswith("objects without placement") for n in layout.notes)
+    counts = _router_counts(layout.notes)
+    assert counts["inline item overlaps"] == 0 and counts["segments through equipment"] == 0, counts
+
+
 def _probe_blockers(placements, room, steps=(0.1, 0.25, 0.4)):
     """(object, nozzle, blocker) for every nozzle whose outside is not free (room / other equipment)."""
     out = []
@@ -712,6 +864,143 @@ def test_inline_body_clamped_to_room():
     pl, box, clamped = _clamp_to_room(ctx, valve, size, make)
     assert clamped and box.y1 <= room.bounds.y1 + 1e-3 and pl.size.y < size[1]
     assert box == item_box(pl, valve)
+
+
+# =========================================================================== multi-sheet sets
+
+
+def _route_graph(layout, doc):
+    """Nodes joined by the 3D routes (pipe ends from the document; sheet links from their id)."""
+    import networkx as nx
+
+    pipes = {p.id: p for p in doc.pipes}
+    g = nx.Graph()
+    for r in layout.routes:
+        p = pipes.get(r.pipe_id)
+        if p is not None:
+            g.add_edge(p.start.node_id or f"free:{p.id}:0", p.end.node_id or f"free:{p.id}:1", pipe=r.pipe_id)
+        elif r.pipe_id.startswith("sheet_link:"):
+            _, a, b = r.pipe_id.split(":")
+            g.add_edge(a, b, pipe=r.pipe_id)
+    return g
+
+
+def test_multisheet_link_is_one_continuous_system(tmp_path):
+    """Regression (review): paired off-page connectors stayed two unrelated markers 13-20 m apart with
+    no route between them, adjacency stopped at each connector, so the pumps on sheet 1 and the
+    tanks on sheet 2 were disconnected parts in 3D (and in the Gemma digest)."""
+    import networkx as nx
+    from shippid.model3d.heuristic import equipment_adjacency, planned_ids
+
+    doc = two_sheet_doc()
+    ca, cb = doc.meta["sheet_links"][0]["a"], doc.meta["sheet_links"][0]["b"]
+    objs = doc.object_by_id()
+    pump = next(o.id for o in doc.objects if o.cls == S.PUMP_CENTRIFUGAL)
+    tanks = [o.id for o in doc.objects if o.cls == S.TANK]
+    # the linked connectors are pass-through items, the pump's neighbours are the tanks on sheet 2
+    planned = planned_ids(doc)
+    assert ca not in planned and cb not in planned and pump in planned and set(tanks) <= set(planned)
+    adj = equipment_adjacency(doc)
+    nbs = {n.id: n for n in adj[pump]}
+    assert set(tanks) <= set(nbs) and all(objs[t].page == 1 for t in tanks)
+    assert {ca, cb} <= set(nbs[tanks[0]].via) and nbs[tanks[0]].direction == "out"
+    assert ca not in {it.object_id for it in heuristic_plan(doc, engine_room_for(doc.info)).items}
+    # 3D: one continuous route network from the sea chest on sheet 1 to the tanks on sheet 2
+    layout = build_layout(doc)
+    assert doc.meta.get("model3d_prepared") is None and "sheet_link" not in {p.id for p in doc.pipes}  # input intact
+    link = next(r for r in layout.routes if r.pipe_id == f"sheet_link:{ca}:{cb}")
+    pl = {p.object_id: p for p in layout.placements}
+    assert set(pl) == {o.id for o in doc.objects}
+    assert math.dist(link.points[0].as_tuple(), pl[ca].nozzles["sheet_link"].as_tuple()) < 2e-3
+    assert math.dist(link.points[-1].as_tuple(), pl[cb].nozzles["sheet_link"].as_tuple()) < 2e-3
+    assert math.dist(pl[ca].position.as_tuple(), pl[cb].position.as_tuple()) < 1.5  # markers side by side
+    g = _route_graph(layout, doc)
+    sea_chest = next(o.id for o in doc.objects if o.cls == S.SEA_CHEST)
+    assert all(nx.has_path(g, sea_chest, t) for t in tanks)
+    # every route chains on to the next one (no gap at the sheet boundary): the pipe into ca ends at
+    # ca's entry nozzle, the link leaves from its exit nozzle, the pipe out of cb starts at cb's
+    pipes = {p.id: p for p in doc.pipes}
+    into_a = next(r for r in layout.routes if r.pipe_id in pipes and pipes[r.pipe_id].end.object_id == ca)
+    out_of_b = next(r for r in layout.routes if r.pipe_id in pipes and pipes[r.pipe_id].start.object_id == cb)
+    assert math.dist(into_a.points[-1].as_tuple(), pl[ca].nozzles["in"].as_tuple()) < 2e-3
+    assert math.dist(out_of_b.points[0].as_tuple(), pl[cb].nozzles["in"].as_tuple()) < 2e-3
+    assert any("linked off-page connector pair(s) routed as one continuous pipe" in n for n in layout.notes)
+    counts = _router_counts(layout.notes)
+    assert counts["segments through equipment"] == 0 and counts["Manhattan fallback"] == 0, counts
+    # the GLB carries the link as a pipe node between the two connectors
+    js = read_glb_json(export_glb(layout_to_scene(layout, doc), tmp_path / "two_sheets.glb"))
+    node = next(n["extras"] for n in js["nodes"] if n.get("extras", {}).get("id") == link.pipe_id)
+    assert node["kind"] == "pipe" and node["from"] == ca and node["to"] == cb and node["system"] == "ballast"
+
+
+def test_multisheet_drawing_positions_side_by_side():
+    """Regression (review): every page was normalised with page 0's drawing area, so the sheets
+    overlaid one plane and a larger later sheet (A1 after A3) was clamped to u/v = 0/1."""
+    from shippid.model3d.heuristic import DrawingFrame, drawing_positions
+
+    doc = two_sheet_doc()
+    pos = drawing_positions(doc)
+    p0 = [pos[o.id] for o in doc.objects if o.page == 0]
+    p1 = [pos[o.id] for o in doc.objects if o.page == 1]
+    assert max(u for u, _ in p0) < min(u for u, _ in p1)  # sheet 1 left of sheet 2, no overlay
+    assert not any(u in (0.0, 1.0) or v in (0.0, 1.0) for u, v in p0 + p1)  # nothing clamped
+    fr = DrawingFrame(doc)
+    off, width = fr.spans[1]
+    ob = next(o for o in doc.objects if o.cls == S.OVERBOARD)
+    expected = off + width * (ob.center.x - 20) / (2364 - 20)  # page 1 over its own drawing area
+    assert pos[ob.id][0] == pytest.approx(expected) and pos[ob.id][1] == pytest.approx((ob.center.y - 20) / 1480)
+    # widths follow the sheets' share of the objects; sheet order from meta["sheets"]
+    n0 = sum(1 for o in doc.objects if o.page == 0)
+    assert fr.spans[0] == pytest.approx((0.0, n0 / len(doc.objects)))
+    doc.meta["sheets"] = [{"page": 0, "sheet": 2}, {"page": 1, "sheet": 1}]
+    pos2 = drawing_positions(doc)
+    assert min(pos2[o.id][0] for o in doc.objects if o.page == 0) > max(pos2[o.id][0] for o in doc.objects
+                                                                          if o.page == 1)
+    # a single-page drawing maps exactly as before: u, v over page 0's drawing area
+    single = ballast_doc()
+    o = single.objects[3]
+    assert drawing_positions(single)[o.id] == pytest.approx(((o.center.x - 20) / 1644, (o.center.y - 20) / 980))
+
+
+def test_multisheet_gemma_digest_sees_the_cross_sheet_connections():
+    """The Gemma planner gets the prepared document from build_layout: linked connectors are not
+    required items and the pump's connections reach the tanks on the other sheet."""
+    doc = two_sheet_doc()
+    ca, cb = doc.meta["sheet_links"][0]["a"], doc.meta["sheet_links"][0]["b"]
+    backend = MockBackend(lambda m, s, n: _rule_plan(_digest(m)))
+    layout = build_layout(doc, client=LLMClient(backend))
+    assert layout.planner == "mock"
+    digest = _digest(backend.calls[0][0])
+    ids = {o["id"] for o in digest["objects"]}
+    assert ca not in ids and cb not in ids
+    pump = next(o for o in digest["objects"] if o["class"] == "pump_centrifugal")
+    tanks = {o.id for o in doc.objects if o.cls == S.TANK}
+    cross = [c for c in pump["connections"] if c["to"] in tanks]
+    assert cross and all("off_page_connector" in c["via"] and c["flow"] == "out" for c in cross)
+    u = {o["id"]: o["drawing_uv"][0] for o in digest["objects"]}
+    assert u[pump["id"]] < min(u[t] for t in tanks)  # sheets side by side in the digest too
+    assert any(r.pipe_id == f"sheet_link:{ca}:{cb}" for r in layout.routes)
+
+
+def test_multisheet_unpaired_set_is_paired_for_the_3d_model(monkeypatch):
+    """`shippid model3d drawing.pdf` skips the analysis: build_layout pairs the connectors itself
+    (the deterministic matcher), on its own copy of the document."""
+    import shippid.analysis.sheets as sheets
+
+    doc = two_sheet_doc()
+    links = doc.meta.pop("sheet_links")
+    calls = []
+
+    def fake_link_sheets(d, **kw):
+        calls.append(d is doc)
+        d.meta["sheet_links"] = links
+        return links
+
+    monkeypatch.setattr(sheets, "link_sheets", fake_link_sheets)
+    layout = build_layout(doc)
+    assert calls == [False] and "sheet_links" not in doc.meta
+    assert any(r.pipe_id.startswith("sheet_link:") for r in layout.routes)
+    assert any("linked across the sheets by the deterministic connector matcher" in n for n in layout.notes)
 
 
 # =========================================================================== Gemma planner (mock / HTTP)

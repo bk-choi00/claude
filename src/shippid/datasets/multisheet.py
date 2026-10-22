@@ -12,7 +12,9 @@ boundary ends on the upstream sheet in an outgoing connector and starts on the d
 from an incoming one. Return lines to a tank on another sheet (purifier -> sump, OWS three-way
 valve -> bilge holding tank, condensate -> boiler) are cut the same way (the tank gets an incoming
 connector beside it). All sheets share one drawing style, paper size, drawing number and title
-block; the title-block sheet field reads ``k OF n`` (or ``k/n``). The returned ground truth is one
+block; the title-block sheet field reads ``k OF n`` (or ``k/n``). The first sheet picks the paper
+(the smallest that fits, as the single-sheet generator does); a later sheet that does not fit it
+moves the *whole* set to the next larger paper, so the sizes never mix. The returned ground truth is one
 :class:`~shippid.model.PIDDocument` with every page (``PageInfo`` per page, ``page`` on every
 item) and globally unique, page-ordered ids (as the extractor numbers them).
 
@@ -53,12 +55,14 @@ import pymupdf
 from ..model import Category, PageInfo, PIDDocument, SymbolClass, SystemType, TextRole
 from .blueprints import Attachment, Item, SideLink, Stage, SystemTopology, Tap, Train, build_topology
 from .pdf_writer import DrawingSpec, TextDraw, render
-from .synthetic import ALL_SYSTEMS, LayoutError, _generate, random_style
+from .sheet import PAPER_ORDER
+from .synthetic import ALL_SYSTEMS, DrawingStyle, LayoutError, _generate, random_style
 from .text import text_bbox, text_width
 
 S = SymbolClass
 
 YARD_STYLES: tuple[str, ...] = ("sheet", "mark", "dwg")
+MIN_SHEETS, MAX_SHEETS = 2, 3
 MARK_SCHEMES: tuple[str, ...] = ("letter", "letter_digit", "digit")
 MAX_ATTEMPTS = 8
 _MS_MARKER = "__multisheet__:"  # temporary Item.attrs["service"] used to find connector objects again
@@ -463,13 +467,15 @@ def pdf_bytes(specs: Sequence[DrawingSpec]) -> bytes:
 
 def generate_multisheet(seed: int, system: Optional[SystemType] = None, sheets: Optional[int] = None,
                         style: Optional[str] = None) -> tuple[PIDDocument, bytes]:
-    """One ship system drawn on ``sheets`` (2..3; default random 2 or 3) sheets of one drawing,
-    joined by paired off-page connectors in yard ``style`` (``YARD_STYLES``; default random).
+    """One ship system drawn on ``sheets`` (2 or 3; default random 2 or 3) sheets of one drawing,
+    all on one paper size, joined by paired off-page connectors in yard ``style``
+    (``YARD_STYLES``; default random).
 
     Returns the ground truth (all pages, globally unique ids, ``meta["sheet_links"]``) and the
-    PDF bytes. A topology with fewer stages than ``sheets`` uses one stage per sheet."""
-    if sheets is not None and sheets < 2:
-        raise ValueError("sheets must be >= 2")
+    PDF bytes. A topology with fewer stages than ``sheets`` uses one stage per sheet
+    (``meta["multisheet"]["sheets"]`` < ``["sheets_requested"]``)."""
+    if sheets is not None and not MIN_SHEETS <= sheets <= MAX_SHEETS:
+        raise ValueError(f"sheets must be {MIN_SHEETS}..{MAX_SHEETS} (or None for random), not {sheets!r}")
     if style is not None and style not in YARD_STYLES:
         raise ValueError(f"style must be one of {YARD_STYLES}, not {style!r}")
     rng0 = random.Random(f"multisheet:{seed}")
@@ -484,23 +490,36 @@ def generate_multisheet(seed: int, system: Optional[SystemType] = None, sheets: 
         n = max(2, min(n_req, len(topo.stages)))
         st = random_style(rng)
         plan, subs = _split(topo, n, rng, yard)
-        parts: list[tuple[PIDDocument, DrawingSpec]] = []
         try:
-            for k, sub in enumerate(subs):
-                stk = st if k == 0 else replace(st, paper=parts[0][1].paper)
-                srng = random.Random(f"multisheet:{seed}:{attempt}:sheet{k}")
-                try:
-                    parts.append(_generate(sub, stk, srng, seed, attempt))
-                except LayoutError:
-                    if k == 0:
-                        raise
-                    srng = random.Random(f"multisheet:{seed}:{attempt}:sheet{k}:free")
-                    parts.append(_generate(sub, st, srng, seed, attempt))
+            parts = _layout_sheets(subs, st, seed, attempt)
         except LayoutError as exc:
             errors.append(str(exc))
             continue
-        return _assemble(seed, system, plan, parts, attempt)
+        doc, pdf = _assemble(seed, system, plan, parts, attempt)
+        doc.meta["multisheet"]["sheets_requested"] = n_req
+        return doc, pdf
     raise RuntimeError(f"multi-sheet generation failed for seed={seed} system={system.value}: {errors}")
+
+
+def _layout_sheets(subs: Sequence[SystemTopology], st: DrawingStyle, seed: int, attempt: int) -> list[tuple[PIDDocument, DrawingSpec]]:
+    """Lay out every sheet on one paper size. The first sheet picks it; when a later sheet does not
+    fit, the whole set is laid out again on the next larger paper (``LayoutError`` when the first
+    sheet does not fit at all or nothing larger is left)."""
+    forced: Optional[str] = None  # set once a later sheet did not fit the paper of the first one
+    while True:
+        parts: list[tuple[PIDDocument, DrawingSpec]] = []
+        try:
+            for k, sub in enumerate(subs):
+                paper = forced or (parts[0][1].paper if parts else None)
+                stk = replace(st, paper=paper) if paper else st
+                srng = random.Random(f"multisheet:{seed}:{attempt}:sheet{k}" + (f":{forced}" if forced else ""))
+                parts.append(_generate(sub, stk, srng, seed, attempt))
+            return parts
+        except LayoutError:
+            current = forced or (parts[0][1].paper if parts else None)
+            if current is None or current not in PAPER_ORDER or current == PAPER_ORDER[-1]:
+                raise
+            forced = PAPER_ORDER[PAPER_ORDER.index(current) + 1]
 
 
 def _assemble(seed: int, system: SystemType, plan: _Plan, parts: list[tuple[PIDDocument, DrawingSpec]],

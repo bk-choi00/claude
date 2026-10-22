@@ -54,9 +54,9 @@ from scipy import ndimage
 from ..catalog import SYSTEMS, TYPICAL_DIMENSIONS, pipe_od_m
 from ..model import (ActuatorType, Category, Medium, PIDDocument, PIDObject, PipeKind, PipeRoute3D, PipeRun,
                      Placement3D, SymbolClass, Vec3)
-from .heuristic import DEFAULT_ELEVATIONS, doc_system, normalized_position, pipe_medium
+from .heuristic import DEFAULT_ELEVATIONS, DrawingFrame, doc_system, pipe_medium, prepare_document
 from .meshes import object_parts
-from .plan import RoutingPlan
+from .plan import MODEL3D_ROLE, RoutingPlan
 from .scene import placement_transform
 from .solver import axis_height, nozzle_normal, placement_box, port_key, scale_for_od
 from .zones import Box3, EngineRoom
@@ -420,6 +420,9 @@ class VoxelGrid:
         return c
 
 
+_INF = float("inf")
+
+
 def astar(cost: np.ndarray, start: Cell, goal: Cell, band_k: float, start_dir: int = 6, bend: float = 2.0,
           band_w: float = 0.35, eps: float = 1.25, max_expansions: int = 120_000) -> Optional[list[Cell]]:
     """Orthogonal A* on a cell-cost grid (sub-box coordinates; cost < 0 = impassable).
@@ -427,60 +430,74 @@ def astar(cost: np.ndarray, start: Cell, goal: Cell, band_k: float, start_dir: i
     Step cost 1 + the entered cell's cost, +``bend`` per change of direction, +``band_w`` x
     |k - band_k| per horizontal step (keeps runs on the preferred elevation band); weighted
     heuristic ``eps`` x Manhattan distance (bounded-suboptimal, much faster).
+
+    Implementation: the grid is padded with one impassable cell on every side and flattened, so a
+    neighbour is ``cell + offset`` without bounds tests; heuristic and band penalty are tabulated
+    per cell, g-scores and parents live in flat lists over (cell, entry direction) states, and the
+    heap holds ``(f, h, g, state)`` whose state number orders exactly like (i, j, k, direction): the
+    expansion order and the path are those of the straightforward dict-based search.
     """
     sx, sy, sz = cost.shape
-    flat = cost.ravel().tolist()
+    py, pz = sy + 2, sz + 2
+    padded = np.full((sx + 2, py, pz), -1.0)
+    padded[1:-1, 1:-1, 1:-1] = cost
+    flat = padded.ravel().tolist()
     gi, gj, gk = goal
-    inf = float("inf")
-    best_g: dict[int, float] = {}
-    parent: dict[int, int] = {}
-    s_state = ((start[0] * sy + start[1]) * sz + start[2]) * 7 + start_dir
-    best_g[s_state] = 0.0
-    h0 = abs(start[0] - gi) + abs(start[1] - gj) + abs(start[2] - gk)
-    heap = [(eps * h0, h0, 0.0, start[0], start[1], start[2], start_dir)]
+    I, J, K = np.ogrid[-1:sx + 1, -1:sy + 1, -1:sz + 1]
+    H = (np.abs(I - gi) + np.abs(J - gj) + np.abs(K - gk)).ravel().tolist()  # Python ints, as in the search
+    BPk = [band_w * abs(k - band_k) for k in range(-1, sz + 1)]  # per padded k, as band_w * |k - band_k|
+    BP = np.broadcast_to(np.array(BPk)[None, None, :], padded.shape).ravel().tolist()
+    off = (py * pz, -py * pz, pz, -pz, 1, -1)  # _DIRS order: +x, -x, +y, -y, +z, -z
+    n = len(flat)
+    best = [_INF] * (7 * n)
+    parent = [-1] * (7 * n)
+    sc = ((start[0] + 1) * py + start[1] + 1) * pz + start[2] + 1
+    gc = ((gi + 1) * py + gj + 1) * pz + gk + 1
+    s_state = sc * 7 + start_dir
+    best[s_state] = 0.0
+    h0 = H[sc]
+    heap = [(eps * h0, h0, 0.0, s_state)]
+    pop, push = heapq.heappop, heapq.heappush
     expansions = 0
     goal_state = None
     while heap:
-        f, h, g, i, j, k, d = heapq.heappop(heap)
-        state = ((i * sy + j) * sz + k) * 7 + d
-        if g > best_g.get(state, inf):
+        f, h, g, state = pop(heap)
+        if g > best[state]:
             continue
-        if i == gi and j == gj and k == gk:
+        c, d = divmod(state, 7)
+        if c == gc:
             goal_state = state
             break
         expansions += 1
         if expansions > max_expansions:
             return None
-        band_pen = band_w * abs(k - band_k)
-        for nd, (di, dj, dk) in enumerate(_DIRS):
-            if d < 6 and nd == (d ^ 1):  # no immediate reversal
+        band_pen = BP[c]
+        turn = d < 6
+        rev = d ^ 1
+        for nd in range(6):
+            if turn and nd == rev:  # no immediate reversal
                 continue
-            ni, nj, nk = i + di, j + dj, k + dk
-            if ni < 0 or nj < 0 or nk < 0 or ni >= sx or nj >= sy or nk >= sz:
+            nc = c + off[nd]
+            cc = flat[nc]
+            if cc < 0:
                 continue
-            c = flat[(ni * sy + nj) * sz + nk]
-            if c < 0:
-                continue
-            ng = g + 1.0 + c + (bend if (d < 6 and nd != d) else 0.0) + (band_pen if dk == 0 else 0.0)
-            ns = ((ni * sy + nj) * sz + nk) * 7 + nd
-            if ng < best_g.get(ns, inf):
-                best_g[ns] = ng
+            ng = g + 1.0 + cc + (bend if (turn and nd != d) else 0.0) + (band_pen if nd < 4 else 0.0)
+            ns = nc * 7 + nd
+            if ng < best[ns]:
+                best[ns] = ng
                 parent[ns] = state
-                nh = abs(ni - gi) + abs(nj - gj) + abs(nk - gk)
-                heapq.heappush(heap, (ng + eps * nh, nh, ng, ni, nj, nk, nd))
+                nh = H[nc]
+                push(heap, (ng + eps * nh, nh, ng, ns))
     if goal_state is None:
         return None
     cells: list[Cell] = []
-    s = goal_state
+    st = goal_state
     while True:
-        c = s // 7
-        k = c % sz
-        j = (c // sz) % sy
-        i = c // (sz * sy)
-        cells.append((i, j, k))
-        if s == s_state or s not in parent:
+        c = st // 7
+        cells.append((c // (py * pz) - 1, (c // pz) % py - 1, c % pz - 1))
+        if st == s_state or parent[st] < 0:
             break
-        s = parent[s]
+        st = parent[st]
     cells.reverse()
     return cells
 
@@ -643,6 +660,9 @@ class _ChainCtx:
     keys: frozenset[str]  # terminal keys
     own: list[Cell]  # terminal + ring cells of its terminals
     terms: list["_Term"] = field(default_factory=list)
+    # obstacle masks per (search box, pipe / body inflation): the grid does not change while one chain
+    # is routed (its pipes and items are registered afterwards), so the modes and retries share them
+    memo: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -684,14 +704,16 @@ def adapt_band(zb: float, za: float, zc: float) -> float:
 
 
 def _drawing_map(doc: PIDDocument, placements: dict[str, Placement3D], room: EngineRoom):
-    """Affine page -> room (x, y) map fitted on placed equipment (normalised fallback)."""
+    """Affine drawing position -> room (x, y) map fitted on placed equipment (normalised fallback);
+    ``mapping(x, y, page)`` takes a page point (sheets side by side, see :class:`DrawingFrame`)."""
     objs = doc.object_by_id()
+    frame = DrawingFrame(doc)
     us, vs, xs, ys = [], [], [], []
     for oid, pl in placements.items():
         o = objs.get(oid)
         if o is None:
             continue
-        u, v = normalized_position(doc, o.center.x, o.center.y)
+        u, v = frame.uv(o.center.x, o.center.y, o.page)
         b = placement_box(pl)
         cx, cy, _ = b.center
         us.append(u), vs.append(v), xs.append(cx), ys.append(cy)
@@ -706,8 +728,8 @@ def _drawing_map(doc: PIDDocument, placements: dict[str, Placement3D], room: Eng
     ax, bx = fit(us, xs, (room.length, 0.0))
     ay, by = fit(vs, ys, (-room.breadth, room.breadth / 2))
 
-    def mapping(x: float, y: float) -> tuple[float, float]:
-        u, v = normalized_position(doc, x, y)
+    def mapping(x: float, y: float, page: int = 0) -> tuple[float, float]:
+        u, v = frame.uv(x, y, page)
         X = min(max(ax * u + bx, 0.5), room.length - 0.5)
         Y = min(max(ay * v + by, -room.breadth / 2 + 0.5), room.breadth / 2 - 0.5)
         return X, Y
@@ -979,10 +1001,15 @@ def _obstacles(ctx: _Ctx, sl: tuple[slice, slice, slice], od: float, inflate: fl
     return items, other, shared
 
 
-def _search(ctx: _Ctx, cc: _ChainCtx, ca: Cell, cb: Cell, od: float, zb: float, start_dir: int, wide: bool,
+WIDEN = (False, "medium", True)  # search box: endpoints + margin, then a larger box, then the whole grid
+
+
+def _search(ctx: _Ctx, cc: _ChainCtx, ca: Cell, cb: Cell, od: float, zb: float, start_dir: int, wide: object,
             mode: str, strict: bool = False, block: Sequence[Cell] = (), headroom: float = 0.0,
             headroom_hard: bool = False) -> Optional[tuple[list[Pt], list[Cell]]]:
-    """A* between two cells in a sub-box (or the whole grid); returns (points, global cells).
+    """A* between two cells in a sub-box (``wide`` False: the endpoints' box plus max(8, 0.3 x span)
+    cells, 4 vertically; "medium": plus max(16, span) cells, 12 vertically) or the whole grid
+    (``wide`` True); returns (points, global cells).
 
     ``mode="clean"``: equipment (inflated by OD/2 + clearance), item bodies, other pipes, other
     terminals' cells and the reserved neighbours of other nodes are hard; pipes of chains sharing
@@ -1001,8 +1028,10 @@ def _search(ctx: _Ctx, cc: _ChainCtx, ca: Cell, cb: Cell, od: float, zb: float, 
     band_k = int(round((zb - g.origin[2]) / g.res - 0.5))
     band_k = min(max(band_k, 0), g.shape[2] - 1)
     span = max(abs(ca[i] - cb[i]) for i in range(3))
-    if wide:
+    if wide is True:
         sl = (slice(0, g.shape[0]), slice(0, g.shape[1]), slice(0, g.shape[2]))
+    elif wide == "medium":
+        sl = _sub_box(g, ca, cb, band_k, max(16, span), 12)
     else:
         sl = _sub_box(g, ca, cb, band_k, max(8, int(0.3 * span)), 4)
     off = (sl[0].start, sl[1].start, sl[2].start)
@@ -1018,7 +1047,10 @@ def _search(ctx: _Ctx, cc: _ChainCtx, ca: Cell, cb: Cell, od: float, zb: float, 
     la, lb = local(ca), local(cb)
     if la is None or lb is None:
         return None
-    items, other, shared = _obstacles(ctx, sl, od, inflate, cc)
+    mkey = (tuple((x.start, x.stop) for x in sl), g.qkey(od / 2 + PIPE_GAP), g.qkey(inflate))
+    if mkey not in cc.memo:
+        cc.memo[mkey] = _obstacles(ctx, sl, od, inflate, cc)
+    items, other, shared = cc.memo[mkey]
     own = np.zeros(shape, dtype=bool)
     for c in cc.own:
         q = local(c)
@@ -1094,7 +1126,8 @@ def _search(ctx: _Ctx, cc: _ChainCtx, ca: Cell, cb: Cell, od: float, zb: float, 
     lab, _ = ndimage.label(cost >= 0)  # cheap reachability test before the A*
     if lab[la] == 0 or lab[la] != lab[lb]:
         return None
-    cells = astar(cost, la, lb, band_k - off[2], start_dir=start_dir, max_expansions=300_000 if wide else 100_000)
+    cells = astar(cost, la, lb, band_k - off[2], start_dir=start_dir,
+                  max_expansions={True: 300_000, "medium": 150_000}.get(wide, 100_000))
     if cells is None:
         return None
     glob = [(c[0] + off[0], c[1] + off[1], c[2] + off[2]) for c in cells]
@@ -1132,7 +1165,7 @@ def _route_between(ctx: _Ctx, cc: _ChainCtx, ta: _Term, tb: _Term, od: float, zb
     best: Optional[tuple[int, list[Pt], str]] = None
     for mode in modes:
         res = None
-        for wide in (False, True):
+        for wide in WIDEN:
             if time.time() >= ctx.deadline:
                 break
             if wide:
@@ -1202,7 +1235,7 @@ def _route_with_leg(ctx: _Ctx, cc: _ChainCtx, ta: _Term, tb: _Term, od: float, z
             continue
         res = None
         for mode in MODES[:2]:
-            for wide in (False, True):
+            for wide in WIDEN:
                 if time.time() >= ctx.deadline:
                     return [], "none"
                 if at_start:
@@ -1491,6 +1524,7 @@ def route(doc: PIDDocument, placements: Sequence[Placement3D], room: EngineRoom,
           ) -> tuple[list[PipeRoute3D], list[Placement3D], list[str]]:
     """Route every process pipe; place inline items. Returns (routes, inline placements, notes)."""
     t0 = time.time()
+    doc, _ = prepare_document(doc)  # sheet links as pipes (no-op for a prepared document)
     objs = doc.object_by_id()
     pmap = {p.object_id: p for p in placements}
     grid = VoxelGrid(room, res, [placement_box(p) for p in placements])
@@ -1514,6 +1548,7 @@ def route(doc: PIDDocument, placements: Sequence[Placement3D], room: EngineRoom,
     # --- positions of junctions, hubs and free ends
     mapping = _drawing_map(doc, pmap, room)
     jpos = {j.id: j.position for j in doc.junctions}
+    jpage = {j.id: j.page for j in doc.junctions}
     nodes: dict[str, Pt] = {}
     node_z: dict[str, float] = {}
     node_od: dict[str, float] = {}
@@ -1521,17 +1556,17 @@ def route(doc: PIDDocument, placements: Sequence[Placement3D], room: EngineRoom,
         if n in pmap:
             continue
         if n in jpos:
-            px, py = jpos[n].x, jpos[n].y
+            px, py, pg = jpos[n].x, jpos[n].y, jpage[n]
         elif n in objs:
-            px, py = objs[n].center.x, objs[n].center.y
+            px, py, pg = objs[n].center.x, objs[n].center.y, objs[n].page
         else:
-            pid, which = n.split(":")[1], int(n.split(":")[2])
+            pid, which = n[len("free:"):].rsplit(":", 1)
             pts = pipes[pid].points
-            pp = pts[0] if which == 0 else pts[-1]
-            px, py = pp.x, pp.y
+            pp = pts[0] if int(which) == 0 else pts[-1]
+            px, py, pg = pp.x, pp.y, pipes[pid].page
         if not (n in jpos or n in hubs or n.startswith("free:")):
             continue
-        x, y = mapping(px, py)
+        x, y = mapping(px, py, pg)
         big = max((p for p, _ in lst), key=lambda p: _pipe_od(p))
         node_z[n] = band_z(room, routing, pipe_medium(big, default_medium), big.line_number)
         node_od[n] = _pipe_od(big)
@@ -1728,12 +1763,19 @@ def route(doc: PIDDocument, placements: Sequence[Placement3D], room: EngineRoom,
                 pl.nozzles[port_key(p.start if w == 0 else p.end, p.id)] = end
         inline.append(pl)
 
-    # --- objects without process piping
+    # --- objects without process piping (unrecognised symbols beyond the cap are not modelled)
     placed_ids = set(pmap) | {p.object_id for p in inline}
+    inline_by_id = {p.object_id: p for p in inline}
+    signal_peer: dict[str, list[str]] = defaultdict(list)  # object -> other end objects, in pipe order
+    for p in doc.pipes:
+        ids = {p.start.object_id, p.end.object_id} - {None}
+        for a in ids:
+            signal_peer[a].append(next(iter(ids - {a}), ""))
     for o in doc.objects:
-        if o.id in placed_ids:
+        if o.id in placed_ids or o.attributes.get(MODEL3D_ROLE) == "unknown_not_modelled":
             continue
-        pl = _place_isolated(ctx, o, {p.object_id: p for p in inline}, mapping)
+        pl = _place_isolated(ctx, o, inline_by_id, mapping, signal_peer.get(o.id, []))
+        inline_by_id[o.id] = pl
         inline.append(pl)
         box = item_box(pl, o)
         grid.add_item(box, o.id)
@@ -1833,25 +1875,31 @@ def _spread_nodes(ctx: _Ctx, chains: Sequence[_Chain], nodes: dict[str, Pt], pma
     return {n: (p[0], p[1], p[2]) for n, p in pos.items()}
 
 
-def _place_isolated(ctx: _Ctx, o: PIDObject, inline: dict[str, Placement3D], mapping) -> Placement3D:
+def _place_isolated(ctx: _Ctx, o: PIDObject, inline: dict[str, Placement3D], mapping,
+                    peers: Optional[Sequence[str]] = None) -> Placement3D:
     """Object with no process connection: near a signal-linked object, else at its mapped drawing
-    position on the floor; the first nearby spot clear of equipment, bodies and pipes is used."""
+    position on the floor; the first nearby spot clear of equipment, bodies and pipes is used.
+    ``peers``: the objects at the other end of the pipes / lines touching ``o``, in pipe order
+    ("" for none; computed from the document when not given)."""
     doc, room, pmap = ctx.doc, ctx.room, ctx.placements
+    if peers is None:
+        peers = []
+        for p in doc.pipes:
+            ids = {p.start.object_id, p.end.object_id}
+            if o.id in ids:
+                peers.append(next(iter(ids - {o.id, None}), ""))
     anchor = None
-    for p in doc.pipes:
-        ids = {p.start.object_id, p.end.object_id}
-        if o.id in ids:
-            other = (ids - {o.id}).pop() if len(ids) > 1 else None
-            if other and (other in pmap or other in inline):
-                anchor = pmap.get(other) or inline.get(other)
-                break
+    for other in peers:
+        if other and (other in pmap or other in inline):
+            anchor = pmap.get(other) or inline.get(other)
+            break
     size = TYPICAL_DIMENSIONS.get(o.cls, TYPICAL_DIMENSIONS[S.UNKNOWN])
     if anchor is not None:
         b = item_box(anchor, ctx.objs.get(anchor.object_id))
         target = (b.center[0], b.y1 + 0.3 + size[1] / 2, b.z1 + 0.2)
         why = f"no process piping; placed next to {anchor.object_id} it is signal-linked to"
     else:
-        x, y = mapping(o.center.x, o.center.y)
+        x, y = mapping(o.center.x, o.center.y, o.page)
         target = (x, y, room.deck_z("floor"))
         why = "no piping; placed at its drawing position on the floor deck"
     target = (target[0], target[1], min(target[2], room.height - size[2]))

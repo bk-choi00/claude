@@ -4,6 +4,7 @@ import json
 import math
 import shutil
 from collections import Counter, defaultdict
+from pathlib import Path
 
 import httpx
 import pymupdf
@@ -647,6 +648,11 @@ def _pdf_bytes(n=3000):
     return data + b"%" * max(0, n - len(data))
 
 
+def _public(host, port):
+    """Test resolver (no DNS in tests): every host name is a public address."""
+    return ["93.184.215.14"]
+
+
 def _yaml(path, entries):
     lines = ["sources:"]
     for e in entries:
@@ -710,7 +716,7 @@ def test_fetch_sources_with_mock_transport(tmp_path):
     dest.mkdir()
     part_path(dest / names[5], entries[5]["url"]).write_bytes(resumable[:1234])
     client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
-    res = fetch_sources(src, dest, client=client, max_bytes=1500 + len(resumable))
+    res = fetch_sources(src, dest, client=client, resolver=_public, max_bytes=1500 + len(resumable))
     st = {r["url"].rsplit("/", 1)[-1]: r for r in res}
     assert [r["path"] for r in res] == names
     assert st["good.pdf"]["status"] == "downloaded" and (dest / names[0]).read_bytes() == good
@@ -728,14 +734,14 @@ def test_fetch_sources_with_mock_transport(tmp_path):
     assert not (dest / "wrong.pdf").exists()
     assert not list(dest.glob("*.part"))  # completed / rejected downloads leave no partial files
     # size limit (declared length -> "too large"; streamed overflow -> "size limit")
-    res2 = fetch_sources(src, tmp_path / "dl2", client=client, max_bytes=1000)
+    res2 = fetch_sources(src, tmp_path / "dl2", client=client, resolver=_public, max_bytes=1000)
     huge = [r for r in res2 if r["url"].endswith("huge.pdf")][0]
     assert huge["status"] == "skipped" and huge["reason"].startswith("too large"), huge
     assert not list((tmp_path / "dl2").glob(names[3] + "*"))
     # second run: files already fetched from the same URL are not downloaded again
     assert st["huge.pdf"]["status"] == "downloaded"
     n_calls = len(calls)
-    res3 = fetch_sources(src, dest, client=client, max_bytes=1500 + len(resumable))
+    res3 = fetch_sources(src, dest, client=client, resolver=_public, max_bytes=1500 + len(resumable))
     assert [r["status"] for r in res3 if r["path"] in (names[0], names[3], names[5], names[6])] == ["exists"] * 4
     # only the sources without a verified local copy are requested again (good.pdf?copy=2 is wrong.pdf)
     assert sorted(path for path, _ in calls[n_calls:]) == sorted(
@@ -781,7 +787,7 @@ def test_fetch_sources_keeps_sources_apart(tmp_path):
     dest = tmp_path / "dl"
     src = _yaml(tmp_path / "s.yaml", entries)
     src.write_text(src.read_text() + '  - url: "http://exa\\0mple.org/x.pdf"\n')
-    res = fetch_sources(src, dest, client=client)
+    res = fetch_sources(src, dest, client=client, resolver=_public)
     assert [r["status"] for r in res] == ["downloaded"] * 4 + ["duplicate", "error", "downloaded", "error"]
     assert res[5]["reason"].startswith(("ValueError", "UnsupportedProtocol"))
     assert res[7]["url"] == "http://exa\x00mple.org/x.pdf" and res[7]["reason"].startswith("InvalidURL")
@@ -794,33 +800,203 @@ def test_fetch_sources_keeps_sources_apart(tmp_path):
     bad = _yaml(tmp_path / "bad.yaml", [{"url": "https://x.org/a/pid.pdf", "name": "PID.pdf"},
                                         {"url": "https://x.org/b/pid.pdf", "name": "pid"}])
     with pytest.raises(ValueError, match="share the file name"):
-        fetch_sources(bad, tmp_path / "bad", client=client)
+        fetch_sources(bad, tmp_path / "bad", client=client, resolver=_public)
     assert not (tmp_path / "bad" / "pid.pdf").exists()
     bad2 = _yaml(tmp_path / "bad2.yaml", [{"url": "https://x.org/a/pid.pdf", "sha256": "aa"},
                                          {"url": "https://x.org/a/pid.pdf", "sha256": "bb"}])
     with pytest.raises(ValueError, match="different sha256"):
-        fetch_sources(bad2, tmp_path / "bad2", client=client)
+        fetch_sources(bad2, tmp_path / "bad2", client=client, resolver=_public)
     # a file under the target name that was not fetched from this URL is not reported as "exists"
     named = _yaml(tmp_path / "named.yaml", [{"url": "https://x.org/b/pid.pdf", "name": "drawing.pdf"}])
     (dest / "drawing.pdf").write_bytes(bodies[keys[0]])  # stray file, no provenance
-    r = fetch_sources(named, dest, client=client)[0]
+    r = fetch_sources(named, dest, client=client, resolver=_public)[0]
     assert r["status"] == "downloaded" and (dest / "drawing.pdf").read_bytes() == bodies[keys[1]]
-    assert fetch_sources(named, dest, client=client)[0]["status"] == "exists"
+    assert fetch_sources(named, dest, client=client, resolver=_public)[0]["status"] == "exists"
     moved = _yaml(tmp_path / "moved.yaml", [{"url": "https://x.org/a/pid.pdf", "name": "drawing.pdf"}])
-    r = fetch_sources(moved, dest, client=client)[0]  # same name, different URL now
+    r = fetch_sources(moved, dest, client=client, resolver=_public)[0]  # same name, different URL now
     assert r["status"] == "downloaded" and (dest / "drawing.pdf").read_bytes() == bodies[keys[0]]
     # a partial file of another URL under the same name is never resumed
     part_path(dest / "drawing.pdf", "https://x.org/b/pid.pdf").write_bytes(bodies[keys[1]][:100])
     (dest / "drawing.pdf").unlink()
-    r = fetch_sources(moved, dest, client=client)[0]
+    r = fetch_sources(moved, dest, client=client, resolver=_public)[0]
     assert r["status"] == "downloaded" and r["resumed_from"] == 0
     assert (dest / "drawing.pdf").read_bytes() == bodies[keys[0]] and not list(dest.glob("drawing.pdf.*.part"))
     # a server resuming at the wrong offset does not corrupt the file
     shifted = _yaml(tmp_path / "shifted.yaml", [{"url": "https://x.org/shifted.pdf", "name": "shifted.pdf"}])
     part_path(dest / "shifted.pdf", "https://x.org/shifted.pdf").write_bytes(b"%PDF-1.7 partial")
-    r = fetch_sources(shifted, dest, client=client)[0]
+    r = fetch_sources(shifted, dest, client=client, resolver=_public)[0]
     assert r["status"] == "error" and "instead of" in r["reason"] and not (dest / "shifted.pdf").exists()
     chunked = _yaml(tmp_path / "chunked.yaml", [{"url": "https://x.org/chunked.pdf", "name": "chunked.pdf"}])
-    r = fetch_sources(chunked, dest, client=client, max_bytes=1000)[0]
+    r = fetch_sources(chunked, dest, client=client, resolver=_public, max_bytes=1000)[0]
     assert r["status"] == "skipped" and r["reason"].startswith("exceeded size limit")
     assert not list(dest.glob("chunked.pdf*"))
+
+
+# --------------------------------------------------------------------------- collection hardening
+
+
+def _rmtree_iterative(top: Path) -> None:
+    import os
+
+    stack, dirs = [str(top)], []
+    while stack:
+        d = stack.pop()
+        dirs.append(d)
+        with os.scandir(d) as it:
+            for e in it:
+                if e.is_dir(follow_symlinks=False):
+                    stack.append(e.path)
+                else:
+                    os.unlink(e.path)
+    for d in reversed(dirs):
+        os.rmdir(d)
+
+
+def test_scan_archive_stays_inside_root_and_survives_deep_trees(tmp_path, drawings):
+    import os
+
+    root = tmp_path / "archive"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    pdf = drawings[0][4]
+    (outside / "private.pdf").write_bytes(pdf)
+    (outside / "nested.pdf").write_bytes(drawings[1][4])
+    (root / "real.pdf").write_bytes(pdf)
+    (root / "innocent.pdf").symlink_to("../outside/private.pdf")
+    (root / "linked_dir").symlink_to("../outside", target_is_directory=True)
+    (root / "dangling.pdf").symlink_to("../outside/missing.pdf")
+    os.mkfifo(root / "pipe.pdf")  # reading a FIFO would block the scan forever
+    deep = str(root)
+    for _ in range(80):  # deeper than max_depth (and, at 1100 levels, than Python's recursion limit)
+        deep += "/d"
+        os.mkdir(deep)
+    (Path(deep) / "too_deep.pdf").write_bytes(drawings[2][4])
+    recs = scan_archive(root, out_index=tmp_path / "index.jsonl", max_depth=64)
+    by = {r["path"]: r for r in recs}
+    assert by["real.pdf"]["status"] == "readable"
+    for link in ("innocent.pdf", "linked_dir", "dangling.pdf"):
+        assert by[link]["status"] == "skipped" and "symbolic link" in by[link]["reason"], by[link]
+        assert by[link]["sha256"] == "" and by[link]["title_text"] == ""  # the target was never read
+    assert by["pipe.pdf"]["status"] == "skipped" and "regular file" in by["pipe.pdf"]["reason"]
+    over = [r for r in recs if "max_depth" in r["reason"]]
+    assert len(over) == 1 and over[0]["status"] == "error" and over[0]["path"].count("/") == 64
+    assert not any(r["path"].endswith("too_deep.pdf") or "nested" in r["path"] for r in recs)
+    assert len((tmp_path / "index.jsonl").read_text().splitlines()) == len(recs)
+    # a very deep tree (beyond the recursion limit) no longer aborts the scan
+    try:
+        for _ in range(1100):
+            deep += "/d"
+            os.mkdir(deep)
+        recs = scan_archive(root, max_depth=5000)
+        assert {r["path"] for r in recs if r["status"] == "readable"} == {"real.pdf",
+                                                                           "/".join(["d"] * 80) + "/too_deep.pdf"}
+    finally:  # shutil.rmtree (pytest's tmp_path cleanup) recurses and cannot delete a tree this deep
+        _rmtree_iterative(root / "d")
+    # size limit
+    small = scan_archive(root, max_file_bytes=10, max_depth=1)
+    assert {r["path"]: r["status"] for r in small}["real.pdf"] == "skipped"
+
+
+def test_is_public_address():
+    from shippid.datasets.collect import is_public_address
+
+    for a in ("93.184.215.14", "8.8.8.8", "2606:4700:4700::1111"):
+        assert is_public_address(a), a
+    for a in ("127.0.0.1", "127.0.0.2", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1",
+              "0.0.0.0", "224.0.0.1", "255.255.255.255", "::1", "fe80::1", "fd00::1", "::ffff:10.0.0.1",
+              "::ffff:127.0.0.1", "2002:0a00:0001::1", "64:ff9b::a00:1", "not an ip", ""):
+        assert not is_public_address(a), a
+
+
+def test_fetch_sources_refuses_private_hosts_and_bounds_downloads(tmp_path):
+    import time
+
+    good = _pdf_bytes()
+    hops = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hops.append(str(request.url))
+        host, path = request.url.host, request.url.path
+        if path == "/to-loopback.pdf":
+            return httpx.Response(302, headers={"location": "http://127.0.0.1:8080/internal.pdf"})
+        if path == "/to-metadata":
+            return httpx.Response(301, headers={"location": "http://169.254.169.254/latest/meta-data/"})
+        if path == "/to-intranet.pdf":
+            return httpx.Response(307, headers={"location": "https://intranet.corp/drawing.pdf"})
+        if path == "/to-file":
+            return httpx.Response(302, headers={"location": "file:///etc/passwd"})
+        if path == "/loop":
+            return httpx.Response(302, headers={"location": "/loop"})
+        if path == "/relative":
+            return httpx.Response(302, headers={"location": "/good.pdf"})
+        if path in ("/good.pdf", "/drawing.pdf", "/internal.pdf"):
+            return httpx.Response(200, content=good, headers={"content-type": "application/pdf"})
+        if path == "/drip.pdf":
+            def drip():
+                yield b"%PDF-"
+                for _ in range(20):
+                    time.sleep(0.05)
+                    yield b"x"
+            return httpx.Response(200, content=drip(), headers={"content-type": "application/pdf"})
+        return httpx.Response(404)
+
+    def resolver(host, port):
+        return {"intranet.corp": ["10.0.0.5"], "dual.example.org": ["93.184.215.14", "192.168.0.9"]}.get(
+            host, ["93.184.215.14"])
+
+    base = "https://files.example.org"
+    entries = [{"url": f"{base}/to-loopback.pdf", "name": "a"}, {"url": f"{base}/to-metadata", "name": "b"},
+               {"url": f"{base}/to-intranet.pdf", "name": "c"}, {"url": f"{base}/to-file", "name": "d"},
+               {"url": f"{base}/loop", "name": "e"}, {"url": f"{base}/relative", "name": "f"},
+               {"url": "http://10.1.2.3/direct.pdf", "name": "g"}, {"url": "https://dual.example.org/x.pdf", "name": "h"},
+               {"url": "ftp://files.example.org/good.pdf", "name": "i"}]
+    src = _yaml(tmp_path / "s.yaml", entries)
+    # the client follows redirects itself: fetch_sources must not let it (it checks every hop)
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    res = {r["path"][0]: r for r in fetch_sources(src, tmp_path / "dl", client=client, resolver=resolver)}
+    for k, needle in (("a", "127.0.0.1"), ("b", "169.254.169.254"), ("c", "intranet.corp"), ("g", "10.1.2.3"),
+                      ("h", "192.168.0.9")):
+        assert res[k]["status"] == "skipped" and res[k]["reason"].startswith("refused: ") and needle in res[k]["reason"]
+    assert {httpx.URL(h).host for h in hops} == {"files.example.org"}, hops  # no request reached a private host
+    assert "content_type" not in res["b"]  # nothing of the internal answer leaks into the record
+    assert res["d"]["status"] == "error" and "scheme 'file'" in res["d"]["reason"]
+    assert res["e"]["status"] == "error" and res["e"]["reason"].startswith("TooManyRedirects")
+    assert hops.count(f"{base}/loop") == 6  # the first request + 5 redirects
+    assert res["f"]["status"] == "downloaded" and res["f"]["final_url"] == f"{base}/good.pdf"
+    side = json.loads((tmp_path / "dl" / ("f.pdf" + SIDECAR_SUFFIX)).read_text())
+    assert side["url"] == f"{base}/relative" and side["final_url"] == f"{base}/good.pdf"
+    assert res["i"]["status"] == "error" and "scheme 'ftp'" in res["i"]["reason"]
+    assert not list((tmp_path / "dl").glob("[abcdeghi].pdf"))
+    # intranet sources are allowed explicitly
+    res = {r["path"][0]: r for r in fetch_sources(src, tmp_path / "dl2", client=client, resolver=resolver,
+                                                    allow_private=True)}
+    assert res["a"]["status"] == "downloaded" and res["a"]["final_url"] == "http://127.0.0.1:8080/internal.pdf"
+    assert res["c"]["status"] == "downloaded"
+    # total deadline and minimum rate: a dripping server cannot hold a download open
+    drip = _yaml(tmp_path / "drip.yaml", [{"url": f"{base}/drip.pdf", "name": "drip"}])
+    t0 = time.monotonic()
+    r = fetch_sources(drip, tmp_path / "dl3", client=client, resolver=resolver, max_seconds=0.3)[0]
+    assert time.monotonic() - t0 < 0.9
+    assert r["status"] == "error" and "exceeded 0.3 s" in r["reason"]
+    assert list((tmp_path / "dl3").glob("drip.pdf.*.part"))  # kept for a later resume
+    r = fetch_sources(drip, tmp_path / "dl4", client=client, resolver=resolver, min_rate=1e6, rate_grace=0.1)[0]
+    assert r["status"] == "error" and "slower than" in r["reason"]
+
+
+def test_multisheet_sets_keep_one_paper_size():
+    from shippid.datasets.multisheet import generate_multisheet
+
+    # seeds whose later sheet did not fit the first sheet's paper used to come out mixed
+    # (26: A3 + A1, 81: A3 + A2 + A3); the whole set now moves to the larger paper
+    for seed in (26, 81):
+        gt, pdf = generate_multisheet(seed)
+        assert len(set(gt.meta["paper"])) == 1, gt.meta["paper"]
+        assert len({(p.width, p.height) for p in gt.pages}) == 1
+        with pymupdf.open("pdf", pdf) as d:
+            assert len({(round(pg.rect.width), round(pg.rect.height)) for pg in d}) == 1
+        assert gt.meta["sheet_links"] and gt.meta["multisheet"]["sheets_requested"] == gt.meta["multisheet"]["sheets"]
+    with pytest.raises(ValueError, match="sheets must be 2..3"):
+        generate_multisheet(22, sheets=4)
+    with pytest.raises(ValueError):
+        generate_multisheet(22, sheets=1)

@@ -15,6 +15,16 @@ LLM is configured. Rules (engine-room practice, see docs/RESEARCH.md):
 * order: engines first, then the flow order (topological from sources); transverse /
   longitudinal bands from the drawing position when no rule applies (bow to the right, port
   at the top of the sheet, the usual plan-view convention).
+
+Multi-sheet sets and noisy extractions (:func:`prepare_document`, applied by every entry point of
+the 3D stage): each pair of off-page connectors in ``doc.meta["sheet_links"]`` becomes one
+zero-length process pipe ``sheet_link:<a>:<b>`` between the partners, and the two connectors are
+pass-through items (not planned: the system continues across the sheet boundary, so adjacency,
+the Gemma digest and the router see one network and the 3D pipe is continuous, with both markers
+on it). Drawing positions are normalised per page with that page's own drawing area and the
+sheets are laid side by side in sheet order (:class:`DrawingFrame`). Unrecognised symbols
+(class ``unknown``) without a pipe connection are not planned as equipment (the router shows them
+as small markers at their drawing position), and pipe-connected ones only up to a cap.
 """
 
 from __future__ import annotations
@@ -27,8 +37,9 @@ from typing import Optional
 import networkx as nx
 
 from ..catalog import EQUIPMENT_TAG_RE, SYSTEM_BY_CODE, SYSTEMS, VALVE_TAG_RE, parse_line_number
-from ..model import Medium, PIDDocument, PIDObject, PipeKind, PipeRun, SymbolClass, SystemType, TextRole
-from .plan import LayoutPlan, PlanItem, RoutingPlan, ElevationBand, is_planned
+from ..model import (Category, Endpoint, Medium, PIDDocument, PIDObject, PipeKind, PipeRun, Point, SymbolClass,
+                     SystemType, TextRole)
+from .plan import MODEL3D_ROLE, ElevationBand, LayoutPlan, PlanItem, RoutingPlan, is_planned
 from .zones import EngineRoom
 
 S = SymbolClass
@@ -129,33 +140,304 @@ def object_systems(doc: PIDDocument) -> dict[str, SystemType]:
 # ---------------------------------------------------------------------------- drawing frame
 
 
-def drawing_area(doc: PIDDocument) -> tuple[float, float, float, float]:
-    """(x0, y0, x1, y1) of the drawing area of page 0 (frame interior, else object extent)."""
-    if doc.pages and doc.pages[0].drawing_area is not None:
-        b = doc.pages[0].drawing_area
-        return (b.x0, b.y0, b.x1, b.y1)
-    pts = [(o.bbox.x0, o.bbox.y0) for o in doc.objects] + [(o.bbox.x1, o.bbox.y1) for o in doc.objects]
-    pts += [(p.x, p.y) for pipe in doc.pipes for p in pipe.points]
+def _extent(pts: list[tuple[float, float]]) -> Optional[tuple[float, float, float, float]]:
     if not pts:
-        if doc.pages:
-            return (0.0, 0.0, doc.pages[0].width, doc.pages[0].height)
-        return (0.0, 0.0, 1.0, 1.0)
+        return None
     xs, ys = zip(*pts)
     x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
     return (x0, y0, max(x1, x0 + 1.0), max(y1, y0 + 1.0))
 
 
-def normalized_position(doc: PIDDocument, x: float, y: float) -> tuple[float, float]:
-    """Page point -> (u, v) in [0, 1]^2 over the drawing area (u right, v down)."""
-    x0, y0, x1, y1 = drawing_area(doc)
-    u = (x - x0) / max(1e-9, x1 - x0)
-    v = (y - y0) / max(1e-9, y1 - y0)
-    return (min(1.0, max(0.0, u)), min(1.0, max(0.0, v)))
+def _sheet_numbers(doc: PIDDocument) -> dict[int, int]:
+    """Page index -> sheet number from ``doc.meta["sheets"]`` (``[{"page", "sheet", ...}]``), if given."""
+    out: dict[int, int] = {}
+    raw = doc.meta.get("sheets") if isinstance(doc.meta, dict) else None
+    if isinstance(raw, list):
+        for s in raw:
+            if isinstance(s, dict) and isinstance(s.get("page"), int) and isinstance(s.get("sheet"), int):
+                out.setdefault(s["page"], s["sheet"])
+    return out
+
+
+class DrawingFrame:
+    """Page point -> normalised drawing position (u right, v down, both in [0, 1]).
+
+    Every page is normalised over its own drawing area (frame interior, else the extent of that
+    page's objects and pipes, else the page size). A multi-page document has one slot per page that
+    carries objects, pipes or junctions, side by side along u in sheet order (``doc.meta["sheets"]``
+    sheet numbers when every used page has one, else page order), each as wide as its share of the
+    objects (a sheet with more equipment gets more of the room length): sheets never overlay each
+    other and a larger later sheet is not clamped into the frame of the first one. A single-page
+    document maps exactly as before (u over the frame width)."""
+
+    def __init__(self, doc: PIDDocument):
+        pages_info = {p.index: p for p in doc.pages}
+        used: set[int] = {o.page for o in doc.objects} | {j.page for j in doc.junctions}
+        used |= {p.page for p in doc.pipes if p.points}
+        if not used:
+            used = {doc.pages[0].index} if doc.pages else {0}
+        sheets = _sheet_numbers(doc)
+        if all(pg in sheets for pg in used):
+            order = sorted(used, key=lambda pg: (sheets[pg], pg))
+        else:
+            order = sorted(used)
+        self.slots: dict[int, int] = {pg: i for i, pg in enumerate(order)}
+        self.n = len(order)
+        count: dict[int, int] = defaultdict(int)
+        for o in doc.objects:
+            count[o.page] += 1
+        weights = [max(1, count.get(pg, 0)) for pg in order]
+        total = float(sum(weights))
+        self.spans: dict[int, tuple[float, float]] = {}  # page -> (u offset, u width)
+        acc = 0.0
+        for pg, w in zip(order, weights):
+            self.spans[pg] = (acc / total, w / total)
+            acc += w
+        pts: dict[int, list[tuple[float, float]]] = defaultdict(list)
+        for o in doc.objects:
+            pts[o.page] += [(o.bbox.x0, o.bbox.y0), (o.bbox.x1, o.bbox.y1)]
+        for pipe in doc.pipes:
+            pts[pipe.page] += [(p.x, p.y) for p in pipe.points]
+        self._pts = pts
+        self._info = pages_info
+        self.frames: dict[int, tuple[float, float, float, float]] = {}
+        for pg in order:
+            self.frames[pg] = self._frame(pg)
+
+    def _frame(self, pg: int) -> tuple[float, float, float, float]:
+        info = self._info.get(pg)
+        if info is not None and info.drawing_area is not None:
+            b = info.drawing_area
+            return (b.x0, b.y0, b.x1, b.y1)
+        ext = _extent(self._pts.get(pg, []))
+        if ext is not None:
+            return ext
+        if info is not None:
+            return (0.0, 0.0, info.width, info.height)
+        return (0.0, 0.0, 1.0, 1.0)
+
+    def frame(self, page: int = 0) -> tuple[float, float, float, float]:
+        if page not in self.frames:
+            self.frames[page] = self._frame(page)
+        return self.frames[page]
+
+    def uv(self, x: float, y: float, page: int = 0) -> tuple[float, float]:
+        x0, y0, x1, y1 = self.frame(page)
+        u = min(1.0, max(0.0, (x - x0) / max(1e-9, x1 - x0)))
+        v = min(1.0, max(0.0, (y - y0) / max(1e-9, y1 - y0)))
+        if self.n > 1:
+            off, width = self.spans.get(page, (0.0, 1.0 / self.n))
+            u = off + width * u
+        return (u, v)
+
+
+def drawing_area(doc: PIDDocument, page: Optional[int] = None) -> tuple[float, float, float, float]:
+    """(x0, y0, x1, y1) of the drawing area of ``page`` (default: the first used sheet): frame
+    interior, else the extent of that page's objects and pipes, else the page size."""
+    fr = DrawingFrame(doc)
+    if page is None:
+        page = min(fr.slots, key=lambda pg: fr.slots[pg])
+    return fr.frame(page)
+
+
+def normalized_position(doc: PIDDocument, x: float, y: float, page: int = 0) -> tuple[float, float]:
+    """Page point -> (u, v) in [0, 1]^2 (see :class:`DrawingFrame`; build one frame when mapping
+    many points)."""
+    return DrawingFrame(doc).uv(x, y, page)
 
 
 def drawing_positions(doc: PIDDocument) -> dict[str, tuple[float, float]]:
-    """Normalised bbox centre of every object (bow right / port top convention)."""
-    return {o.id: normalized_position(doc, o.center.x, o.center.y) for o in doc.objects}
+    """Normalised bbox centre of every object (bow right / port top convention; sheets side by side)."""
+    fr = DrawingFrame(doc)
+    return {o.id: fr.uv(o.center.x, o.center.y, o.page) for o in doc.objects}
+
+
+# ---------------------------------------------------------------------------- 3D document
+
+SHEET_LINK_PREFIX = "sheet_link:"
+SHEET_LINK_PORT = "sheet_link"
+PREPARED_KEY = "model3d_prepared"
+# pipe-connected unknown symbols planned as equipment: at least this many, at most as many as the
+# recognised planned objects (larger symbols first); the rest is placed in the pipe run
+UNKNOWN_PLAN_MIN = 12
+
+
+def is_sheet_link(pipe: PipeRun) -> bool:
+    return pipe.id.startswith(SHEET_LINK_PREFIX)
+
+
+def sheet_link_runs(doc: PIDDocument) -> list[PipeRun]:
+    """One zero-length process :class:`PipeRun` ``sheet_link:<a>:<b>`` per valid pair of
+    ``doc.meta["sheet_links"]`` (:func:`shippid.analysis.graph.sheet_link_pairs`), from ``a`` to
+    ``b`` (port ``sheet_link`` on both), with the size / medium of the largest pipe attached to
+    either connector, the line number when both sides carry the same one, and flow ``a -> b`` when
+    the link is directed. Pairs already present as pipes are skipped."""
+    from ..analysis.graph import sheet_link_pairs
+
+    pairs = sheet_link_pairs(doc)
+    if not pairs:
+        return []
+    have = {p.id for p in doc.pipes}
+    objs = doc.object_by_id()
+    attached: dict[str, list[PipeRun]] = defaultdict(list)
+    for p in doc.pipes:
+        if p.kind == PipeKind.SIGNAL or is_sheet_link(p):
+            continue
+        for e in (p.start, p.end):
+            if e.object_id:
+                attached[e.object_id].append(p)
+    out: list[PipeRun] = []
+    for a, b, lk in pairs:
+        pid = f"{SHEET_LINK_PREFIX}{a}:{b}"
+        if pid in have:
+            continue
+        side = attached.get(a, []) + attached.get(b, [])
+        ref = max(side, key=lambda p: (pipe_dn(p) or 0, p.medium != Medium.UNKNOWN), default=None)
+        size = None
+        if ref is not None:
+            size = ref.size or ((parse_line_number(ref.line_number) or {}).get("size") if ref.line_number else None)
+        lines_a = {p.line_number for p in attached.get(a, []) if p.line_number}
+        lines_b = {p.line_number for p in attached.get(b, []) if p.line_number}
+        common = sorted(lines_a & lines_b)
+        medium = next((pipe_medium(p) for p in side if pipe_medium(p) != Medium.UNKNOWN), Medium.UNKNOWN)
+        c = objs[a].center
+        conf = lk.get("confidence")
+        out.append(PipeRun(id=pid, page=objs[a].page, points=[Point(x=c.x, y=c.y)],
+                           start=Endpoint(object_id=a, port=SHEET_LINK_PORT),
+                           end=Endpoint(object_id=b, port=SHEET_LINK_PORT), kind=PipeKind.PROCESS,
+                           line_number=common[0] if common else None, size=size, medium=medium,
+                           flow_direction=1 if lk.get("directed") else None,
+                           confidence=float(conf) if isinstance(conf, (int, float)) else 1.0, source="sheet_link"))
+    return out
+
+
+def _bbox_area(o: PIDObject) -> float:
+    return max(0.0, o.bbox.x1 - o.bbox.x0) * max(0.0, o.bbox.y1 - o.bbox.y0)
+
+
+def model3d_roles(doc: PIDDocument) -> dict[str, str]:
+    """Objects the class rules would plan as equipment that the 3D stage does not plan:
+
+    * ``"sheet_link"``: off-page connector paired with another one (a pass-through continuation);
+    * ``"unconnected_unknown"``: unrecognised symbol (class ``unknown``) without any process pipe:
+      a small marker at its drawing position (placed by the router);
+    * ``"unknown_not_modelled"``: such symbols beyond the cap (mostly extractor noise such as
+      hatching or SHX text strokes): left out of the 3D model (one aggregated note);
+    * ``"unknown_over_cap"``: pipe-connected unrecognised symbol beyond the cap: placed in its pipe
+      run by the router instead of as an equipment box.
+
+    The cap is the larger of :data:`UNKNOWN_PLAN_MIN` and the number of recognised planned objects,
+    separately for connected and unconnected symbols; larger symbols are kept first."""
+    if doc.meta.get(PREPARED_KEY):
+        return {o.id: o.attributes[MODEL3D_ROLE] for o in doc.objects if o.attributes.get(MODEL3D_ROLE)}
+    from ..analysis.graph import sheet_link_pairs
+
+    roles: dict[str, str] = {}
+    for a, b, _ in sheet_link_pairs(doc):
+        roles[a] = roles[b] = "sheet_link"
+    degree: dict[str, int] = defaultdict(int)
+    for p in doc.pipes:
+        if p.kind == PipeKind.SIGNAL or not p.points:
+            continue
+        for e in (p.start, p.end):
+            if e.object_id:
+                degree[e.object_id] += 1
+    unknown = [o for o in doc.objects if o.id not in roles and o.cls == SymbolClass.UNKNOWN
+               and o.category == Category.EQUIPMENT and is_planned(o)]
+    connected = [o for o in unknown if degree.get(o.id, 0) > 0]
+    loose = [o for o in unknown if degree.get(o.id, 0) == 0]
+    recognised = sum(1 for o in doc.objects if o.id not in roles and o.cls != SymbolClass.UNKNOWN and is_planned(o))
+    cap = max(UNKNOWN_PLAN_MIN, recognised)
+    for group, kept_role, over_role in ((connected, None, "unknown_over_cap"),
+                                        (loose, "unconnected_unknown", "unknown_not_modelled")):
+        keep = {o.id for o in sorted(group, key=lambda o: -_bbox_area(o))[:cap]}  # stable: document order on ties
+        for o in group:
+            role = kept_role if o.id in keep else over_role
+            if role:
+                roles[o.id] = role
+    return roles
+
+
+def _id_list(ids: list[str], k: int = 12) -> str:
+    return ", ".join(ids[:k]) + (f" (+{len(ids) - k} more)" if len(ids) > k else "")
+
+
+def prepare_document(doc: PIDDocument, pair_sheets: bool = False) -> tuple[PIDDocument, list[str]]:
+    """The document as the 3D stage sees it, and notes on what changed (idempotent; the input is
+    not modified: lists, meta and the flagged objects are copied).
+
+    * ``pair_sheets``: a multi-page document without ``meta["sheet_links"]`` gets its off-page
+      connectors paired first (:func:`shippid.analysis.sheets.link_sheets`, as the analysis does);
+    * every sheet link becomes a pipe (:func:`sheet_link_runs`) appended to ``pipes``;
+    * the objects of :func:`model3d_roles` carry ``attributes["model3d_role"]`` (so
+      :func:`shippid.model3d.plan.is_planned` leaves them out) and linked connectors also
+      ``attributes["model3d_partner"]``;
+    * ``meta["model3d_prepared"]`` = True."""
+    if doc.meta.get(PREPARED_KEY):
+        return doc, []
+    notes: list[str] = []
+    meta = dict(doc.meta)
+    d = doc.model_copy(update={"meta": meta, "pipes": list(doc.pipes), "objects": list(doc.objects)})
+    pages = {p.index for p in doc.pages} | {o.page for o in doc.objects}
+    if pair_sheets and len(pages) > 1 and "sheet_links" not in meta:
+        try:
+            from ..analysis.sheets import link_sheets
+
+            links = link_sheets(d)
+            notes.append(f"sheets: {len(pages)} pages, {len(links)} off-page connector pair(s) linked across the "
+                         f"sheets by the deterministic connector matcher for the 3D model")
+        except Exception as exc:  # pairing is an improvement, never a reason to fail the 3D stage
+            meta.pop("sheet_links", None)
+            notes.append(f"sheets: off-page connector pairing failed ({type(exc).__name__}); sheets kept separate")
+    runs = sheet_link_runs(d)
+    d.pipes.extend(runs)
+    roles = model3d_roles(d)
+    partner = {}
+    for p in runs:
+        partner[p.start.object_id] = p.end.object_id
+        partner[p.end.object_id] = p.start.object_id
+    if roles:
+        new = []
+        for o in d.objects:
+            if o.id in roles:
+                attrs = dict(o.attributes)
+                attrs[MODEL3D_ROLE] = roles[o.id]
+                if o.id in partner:
+                    attrs["model3d_partner"] = partner[o.id]
+                o = o.model_copy(update={"attributes": attrs})
+            new.append(o)
+        d.objects = new
+    meta[PREPARED_KEY] = True
+    if runs:
+        notes.append(f"sheets: {len(runs)} linked off-page connector pair(s) routed as one continuous pipe "
+                     f"(route ids sheet_link:<a>:<b>), both connectors shown as markers on it: "
+                     + _id_list([f"{p.start.object_id}-{p.end.object_id}" for p in runs], 8))
+    by_role: dict[str, list[str]] = defaultdict(list)
+    for oid, r in roles.items():
+        by_role[r].append(oid)
+    shown, dropped = by_role.get("unconnected_unknown", []), by_role.get("unknown_not_modelled", [])
+    if shown or dropped:
+        notes.append(f"{len(shown) + len(dropped)} unrecognised symbol(s) (class unknown) without a pipe connection "
+                     f"not planned as equipment: {len(shown)} largest shown as small markers at their drawing "
+                     f"position" + (f": {_id_list(shown)}" if shown else "")
+                     + (f"; {len(dropped)} left out of the 3D model (likely extraction noise such as hatching or "
+                        f"SHX text strokes): {_id_list(dropped)}" if dropped else ""))
+    if by_role.get("unknown_over_cap"):
+        ids = by_role["unknown_over_cap"]
+        n_unknown = len(ids) + sum(1 for o in d.objects if o.cls == SymbolClass.UNKNOWN and is_planned(o))
+        notes.append(f"{n_unknown} pipe-connected unrecognised symbol(s): the {n_unknown - len(ids)} largest planned "
+                     f"as equipment, {len(ids)} placed in their pipe run by the router: " + _id_list(ids))
+    return d, notes
+
+
+def planned_ids(doc: PIDDocument) -> list[str]:
+    """Ids the planner must place, in document order: :func:`shippid.model3d.plan.is_planned`
+    minus the objects of :func:`model3d_roles`."""
+    roles = model3d_roles(doc)
+    return [o.id for o in doc.objects if is_planned(o) and o.id not in roles]
+
+
+_planned_ids = planned_ids  # equipment_adjacency's parameter shadows the name
 
 
 # ---------------------------------------------------------------------------- connectivity
@@ -164,12 +446,15 @@ _OUT_PORTS = {"out", "discharge", "tube_out", "shell_out", "a_out", "b_out", "ou
 _IN_PORTS = {"in", "suction", "tube_in", "shell_in", "a_in", "b_in", "inlet"}
 
 
-def pipe_direction(pipe: PipeRun) -> Optional[int]:
-    """+1 if flow goes start->end, -1 if end->start, None if unknown (from flow_direction or port names)."""
+def pipe_direction(pipe: PipeRun, neutral: frozenset[str] = frozenset()) -> Optional[int]:
+    """+1 if flow goes start->end, -1 if end->start, None if unknown (from flow_direction or port
+    names). Port names of the objects in ``neutral`` say nothing about the flow (an off-page
+    connector's only port is called "in" whether the line leaves or enters the sheet)."""
     if pipe.flow_direction in (1, -1):
         return pipe.flow_direction
     sp, ep = (pipe.start.port or "").lower(), (pipe.end.port or "").lower()
-    s_obj, e_obj = pipe.start.object_id is not None, pipe.end.object_id is not None
+    s_obj = pipe.start.object_id is not None and pipe.start.object_id not in neutral
+    e_obj = pipe.end.object_id is not None and pipe.end.object_id not in neutral
     fwd = (s_obj and sp in _OUT_PORTS) or (e_obj and ep in _IN_PORTS)
     back = (s_obj and sp in _IN_PORTS) or (e_obj and ep in _OUT_PORTS)
     if fwd and not back:
@@ -211,17 +496,22 @@ def equipment_adjacency(doc: PIDDocument, planned_ids: Optional[set[str]] = None
     """Object-adjacency summary between planned objects through inline objects and junctions.
 
     For each planned object, a BFS over pipes (signal lines excluded) that stops at other
-    planned objects. Flow direction is aggregated from the pipes on the path.
+    planned objects. Flow direction is aggregated from the pipes on the path. Paired off-page
+    connectors are passed through like inline items (their sheet link is a zero-length pipe, see
+    :func:`prepare_document`), so neighbours on both sheets connect (``via`` lists the connectors).
     """
+    doc, _ = prepare_document(doc)
     objs = doc.object_by_id()
     if planned_ids is None:
-        planned_ids = {o.id for o in doc.objects if is_planned(o)}
+        planned_ids = set(_planned_ids(doc))
     adj: dict[str, list[tuple[str, PipeRun, int, Optional[str]]]] = defaultdict(list)
+    connectors = frozenset(o.id for o in doc.objects
+                           if o.cls == SymbolClass.OFF_PAGE_CONNECTOR or o.category == Category.CONNECTOR)
     for p in process_pipes(doc):
         a, b = p.start.node_id, p.end.node_id
         if a is None or b is None or a == b:
             continue
-        d = pipe_direction(p)
+        d = pipe_direction(p, connectors)
         adj[a].append((b, p, d or 0, p.start.port if p.start.object_id else None))
         adj[b].append((a, p, -(d or 0), p.end.port if p.end.object_id else None))
     out: dict[str, list[Neighbor]] = {}
@@ -442,9 +732,11 @@ def _rule(obj: PIDObject, label: str, uv: tuple[float, float]) -> dict:
 
 def heuristic_plan(doc: PIDDocument, room: EngineRoom, ids: Optional[list[str]] = None,
                    adjacency: Optional[dict[str, list[Neighbor]]] = None) -> LayoutPlan:
-    """Deterministic layout plan for all planned objects (or only ``ids``, in plan order)."""
+    """Deterministic layout plan for all planned objects (:func:`planned_ids`; or only ``ids``, in
+    plan order)."""
+    doc, _ = prepare_document(doc)
     objs = doc.object_by_id()
-    planned = [o.id for o in doc.objects if is_planned(o)]
+    planned = _planned_ids(doc)
     if ids is not None:
         extra = [i for i in ids if i in objs and i not in planned]
         planned = planned + extra

@@ -289,7 +289,7 @@ class PageGeometry:
     regions: Regions
     unit: float
     tol: float
-    lettering: Optional[Lettering] = None  # stroke lettering without a text carrier (marked 'text')
+    lettering: Optional[Lettering] = None  # stroke lettering without a text carrier (role 'lettering')
 
 
 def page_lines(pc: PageContent) -> list[TextLine]:

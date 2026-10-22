@@ -8,6 +8,12 @@ title-block region text (bottom-right of the sheet as displayed, honouring ``/Ro
 :func:`shippid.catalog.detect_system`, falling back to the whole first-page text. Results go
 to ``index.jsonl``.
 
+The walk is iterative and never leaves ``root``: symbolic links (to files or directories) are
+not followed and are recorded as ``skipped``; only regular files are opened (no FIFOs / devices);
+directories nested deeper than ``max_depth`` or that cannot be listed are recorded as ``error``
+(the rest of the archive is still scanned); files larger than ``max_file_bytes`` (if given) are
+``skipped``.
+
 ``fetch_sources(sources_yaml, dest)`` downloads the URLs listed in a YAML file::
 
     sources:
@@ -17,8 +23,16 @@ to ``index.jsonl``.
         system: ballast            # optional hint, copied to the result record
         license: CC-BY-4.0         # optional, copied to the result record
 
-with httpx (redirects followed), a size limit, a content-type / ``%PDF`` magic check and
-resume of partial downloads (HTTP ``Range``). Failures are recorded and skipped.
+with httpx, a size limit, a content-type / ``%PDF`` magic check and resume of partial downloads
+(HTTP ``Range``). Failures are recorded and skipped. Redirects are followed by this module (at
+most ``max_redirects`` hops, ``http`` / ``https`` only); every hop's host is resolved and refused
+when it is a loopback, private, link-local (cloud metadata), multicast, reserved or otherwise
+non-global address unless ``allow_private`` is set (intranet sources); the resolution is checked
+per hop before connecting (a DNS answer that changes between that check and httpx's own lookup is
+not caught). Each download has a total deadline (``max_seconds``) and a minimum average rate
+(``min_rate`` bytes/s after ``rate_grace`` seconds), so a server that drips bytes cannot hold a
+download open; a stopped download keeps its partial file for a later resume. The result record
+and the sidecar name the final URL (``final_url``) when it differs from the listed one.
 
 Target files are unique per source: without an explicit ``name`` the file is called
 ``<url stem>_<sha1(url)[:8]>.pdf`` (the query string is part of the hash, so
@@ -34,13 +48,19 @@ bytes from different URLs.
 
 from __future__ import annotations
 
+import errno
 import hashlib
+import ipaddress
 import json
 import logging
+import os
 import re
+import socket
+import stat
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Iterable, Optional
 from urllib.parse import unquote, urlparse
 
 import httpx
@@ -96,7 +116,7 @@ class ScanRecord:
     path: str  # relative to the scanned root
     sha256: str
     bytes: int
-    status: str  # readable | unreadable | duplicate | encrypted | error
+    status: str  # readable | unreadable | duplicate | encrypted | error | skipped
     reason: str = ""
     duplicate_of: Optional[str] = None
     pages: int = 0
@@ -202,31 +222,91 @@ def analyze_pdf(path: Path, rel: str, digest: str, *, max_pages: int = 20, min_t
         doc.close()
 
 
+MAX_SCAN_DEPTH = 64
+
+
+def _walk_pdfs(root: Path, max_depth: int) -> tuple[list[tuple[str, int]], list[ScanRecord]]:
+    """Iterative walk of ``root``: ``([(relative posix path, size)], [records of links / bad dirs])``.
+    Never follows symbolic links, yields only regular ``*.pdf`` files, never recurses."""
+    files: list[tuple[str, int]] = []
+    notes: list[ScanRecord] = []
+    stack: list[tuple[Path, str, int]] = [(root, "", 0)]
+    while stack:
+        path, rel, depth = stack.pop()
+        try:
+            with os.scandir(path) as it:
+                entries = list(it)
+        except OSError as exc:
+            notes.append(ScanRecord(path=rel or ".", sha256="", bytes=0, status="error",
+                                    reason=f"cannot list directory: {type(exc).__name__}: {exc.strerror or exc}"))
+            continue
+        for e in entries:
+            erel = f"{rel}/{e.name}" if rel else e.name
+            try:
+                if e.is_symlink():
+                    if e.name.lower().endswith(".pdf") or e.is_dir():  # is_dir follows the link: only a type test
+                        notes.append(ScanRecord(path=erel, sha256="", bytes=0, status="skipped",
+                                                reason="symbolic link (not followed)"))
+                    continue
+                if e.is_dir(follow_symlinks=False):
+                    if depth + 1 > max_depth:
+                        notes.append(ScanRecord(path=erel, sha256="", bytes=0, status="error",
+                                                reason=f"directory nested deeper than max_depth={max_depth} (not scanned)"))
+                    else:
+                        stack.append((Path(e.path), erel, depth + 1))
+                    continue
+                if not e.name.lower().endswith(".pdf"):
+                    continue
+                st = e.stat(follow_symlinks=False)
+            except OSError as exc:
+                notes.append(ScanRecord(path=erel, sha256="", bytes=0, status="error",
+                                        reason=f"{type(exc).__name__}: {exc.strerror or exc}"))
+                continue
+            if stat.S_ISREG(st.st_mode):
+                files.append((erel, st.st_size))
+            else:  # FIFO / socket / device named *.pdf: never opened (reading could block)
+                notes.append(ScanRecord(path=erel, sha256="", bytes=0, status="skipped", reason="not a regular file"))
+    return files, notes
+
+
+def _parts_key(rel: str) -> list[str]:
+    return rel.split("/")  # the order of sorted(Path, ...) on POSIX
+
+
 def scan_archive(root: str | Path, out_index: Optional[str | Path] = None, *, max_pages: int = 20,
-                 min_text_chars: int = 30, min_paths: int = 50, max_image_ratio: float = 0.5) -> list[dict[str, Any]]:
-    """Scan every ``*.pdf`` under ``root`` (sorted, case-insensitive suffix) and optionally write
-    ``out_index`` (JSON lines, default ``<root>/index.jsonl`` when ``out_index is True``)."""
+                 min_text_chars: int = 30, min_paths: int = 50, max_image_ratio: float = 0.5,
+                 max_depth: int = MAX_SCAN_DEPTH, max_file_bytes: Optional[int] = None) -> list[dict[str, Any]]:
+    """Scan every regular ``*.pdf`` under ``root`` (sorted, case-insensitive suffix; symbolic links
+    are recorded as ``skipped``, not followed) and optionally write ``out_index`` (JSON lines,
+    default ``<root>/index.jsonl`` when ``out_index is True``)."""
     root = Path(root)
     if not root.is_dir():
-        raise NotADirectoryError(root)
-    files = sorted(p for p in root.rglob("*") if p.is_file() and p.suffix.lower() == ".pdf")
+        raise NotADirectoryError(errno.ENOTDIR, "not a directory", str(root))
+    files, notes = _walk_pdfs(root, max(0, int(max_depth)))
+    files.sort(key=lambda f: _parts_key(f[0]))
     seen: dict[str, str] = {}
-    out: list[dict[str, Any]] = []
-    for p in files:
-        rel = p.relative_to(root).as_posix()
+    recs: list[ScanRecord] = list(notes)
+    for rel, size in files:
+        p = root / rel
+        if max_file_bytes is not None and size > max_file_bytes:
+            recs.append(ScanRecord(path=rel, sha256="", bytes=size, status="skipped",
+                                   reason=f"too large ({size} bytes > {max_file_bytes})"))
+            continue
         try:
             digest = sha256_file(p)
         except OSError as exc:
-            out.append(ScanRecord(path=rel, sha256="", bytes=0, status="error", reason=str(exc)).to_dict())
+            recs.append(ScanRecord(path=rel, sha256="", bytes=0, status="error", reason=str(exc)))
             continue
         if digest in seen:
-            rec = ScanRecord(path=rel, sha256=digest, bytes=p.stat().st_size, status="duplicate",
+            rec = ScanRecord(path=rel, sha256=digest, bytes=size, status="duplicate",
                              duplicate_of=seen[digest], reason="identical content")
         else:
             seen[digest] = rel
             rec = analyze_pdf(p, rel, digest, max_pages=max_pages, min_text_chars=min_text_chars,
                               min_paths=min_paths, max_image_ratio=max_image_ratio)
-        out.append(rec.to_dict())
+        recs.append(rec)
+    recs.sort(key=lambda r: _parts_key(r.path))  # stable: notes and files in one path order
+    out = [r.to_dict() for r in recs]
     if out_index is not None:
         target = root / "index.jsonl" if out_index is True else Path(out_index)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -324,10 +404,12 @@ def _read_sidecar(target: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _write_sidecar(target: Path, url: str, digest: str) -> None:
+def _write_sidecar(target: Path, url: str, digest: str, final_url: Optional[str] = None) -> None:
     tmp = target.with_name(target.name + SIDECAR_SUFFIX + ".tmp")
-    tmp.write_text(json.dumps({"url": url, "sha256": digest, "bytes": target.stat().st_size}, ensure_ascii=False),
-                   encoding="utf-8")
+    meta: dict[str, Any] = {"url": url, "sha256": digest, "bytes": target.stat().st_size}
+    if final_url and final_url != url:
+        meta["final_url"] = final_url
+    tmp.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
     tmp.replace(_sidecar(target))
 
 
@@ -336,18 +418,86 @@ def part_path(target: Path, url: str) -> Path:
     return target.with_name(f"{target.name}.{_url_hash(url)}.part")
 
 
+Resolver = Callable[[str, int], Iterable[str]]
+REDIRECT_LIMIT = 5
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+
+
+class FetchRefused(ValueError):
+    """A URL (or redirect hop) to a host that the address policy does not allow (status ``skipped``)."""
+
+
+def resolve_host(host: str, port: int) -> list[str]:
+    """IP addresses of ``host`` (``socket.getaddrinfo``; the default resolver of :func:`check_url`)."""
+    return sorted({info[4][0] for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)})
+
+
+def is_public_address(addr: str) -> bool:
+    """True for a globally routable unicast address; False for loopback, private, link-local
+    (incl. the 169.254.169.254 metadata service), CGNAT, multicast, reserved, unspecified and
+    IPv4-mapped / -translated forms of those, and for anything that does not parse."""
+    try:
+        ip = ipaddress.ip_address(addr.split("%", 1)[0])
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address):
+        nat64 = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF) if ip in _NAT64 else None
+        for embedded in (ip.ipv4_mapped, ip.sixtofour, (ip.teredo or (None, None))[1], nat64):
+            if embedded is not None and not is_public_address(str(embedded)):
+                return False
+    return bool(ip.is_global) and not ip.is_multicast and not ip.is_reserved
+
+
+def check_url(url: str | httpx.URL, *, allow_private: bool = False, resolver: Optional[Resolver] = None) -> httpx.URL:
+    """Parsed ``url`` if the fetch policy allows it: ``http`` / ``https`` with a host that is (or
+    resolves only to) public addresses, unless ``allow_private``. Raises :class:`FetchRefused` for
+    a non-public host, ``ValueError`` for another scheme or no host, ``httpx.InvalidURL`` for a
+    malformed URL and ``httpx.ConnectError`` when the host does not resolve."""
+    u = url if isinstance(url, httpx.URL) else httpx.URL(str(url))
+    if u.scheme not in ("http", "https"):
+        raise ValueError(f"URL scheme {u.scheme!r} is not allowed (http / https only)")
+    host = u.host
+    if not host:
+        raise ValueError("URL has no host")
+    if allow_private:
+        return u
+    try:
+        addrs = [str(ipaddress.ip_address(host.strip("[]")))]
+    except ValueError:
+        try:
+            addrs = list((resolver or resolve_host)(host, u.port or (443 if u.scheme == "https" else 80)))
+        except (OSError, UnicodeError) as exc:  # socket.gaierror is an OSError
+            raise httpx.ConnectError(f"cannot resolve host {host!r}: {exc}") from exc
+    if not addrs:
+        raise httpx.ConnectError(f"cannot resolve host {host!r}")
+    bad = [a for a in addrs if not is_public_address(a)]
+    if bad:
+        raise FetchRefused(f"host {host!r} resolves to a non-public address ({', '.join(bad[:3])}); "
+                           "allow_private / --allow-private permits intranet sources")
+    return u
+
+
 def fetch_sources(sources_yaml: str | Path, dest: str | Path, *, client: Optional[httpx.Client] = None,
                   max_bytes: int = 200 * 1024 * 1024, timeout: float = 60.0,
-                  user_agent: str = "shippid-collector/0.1 (+P&ID research dataset)") -> list[dict[str, Any]]:
+                  user_agent: str = "shippid-collector/0.1 (+P&ID research dataset)", allow_private: bool = False,
+                  resolver: Optional[Resolver] = None, max_redirects: int = REDIRECT_LIMIT,
+                  max_seconds: float = 900.0, min_rate: float = 1024.0, rate_grace: float = 30.0) -> list[dict[str, Any]]:
     """Download the PDFs listed in ``sources_yaml`` into ``dest``; returns one result record per
     source (status: downloaded | exists | duplicate | error | skipped) and writes
-    ``dest/fetch_results.jsonl`` (one line per source as it completes)."""
+    ``dest/fetch_results.jsonl`` (one line per source as it completes).
+
+    ``timeout`` bounds every socket operation, ``max_seconds`` the whole download of one source and
+    ``min_rate`` its average rate after ``rate_grace`` seconds. Redirects are followed here, never by
+    the client (``max_redirects`` hops), each hop checked by :func:`check_url` (``allow_private``,
+    ``resolver``: ``(host, port) -> addresses``, default DNS)."""
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
     sources = load_sources(sources_yaml)
     plan = _plan_targets(sources)
     own = client is None
-    client = client or httpx.Client(follow_redirects=True, timeout=timeout, headers={"User-Agent": user_agent})
+    client = client or httpx.Client(follow_redirects=False, timeout=timeout, headers={"User-Agent": user_agent})
+    policy = _Policy(allow_private, resolver, max(0, int(max_redirects)), float(max_seconds), float(min_rate),
+                     float(rate_grace))
     results: list[dict[str, Any]] = []
     try:
         with (dest / "fetch_results.jsonl").open("w", encoding="utf-8") as log_fh:
@@ -359,7 +509,7 @@ def fetch_sources(sources_yaml: str | Path, dest: str | Path, *, client: Optiona
                     if prev.get("sha256"):
                         res["sha256"] = prev["sha256"]
                 else:
-                    res = _fetch_one(client, entry, dest / name, max_bytes)
+                    res = _fetch_one(client, entry, dest / name, max_bytes, policy)
                 for k in ("system", "license", "notes"):
                     if k in entry:
                         res[k] = entry[k]
@@ -372,7 +522,33 @@ def fetch_sources(sources_yaml: str | Path, dest: str | Path, *, client: Optiona
     return results
 
 
-def _fetch_one(client: httpx.Client, entry: dict[str, Any], target: Path, max_bytes: int) -> dict[str, Any]:
+@dataclass
+class _Policy:
+    allow_private: bool = False
+    resolver: Optional[Resolver] = None
+    max_redirects: int = REDIRECT_LIMIT
+    max_seconds: float = 900.0
+    min_rate: float = 1024.0
+    rate_grace: float = 30.0
+
+
+def _open_stream(client: httpx.Client, url: str, headers: dict[str, str], policy: _Policy) -> httpx.Response:
+    """Streamed GET of ``url`` following at most ``policy.max_redirects`` redirects itself, every hop
+    checked by :func:`check_url`. The caller closes the response."""
+    current = check_url(url, allow_private=policy.allow_private, resolver=policy.resolver)
+    for _ in range(policy.max_redirects + 1):
+        resp = client.send(client.build_request("GET", current, headers=headers), stream=True, follow_redirects=False)
+        if not resp.has_redirect_location:
+            return resp
+        location = resp.headers["location"]
+        resp.close()
+        current = check_url(current.join(location), allow_private=policy.allow_private, resolver=policy.resolver)
+    raise httpx.TooManyRedirects(f"more than {policy.max_redirects} redirects")
+
+
+def _fetch_one(client: httpx.Client, entry: dict[str, Any], target: Path, max_bytes: int,
+               policy: Optional[_Policy] = None) -> dict[str, Any]:
+    policy = policy or _Policy()
     url = str(entry["url"])
     want = _want_sha(entry)
     res: dict[str, Any] = {"url": url, "path": target.name, "status": "error", "bytes": 0}
@@ -395,49 +571,72 @@ def _fetch_one(client: httpx.Client, entry: dict[str, Any], target: Path, max_by
             stale.unlink(missing_ok=True)
     offset = part.stat().st_size if part.exists() else 0
     headers = {"Range": f"bytes={offset}-"} if offset else {}
+    started = time.monotonic()
+    final_url = url
     try:
-        with client.stream("GET", url, headers=headers) as resp:
-            if resp.status_code == 416 and offset:  # nothing left to fetch: the partial file is complete
-                res["resumed_from"] = offset
-            elif resp.status_code >= 400:
-                res["reason"] = f"HTTP {resp.status_code}"
-                return res
-            else:
-                ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()
-                res["content_type"] = ctype
-                if ctype and ctype not in PDF_CONTENT_TYPES:
-                    res.update(status="skipped", reason=f"content-type {ctype!r} is not a PDF")
-                    return res
-                resumed = resp.status_code == 206 and offset > 0
-                if resumed:
-                    m = re.match(r"bytes\s+(\d+)-", resp.headers.get("content-range", ""))
-                    if m is not None and int(m.group(1)) != offset:
-                        part.unlink(missing_ok=True)
-                        res["reason"] = f"server resumed at byte {m.group(1)} instead of {offset}; partial file discarded"
-                        return res
-                else:
-                    offset = 0
-                try:
-                    length: Optional[int] = int(resp.headers.get("content-length", ""))
-                except ValueError:
-                    length = None  # absent or malformed: enforced while streaming
-                if length is not None and offset + length > max_bytes:
-                    res.update(status="skipped", reason=f"too large ({offset + length} bytes > {max_bytes})")
-                    return res
-                written = offset
-                with part.open("ab" if resumed else "wb") as fh:
-                    for chunk in resp.iter_bytes():
-                        written += len(chunk)
-                        if written > max_bytes:
-                            fh.close()
-                            part.unlink(missing_ok=True)
-                            res.update(status="skipped", reason=f"exceeded size limit of {max_bytes} bytes")
-                            return res
-                        fh.write(chunk)
-                res["resumed_from"] = offset if resumed else 0
+        resp = _open_stream(client, url, headers, policy)
+    except FetchRefused as exc:
+        res.update(status="skipped", reason=f"refused: {exc}"[:300])
+        return res
     except _FETCH_ERRORS as exc:
         res["reason"] = f"{type(exc).__name__}: {exc}"[:300]  # a partial file is kept for resume
         return res
+    try:
+        final_url = str(resp.url)
+        if final_url != url:
+            res["final_url"] = final_url
+        if resp.status_code == 416 and offset:  # nothing left to fetch: the partial file is complete
+            res["resumed_from"] = offset
+        elif resp.status_code >= 400:
+            res["reason"] = f"HTTP {resp.status_code}"
+            return res
+        else:
+            ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+            res["content_type"] = ctype
+            if ctype and ctype not in PDF_CONTENT_TYPES:
+                res.update(status="skipped", reason=f"content-type {ctype!r} is not a PDF")
+                return res
+            resumed = resp.status_code == 206 and offset > 0
+            if resumed:
+                m = re.match(r"bytes\s+(\d+)-", resp.headers.get("content-range", ""))
+                if m is not None and int(m.group(1)) != offset:
+                    part.unlink(missing_ok=True)
+                    res["reason"] = f"server resumed at byte {m.group(1)} instead of {offset}; partial file discarded"
+                    return res
+            else:
+                offset = 0
+            try:
+                length: Optional[int] = int(resp.headers.get("content-length", ""))
+            except ValueError:
+                length = None  # absent or malformed: enforced while streaming
+            if length is not None and offset + length > max_bytes:
+                res.update(status="skipped", reason=f"too large ({offset + length} bytes > {max_bytes})")
+                return res
+            written = offset
+            with part.open("ab" if resumed else "wb") as fh:
+                for chunk in resp.iter_bytes():
+                    written += len(chunk)
+                    if written > max_bytes:
+                        fh.close()
+                        part.unlink(missing_ok=True)
+                        res.update(status="skipped", reason=f"exceeded size limit of {max_bytes} bytes")
+                        return res
+                    fh.write(chunk)
+                    elapsed = time.monotonic() - started
+                    if elapsed > policy.max_seconds:
+                        res["reason"] = (f"download exceeded {policy.max_seconds:g} s after {written} bytes "
+                                         "(partial file kept for resume)")
+                        return res
+                    if elapsed > policy.rate_grace and (written - offset) / elapsed < policy.min_rate:
+                        res["reason"] = (f"transfer slower than {policy.min_rate:g} bytes/s "
+                                         f"({written - offset} bytes in {elapsed:.0f} s; partial file kept for resume)")
+                        return res
+            res["resumed_from"] = offset if resumed else 0
+    except _FETCH_ERRORS as exc:
+        res["reason"] = f"{type(exc).__name__}: {exc}"[:300]  # a partial file is kept for resume
+        return res
+    finally:
+        resp.close()
     with part.open("rb") as fh:
         magic = fh.read(5)
     if magic != b"%PDF-":
@@ -450,6 +649,6 @@ def _fetch_one(client: httpx.Client, entry: dict[str, Any], target: Path, max_by
         res.update(reason=f"sha256 mismatch ({digest} != {want})")
         return res
     part.replace(target)
-    _write_sidecar(target, url, digest)
+    _write_sidecar(target, url, digest, final_url)
     res.update(status="downloaded", bytes=target.stat().st_size, sha256=digest)
     return res

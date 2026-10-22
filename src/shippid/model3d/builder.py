@@ -8,8 +8,8 @@ from typing import Optional
 
 from ..llm.base import LLMClient
 from ..model import Layout3D, LLMUsage, PIDDocument
-from .heuristic import heuristic_plan
-from .plan import LayoutPlan
+from .heuristic import heuristic_plan, prepare_document
+from .plan import MODEL3D_ROLE, LayoutPlan
 from .router import route
 from .solver import solve_detailed
 from .zones import EngineRoom, engine_room_for
@@ -28,10 +28,18 @@ def build_layout(doc: PIDDocument, client: Optional[LLMClient] = None, room: Opt
     ``client`` set: Gemma plans the arrangement (``planner`` = "gemma", or "mock" for the test
     backend) with the heuristic filling anything it leaves out; on failure the heuristic plan is
     used and the error is recorded in ``llm.errors`` and ``notes``. ``plan`` bypasses planning.
+
+    Planning, solving and routing work on :func:`~shippid.model3d.heuristic.prepare_document`'s
+    view of ``doc`` (``doc`` itself is not modified): a multi-page set without
+    ``meta["sheet_links"]`` gets its off-page connectors paired, every linked pair is routed as one
+    continuous pipe (``sheet_link:<a>:<b>`` routes), and unrecognised symbols without pipes are not
+    planned as equipment (all of it is recorded in ``notes``).
     """
     t0 = time.time()
     room = room or engine_room_for(doc.info)
     notes: list[str] = [DISCLAIMER] + list(room.notes)
+    doc, prep_notes = prepare_document(doc, pair_sheets=True)
+    notes += prep_notes
     usage = LLMUsage()
     if plan is None and client is not None:
         from .gemma_planner import GemmaLayoutPlanner
@@ -59,9 +67,12 @@ def build_layout(doc: PIDDocument, client: Optional[LLMClient] = None, room: Opt
                                    time_budget=route_time_budget)
     notes += rnotes
     placements = res.placements + inline
-    missing = [o.id for o in doc.objects if o.id not in {p.object_id for p in placements}]
+    have = {p.object_id for p in placements}
+    missing = [o.id for o in doc.objects if o.id not in have
+               and o.attributes.get(MODEL3D_ROLE) != "unknown_not_modelled"]  # those are in the notes already
     if missing:
-        notes.append(f"objects without placement: {', '.join(missing)}")
+        notes.append(f"objects without placement: {', '.join(missing[:30])}"
+                     + (f" (+{len(missing) - 30} more)" if len(missing) > 30 else ""))
     lo, hi = room.bounds_vec()
     notes.append(f"layout built in {time.time() - t0:.2f} s")
     return Layout3D(planner=plan.planner, decks=room.to_decks(), bounds_min=lo, bounds_max=hi,
