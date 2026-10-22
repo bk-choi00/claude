@@ -149,6 +149,7 @@ class _Matcher:
     prior: bool = False  # size prior of stretchable equipment (the unit is anchored by matched valves)
     budget: float = 0.0  # remaining decomposition budget of the page (see ExtractOptions.decompose_budget)
     no_split: set = field(default_factory=set)  # shape keys whose decomposition found nothing
+    no_peel: set = field(default_factory=set)  # shape keys of containment candidates that stay whole
     pipe_ends: Optional[np.ndarray] = None  # (n, 2) end points of pipe lines
     tol: float = 2.5  # snap tolerance (points)
     group_units: float = 0.12
@@ -264,17 +265,23 @@ def _peel(m: _Matcher, c: Candidate, whole: Detection) -> Optional[list[Detectio
     group, the rest the inner groups): keep the union when it is the better symbol, else
     match the outline and its contents separately (a tank with a level switch or a
     heating coil inside; an instrument drawn inside a package outline)."""
+    sw = _score(whole)
+    piped = any(m.piped(g) for g in c.parts[1:])
+    key = whole.shape.signature
+    if not piped and (sw >= 0.97 or key in m.no_peel):
+        return None  # a confident union: no split can beat it by the required margin
     outer = m.detect(c.parts[0])
-    so, sw = _score(outer), _score(whole)
-    if so < m.accept:
-        return None
-    inners = [m.detect(g) for g in c.parts[1:]]
-    if outer.best.variant.stretchable and (sw < m.accept or any(m.piped(g) for g in c.parts[1:])):
-        # no symbol as a whole, or piping inside the outline (a heating coil fed through the tank top):
-        # unmatched contents become the outline's internals later
-        return [outer] + inners
-    if all(_score(d) >= m.accept for d in inners) and min([so] + [_score(d) for d in inners]) >= sw + 0.03:
-        return [outer] + inners
+    so = _score(outer)
+    if so >= m.accept:
+        inners = [m.detect(g) for g in c.parts[1:]]
+        if outer.best.variant.stretchable and (sw < m.accept or piped):
+            # no symbol as a whole, or piping inside the outline (a heating coil fed through the tank top):
+            # unmatched contents become the outline's internals later
+            return [outer] + inners
+        if all(_score(d) >= m.accept for d in inners) and min([so] + [_score(d) for d in inners]) >= sw + 0.03:
+            return [outer] + inners
+    if not piped:
+        m.no_peel.add(key)
     return None
 
 
@@ -710,10 +717,14 @@ def _probe_unit(ps: PrimSet, ids: Sequence[int], unit: float, tol: float, lib: T
         groups.setdefault(_prim_signature([prims[m] for m in members], rings, bb, D), []).append(members)
     counts = Counter({k: len(v) for k, v in groups.items() if len(v) >= 2})
     scales: list[float] = []
+    n_sig = 0
     for key, n in counts.most_common(top):
         res = match_candidate(_shape_for(ps, groups[key][0]), lib, None, cache=cache)
         if res and res[0].score >= 0.7 and res[0].variant.spec.category == Category.VALVE:
             scales.extend([res[0].scale] * n)
+            n_sig += 1
+            if n_sig >= 3 and len(scales) >= 8:
+                break  # enough evidence: the most frequent valve drawings agree on the unit
     if len(scales) < 3:
         return None
     return float(np.median(scales))

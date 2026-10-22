@@ -147,6 +147,24 @@ def box_overlaps(lo: np.ndarray, hi: np.ndarray, LO: np.ndarray, HI: np.ndarray,
     return np.all(np.minimum(hi, HI) - np.maximum(lo, LO) > tol, axis=1)
 
 
+def seg_hits_boxes(a: Pt, b: Pt, LO: np.ndarray, HI: np.ndarray, shrink: float = 0.02) -> int:
+    """Number of boxes (rows of LO / HI) whose interior shrunk by ``shrink`` the segment a-b passes
+    through; vectorised :func:`segment_hits_box` (exact for axis-aligned segments)."""
+    if len(LO) == 0:
+        return 0
+    lo, hi = np.minimum(a, b), np.maximum(a, b)
+    if int(np.sum(hi - lo > 1e-12)) > 1:  # not axis-aligned: scalar slab test
+        return sum(1 for i in range(len(LO)) if segment_hits_box(a, b, Box3(*LO[i], *HI[i]), shrink))
+    L, H = LO + shrink, HI - shrink
+    ok = np.all(L < H, axis=1)
+    for i in range(3):
+        if hi[i] - lo[i] < 1e-12:
+            ok &= (L[:, i] < lo[i]) & (lo[i] < H[:, i])
+        else:
+            ok &= np.maximum(L[:, i], lo[i]) < np.minimum(H[:, i], hi[i])
+    return int(ok.sum())
+
+
 def _box_arr(b: Box3) -> tuple[np.ndarray, np.ndarray]:
     return np.array([b.x0, b.y0, b.z0]), np.array([b.x1, b.y1, b.z1])
 
@@ -230,8 +248,12 @@ class VoxelGrid:
         self.term_owner: dict[Cell, set[str]] = defaultdict(set)
         self.ring_owner: dict[Cell, set[str]] = defaultdict(set)
         self.segs = _BoxSet()  # routed segments: radius, tag = chain index
+        self.segs_by_key: dict[str, list[int]] = defaultdict(list)  # terminal key -> its chains' segments
         self.items = _BoxSet()  # inline / hub / isolated bodies: tag = (object id, exempt nodes)
         self.approaches = _BoxSet()  # nozzle approach segments: radius, tag = terminal key
+        # per inflation (5 cm steps): how many segments / bodies cover each cell, kept up to date
+        self._seg_cov: dict[float, np.ndarray] = {}
+        self._item_cov: dict[float, np.ndarray] = {}
 
     def center(self, c: Cell) -> Pt:
         return tuple(self.origin[i] + (c[i] + 0.5) * self.res for i in range(3))  # type: ignore[return-value]
@@ -280,11 +302,57 @@ class VoxelGrid:
         rng = [range(min(ca[i], cb[i]), max(ca[i], cb[i]) + 1) for i in range(3)]
         return [(i, j, k) for i in rng[0] for j in rng[1] for k in rng[2]]
 
-    def add_route(self, pts: Sequence[Pt], r: float, chain: int) -> None:
+    @staticmethod
+    def qkey(x: float) -> float:
+        """Inflation rounded up to 5 cm (cache key; never smaller than asked)."""
+        return round(math.ceil(x / 0.05 - 1e-9) * 0.05, 2)
+
+    def _raster(self, arr: np.ndarray, lo: Sequence[float], hi: Sequence[float], v: int = 1) -> None:
+        gs = self.cell_slices(lo, hi)
+        if gs is not None:
+            arr[gs] += v
+
+    def seg_coverage(self, extra: float) -> np.ndarray:
+        """Number of routed segments within (their radius + ``extra``) of each cell centre."""
+        key = self.qkey(extra)
+        arr = self._seg_cov.get(key)
+        if arr is None:
+            arr = np.zeros(self.shape, dtype=np.int32)
+            LO, HI, R = self.segs.arrays()
+            for i in range(len(R)):
+                self._raster(arr, LO[i] - R[i] - key, HI[i] + R[i] + key)
+            self._seg_cov[key] = arr
+        return arr
+
+    def item_coverage(self, inflate: float) -> np.ndarray:
+        """Number of registered bodies within ``inflate`` of each cell centre."""
+        key = self.qkey(inflate)
+        arr = self._item_cov.get(key)
+        if arr is None:
+            arr = np.zeros(self.shape, dtype=np.int32)
+            LO, HI, _ = self.items.arrays()
+            for i in range(len(LO)):
+                self._raster(arr, LO[i] - key, HI[i] + key)
+            self._item_cov[key] = arr
+        return arr
+
+    def add_route(self, pts: Sequence[Pt], r: float, chain: int, keys: Sequence[str] = ()) -> None:
         for a, b in zip(pts, pts[1:]):
-            self.segs.add(np.minimum(a, b), np.maximum(a, b), r, chain)
+            lo, hi = np.minimum(a, b), np.maximum(a, b)
+            for k in keys:
+                self.segs_by_key[k].append(len(self.segs))
+            self.segs.add(lo, hi, r, chain)
+            for key, arr in self._seg_cov.items():
+                self._raster(arr, lo - r - key, hi + r + key)
             for c in self.crossed(a, b):
                 self.pipes[c] = True
+
+    def add_item(self, box: Box3, oid: str, exempt: frozenset[str] = frozenset()) -> None:
+        """Register an inline / hub / isolated body (``exempt``: nodes whose chains may enter it)."""
+        lo, hi = _box_arr(box)
+        self.items.add(lo, hi, 0.0, (oid, exempt))
+        for key, arr in self._item_cov.items():
+            self._raster(arr, lo - key, hi + key)
 
     def free(self, c: Cell, inflate: float) -> bool:
         return not (self.blocked(inflate)[c] or self.pipes[c] or self.reserved[c] or self.term[c])
@@ -586,7 +654,6 @@ class _Ctx:
     stats: RouteStats
     notes: list[str]
     terms: dict[str, _Term] = field(default_factory=dict)
-    chain_keys: list[frozenset[str]] = field(default_factory=list)  # terminal keys per routed chain index
     eq_lo: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     eq_hi: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
 
@@ -716,8 +783,8 @@ def _join(ctx: _Ctx, p: Pt, q: Pt) -> list[Pt]:
     if _dist(p, q) < 1e-9:
         return [q]
     g = ctx.grid
-    LO, HI, _ = g.items.arrays()
-    bodies = list(g.boxes) + [Box3(*LO[i], *HI[i]) for i in range(len(LO))]
+    ILO, IHI, _ = g.items.arrays()
+    BLO, BHI = np.vstack([ctx.eq_lo, ILO]), np.vstack([ctx.eq_hi, IHI])
     best, best_hits = None, None
     for order in ((2, 0, 1), (0, 1, 2), (1, 0, 2), (0, 2, 1), (1, 2, 0), (2, 1, 0)):
         pts = [p]
@@ -726,7 +793,7 @@ def _join(ctx: _Ctx, p: Pt, q: Pt) -> list[Pt]:
             if abs(q[ax] - cur[ax]) > 1e-9:
                 cur[ax] = q[ax]
                 pts.append(tuple(cur))  # type: ignore[arg-type]
-        hits = sum(1 for a, b in zip(pts, pts[1:]) for bx in bodies if segment_hits_box(a, b, bx))
+        hits = sum(seg_hits_boxes(a, b, BLO, BHI) for a, b in zip(pts, pts[1:]))
         if best_hits is None or hits < best_hits:
             best, best_hits = pts, hits
             if hits == 0:
@@ -854,48 +921,55 @@ def _sub_box(grid: VoxelGrid, a: Cell, b: Cell, band_k: int, margin_xy: int, mar
 def _obstacles(ctx: _Ctx, sl: tuple[slice, slice, slice], od: float, inflate: float, cc: _ChainCtx
                ) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]:
     """Item bodies, other pipes, and per shared terminal (same junction / hub / free end, or the
-    same nozzle) the pipes of chains ending there,
-    on the sub-box ``sl`` (pipes inflated by both radii + PIPE_GAP, bodies by ``inflate``)."""
+    same nozzle) the pipes of chains ending there, on the sub-box ``sl`` (pipes inflated by both
+    radii + PIPE_GAP, bodies by ``inflate``; from the grid's coverage counts, minus what this chain
+    shares or is exempt from)."""
     g = ctx.grid
     shape = tuple(s.stop - s.start for s in sl)
-    wlo = np.array([g.origin[i] + sl[i].start * g.res for i in range(3)])
-    whi = np.array([g.origin[i] + sl[i].stop * g.res for i in range(3)])
-    items = np.zeros(shape, dtype=bool)
-    other = np.zeros(shape, dtype=bool)
-    shared: dict[str, np.ndarray] = {}
+    extra = g.qkey(od / 2 + PIPE_GAP)
+    ikey = g.qkey(inflate)
 
-    def mark(arr: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> None:
+    def local(lo: np.ndarray, hi: np.ndarray) -> Optional[tuple[slice, slice, slice]]:
         gs = g.cell_slices(lo, hi)
         if gs is None:
-            return
+            return None
         loc = []
         for i in range(3):
             a = max(gs[i].start, sl[i].start) - sl[i].start
             b = min(gs[i].stop, sl[i].stop) - sl[i].start
             if a >= b:
-                return
+                return None
             loc.append(slice(a, b))
-        arr[tuple(loc)] = True
+        return tuple(loc)  # type: ignore[return-value]
 
-    if len(g.items):
-        LO, HI, _ = g.items.arrays()
-        sel = np.nonzero(np.all((LO - inflate < whi) & (HI + inflate > wlo), axis=1))[0]
-        for i in sel:
-            if g.items.tag[i][1] & cc.nodes:  # a hub this chain ends at
-                continue
-            mark(items, LO[i] - inflate, HI[i] + inflate)
+    shared: dict[str, np.ndarray] = {}
+    minus = np.zeros(shape, dtype=np.int32)
     if len(g.segs):
         LO, HI, R = g.segs.arrays()
-        RR = R + od / 2 + PIPE_GAP
-        sel = np.nonzero(np.all((LO - RR[:, None] < whi) & (HI + RR[:, None] > wlo), axis=1))[0]
-        for i in sel:
-            common = ctx.chain_keys[g.segs.tag[i]] & cc.keys
-            if not common:
-                mark(other, LO[i] - RR[i], HI[i] + RR[i])
-            for n in common:
-                if n not in shared:
-                    shared[n] = np.zeros(shape, dtype=bool)
-                mark(shared[n], LO[i] - RR[i], HI[i] + RR[i])
+        seen: set[int] = set()
+        for n in cc.keys:
+            for i in g.segs_by_key.get(n, ()):
+                q = local(LO[i] - R[i] - extra, HI[i] + R[i] + extra)
+                if q is None:
+                    continue
+                shared.setdefault(n, np.zeros(shape, dtype=bool))[q] = True
+                if i not in seen:
+                    seen.add(i)
+                    minus[q] += 1
+        other = (g.seg_coverage(extra)[sl] - minus) > 0
+    else:
+        other = np.zeros(shape, dtype=bool)
+    if len(g.items):
+        LO, HI, _ = g.items.arrays()
+        iminus = np.zeros(shape, dtype=np.int32)
+        for i, (_, exempt) in enumerate(g.items.tag):
+            if exempt & cc.nodes:  # a hub this chain ends at
+                q = local(LO[i] - ikey, HI[i] + ikey)
+                if q is not None:
+                    iminus[q] += 1
+        items = (g.item_coverage(ikey)[sl] - iminus) > 0
+    else:
+        items = np.zeros(shape, dtype=bool)
     return items, other, shared
 
 
@@ -1034,7 +1108,7 @@ def _compose(ta: _Term, mid: Sequence[Pt], tb: _Term) -> list[Pt]:
 
 
 def _clashes(ctx: _Ctx, pts: Sequence[Pt]) -> int:
-    return sum(1 for p, q in zip(pts, pts[1:]) for bx in ctx.grid.boxes if segment_hits_box(p, q, bx))
+    return sum(seg_hits_boxes(p, q, ctx.eq_lo, ctx.eq_hi) for p, q in zip(pts, pts[1:]))
 
 
 def _route_between(ctx: _Ctx, cc: _ChainCtx, ta: _Term, tb: _Term, od: float, zb: float, label: str,
@@ -1520,7 +1594,7 @@ def route(doc: PIDDocument, placements: Sequence[Placement3D], room: EngineRoom,
             if clamped:
                 notes.append(f"{n}: body reduced to fit inside the room")
             hub_pl[n] = pl
-            grid.items.add(_box_arr(box)[0], _box_arr(box)[1], 0.0, (n, frozenset({n})))
+            grid.add_item(box, n, frozenset({n}))
     ctx.node_pos = nodes
     term_od: dict[str, float] = defaultdict(float)
     for ch in chains:
@@ -1622,7 +1696,6 @@ def route(doc: PIDDocument, placements: Sequence[Placement3D], room: EngineRoom,
         for s_in, s_out in spans:
             cuts += [s_in, s_out]
         cuts.append(cum[-1])
-        ctx.chain_keys.append(cc.keys)
         for k, pid in enumerate(ch.pipes):
             s0, s1 = cuts[2 * k], cuts[2 * k + 1]
             if s1 < s0:
@@ -1635,9 +1708,9 @@ def route(doc: PIDDocument, placements: Sequence[Placement3D], room: EngineRoom,
                             diameter=round(_pipe_od(p), 4), medium=pipe_medium(p, default_medium),
                             line_number=p.line_number)
             routes[pid] = r
-            grid.add_route([v.as_tuple() for v in r.points], r.diameter / 2, idx)
+            grid.add_route([v.as_tuple() for v in r.points], r.diameter / 2, idx, sorted(cc.keys))
         for pl, box in zip(placed_items, bodies):
-            grid.items.add(_box_arr(box)[0], _box_arr(box)[1], 0.0, (pl.object_id, frozenset()))
+            grid.add_item(box, pl.object_id)
 
     # --- hubs (three-way valves etc.) sit at their node position; nozzles at the route ends
     for h in sorted(hubs):
@@ -1659,7 +1732,7 @@ def route(doc: PIDDocument, placements: Sequence[Placement3D], room: EngineRoom,
         pl = _place_isolated(ctx, o, {p.object_id: p for p in inline}, mapping)
         inline.append(pl)
         box = item_box(pl, o)
-        grid.items.add(_box_arr(box)[0], _box_arr(box)[1], 0.0, (o.id, frozenset()))
+        grid.add_item(box, o.id)
 
     # --- audit
     ordered = [routes[p.id] for p in doc.pipes if p.id in routes]
@@ -1818,6 +1891,8 @@ def audit_layout(doc: PIDDocument, routes: Sequence[PipeRoute3D], equipment: Seq
     objs = doc.object_by_id()
     pipes = {p.id: p for p in doc.pipes}
     eq_boxes = [(p.object_id, placement_box(p)) for p in equipment]
+    E_lo = np.array([[b.x0, b.y0, b.z0] for _, b in eq_boxes], dtype=float).reshape(-1, 3)
+    E_hi = np.array([[b.x1, b.y1, b.z1] for _, b in eq_boxes], dtype=float).reshape(-1, 3)
     it_boxes = [(p.object_id, item_box(p, objs.get(p.object_id))) for p in inline]
     linked: set[frozenset[str]] = set()
     for p in doc.pipes:
@@ -1832,7 +1907,7 @@ def audit_layout(doc: PIDDocument, routes: Sequence[PipeRoute3D], equipment: Seq
         pts = [v.as_tuple() for v in r.points]
         for a, b in zip(pts, pts[1:]):
             length += _dist(a, b)
-            seg_eq += sum(1 for _, bx in eq_boxes if segment_hits_box(a, b, bx))
+            seg_eq += seg_hits_boxes(a, b, E_lo, E_hi)
             S_lo.append(np.minimum(a, b))
             S_hi.append(np.maximum(a, b))
             S_r.append(r.diameter / 2)

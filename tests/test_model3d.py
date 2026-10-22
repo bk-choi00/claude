@@ -16,8 +16,8 @@ from typing import Optional, Union
 import pytest
 from pydantic import ValidationError
 
-from shippid.model import (ActuatorType, BBox, Category, DrawingInfo, Endpoint, Junction, Medium, PageInfo,
-                           PIDDocument, PIDObject, PipeKind, PipeRun, Point, Port, SymbolClass, SystemType)
+from shippid.model import (ActuatorType, BBox, Category, DrawingInfo, Endpoint, Junction, Layout3D, Medium,  # noqa: E501
+                           PageInfo, PIDDocument, PIDObject, PipeKind, PipeRun, Point, Port, SymbolClass, SystemType)
 from shippid.symbols import Placement, get_symbol, placed_bbox, placed_ports
 
 S = SymbolClass
@@ -286,7 +286,7 @@ from shippid.llm.base import LLMClient, MockBackend  # noqa: E402
 from shippid.model3d.builder import build_layout  # noqa: E402
 from shippid.model3d.gemma_planner import GemmaLayoutPlanner  # noqa: E402
 from shippid.model3d.heuristic import heuristic_plan  # noqa: E402
-from shippid.model3d.plan import LayoutPlan, PlanItemDraft, check_plan, is_planned  # noqa: E402
+from shippid.model3d.plan import LayoutPlan, PlanItem, PlanItemDraft, check_plan, is_planned  # noqa: E402
 from shippid.model3d.router import route, segment_hits_box  # noqa: E402
 from shippid.model3d.scene import export_glb, layout_to_scene, read_glb_json  # noqa: E402
 from shippid.model3d.solver import (MARKERS, MARKER_CLEARANCE, STRUCTURAL, nozzle_normal, placement_box,  # noqa: E402
@@ -330,6 +330,105 @@ def _on_surface(p, pt, tol=1e-3):
 def _orthogonal(points):
     return all(sum(1 for c in "xyz" if abs(getattr(a, c) - getattr(b, c)) > 1e-6) <= 1
                for a, b in zip(points, points[1:]))
+
+
+def _seg_dist(p1, q1, p2, q2) -> float:
+    """Exact closest distance between two 3D segments (independent of the router's code)."""
+    import numpy as np
+
+    p1, q1, p2, q2 = (np.asarray(x, dtype=float) for x in (p1, q1, p2, q2))
+    d1, d2, r = q1 - p1, q2 - p2, p1 - p2
+    a, e, f = d1 @ d1, d2 @ d2, d2 @ r
+    if a < 1e-12 and e < 1e-12:
+        return float(np.linalg.norm(r))
+    if a < 1e-12:
+        s, t = 0.0, min(max(f / e, 0.0), 1.0)
+    else:
+        c = d1 @ r
+        if e < 1e-12:
+            t, s = 0.0, min(max(-c / a, 0.0), 1.0)
+        else:
+            b = d1 @ d2
+            den = a * e - b * b
+            s = min(max((b * f - c * e) / den, 0.0), 1.0) if den > 1e-12 else 0.0
+            t = (b * s + f) / e
+            if t < 0:
+                t, s = 0.0, min(max(-c / a, 0.0), 1.0)
+            elif t > 1:
+                t, s = 1.0, min(max((b - c) / a, 0.0), 1.0)
+    return float(np.linalg.norm((p1 + d1 * s) - (p2 + d2 * t)))
+
+
+def _rendered_bounds(layout, doc):
+    """World AABB of every rendered object, from the scene meshes (stems, actuators, vertical-run
+    orientation included) -- not from the router's own bookkeeping."""
+    import numpy as np
+    from shippid.model3d.scene import scene_items
+
+    out = {}
+    for it in scene_items(layout, doc, outline=False):
+        if it.kind != "object":
+            continue
+        pts = np.vstack([(np.c_[np.asarray(p.mesh.vertices), np.ones(len(p.mesh.vertices))] @ it.transform.T)[:, :3]
+                         for p in it.parts])
+        out[it.extras["id"]] = (pts.min(axis=0), pts.max(axis=0))
+    return out
+
+
+def _layout_clashes(layout, doc, room, tol=0.02):
+    """Clashes in the rendered model: pipes through inline bodies (bounds of the mesh vs the pipe
+    cylinder's box; a pipe's own end objects excepted), pipes closer than the sum of their radii
+    (exact segment distance; pairs sharing a node excepted), overlapping bodies of objects not
+    joined by a pipe (solver equipment among themselves excepted) and bodies outside the room."""
+    import numpy as np
+
+    pipes = {p.id: p for p in doc.pipes}
+    bounds = _rendered_bounds(layout, doc)
+    router_ids = sorted(p.object_id for p in layout.placements if (p.rationale or "").startswith("[router]"))
+    linked = {frozenset((p.start.object_id, p.end.object_id)) for p in doc.pipes
+              if p.start.object_id and p.end.object_id}
+    out = {"pipe_item": set(), "pipe_pipe": set(), "body_overlap": set(), "outside": set()}
+    segs = [(r.pipe_id, a, b, r.diameter / 2) for r in layout.routes
+            for a, b in zip([v.as_tuple() for v in r.points], [v.as_tuple() for v in r.points][1:])]
+    S_lo = np.array([np.minimum(a, b) for _, a, b, _ in segs]).reshape(-1, 3)
+    S_hi = np.array([np.maximum(a, b) for _, a, b, _ in segs]).reshape(-1, 3)
+    S_r = np.array([r for *_, r in segs])
+    I_lo = np.array([bounds[o][0] for o in router_ids]).reshape(-1, 3)
+    I_hi = np.array([bounds[o][1] for o in router_ids]).reshape(-1, 3)
+    for k, (pid, a, b, rad) in enumerate(segs):  # pipe cylinder box vs body bounds
+        ov = np.all(np.minimum(S_hi[k] + rad, I_hi) - np.maximum(S_lo[k] - rad, I_lo) > tol, axis=1)
+        ends = {pipes[pid].start.object_id, pipes[pid].end.object_id}
+        out["pipe_item"] |= {(pid, router_ids[i]) for i in np.nonzero(ov)[0] if router_ids[i] not in ends}
+    nodes = {pid: {p.start.node_id, p.end.node_id} - {None} for pid, p in pipes.items()}
+    for k, (pa, a0, a1, ra) in enumerate(segs):  # box distance prefilter, exact distance to confirm
+        gap = np.maximum(0.0, np.maximum(S_lo[k + 1:] - S_hi[k], S_lo[k] - S_hi[k + 1:]))
+        for j in np.nonzero(np.sqrt((gap ** 2).sum(axis=1)) < ra + S_r[k + 1:])[0]:
+            pb, b0, b1, rb = segs[k + 1 + j]
+            if pa != pb and not nodes[pa] & nodes[pb] and _seg_dist(a0, a1, b0, b1) < ra + rb - 1e-3:
+                out["pipe_pipe"].add(tuple(sorted((pa, pb))))
+    ids = sorted(bounds)
+    A_lo = np.array([bounds[o][0] for o in ids])
+    A_hi = np.array([bounds[o][1] for o in ids])
+    rset = set(router_ids)
+    for i, a in enumerate(ids):
+        ov = np.all(np.minimum(A_hi[i], A_hi[i + 1:]) - np.maximum(A_lo[i], A_lo[i + 1:]) > tol, axis=1)
+        for j in np.nonzero(ov)[0]:
+            b = ids[i + 1 + j]
+            if (a in rset or b in rset) and frozenset((a, b)) not in linked:
+                out["body_overlap"].add((a, b))
+    rb_ = room.bounds
+    for oid in router_ids:
+        lo, hi = bounds[oid]
+        if (lo < np.array([rb_.x0, rb_.y0, rb_.z0]) - 1e-3).any() or (hi > np.array([rb_.x1, rb_.y1, rb_.z1]) + 1e-3).any():
+            out["outside"].add(oid)
+    return {k: sorted(v) for k, v in out.items()}
+
+
+def _router_counts(notes) -> dict:
+    note = next(n for n in notes if n.startswith("router:"))
+    keys = ("segments through equipment", "pipe/inline-item clashes", "pipe-pipe clashes", "inline item overlaps",
+            "items outside the room", "soft obstacles", "Manhattan fallback")
+    return {k: int(re.search(re.escape(k) + r" (\d+)", note).group(1)) for k in keys}
 
 
 # =========================================================================== zones / plan schema
@@ -447,6 +546,94 @@ def test_solver_crowded_band_relocates_and_reports():
     assert len(placements) == len(plan.items) and notes
 
 
+def _probe_blockers(placements, room, steps=(0.1, 0.25, 0.4)):
+    """(object, nozzle, blocker) for every nozzle whose outside is not free (room / other equipment)."""
+    out = []
+    for p in placements:
+        for k, nz in p.nozzles.items():
+            n = nozzle_normal(p, nz)
+            for d in steps:
+                q = (nz.x + d * n[0], nz.y + d * n[1], nz.z + d * n[2])
+                hit = [o.object_id for o in placements if o.object_id != p.object_id
+                       and placement_box(o).expand(-0.01).contains(*q)]
+                if hit or not room.bounds.contains(*q):
+                    out.append((p.object_id, k, (hit or ["room"])[0]))
+                    break
+    return out
+
+
+def test_solver_nozzles_reachable_on_large_drawing():
+    """Regression: on the 300-object drawing the LO sump tank's top nozzle sat under a screw pump and
+    the pipe climbed through the pump; every nozzle's outside must be free (fixed ports included),
+    covering items are moved and the move is reported."""
+    doc = large_doc(300)
+    room = engine_room_for(doc.info)
+    res = solve_detailed(heuristic_plan(doc, room), doc, room)
+    assert _probe_blockers(res.placements, room) == []
+    assert not any("is covered" in i for i in res.issues())
+    assert any("not covered by room" in i or "accessible" in i for i in res.issues())  # relocations, reported
+
+
+def _lo_doc() -> PIDDocument:
+    b = DocBuilder("LUB. OIL SYSTEM", SystemType.LUBE_OIL)
+    t = b.obj(S.TANK, 200, 500, name="M/E L.O. SUMP TK", scale=30)
+    pump = b.obj(S.PUMP_CENTRIFUGAL, 600, 500, tag="LO-P001", name="NO.1 L.O. PUMP")
+    b.pipe(b.bport(t, 245, 500), (pump, "suction"), "150A-LO-001", "150A", Medium.LUBE_OIL)
+    return b.doc
+
+
+def test_solver_keeps_a_covered_tank_nozzle_reachable():
+    """A pump planned right on top of a double-bottom tank covers its whole top: the nozzle goes to
+    the upper part of a side face (not under the pump), and the pipe does not climb through the pump."""
+    doc = _lo_doc()
+    room = engine_room_for(doc.info)
+    plan = LayoutPlan(items=[
+        PlanItem(object_id="o1", zone="double_bottom", side="center", longitudinal="mid"),
+        PlanItem(object_id="o2", zone="tank_top", side="center", longitudinal="mid", anchor_id="o1",
+                 relation="above", size_m=[5.0, 4.0, 1.0]),
+    ])
+    res = solve_detailed(plan, doc, room)
+    by_id = {p.object_id: p for p in res.placements}
+    tank, pump = placement_box(by_id["o1"]), placement_box(by_id["o2"])
+    assert pump.x0 <= tank.x0 and pump.x1 >= tank.x1 and pump.y0 <= tank.y0 and pump.y1 >= tank.y1  # covered
+    nz = by_id["o1"].nozzles["n0"]
+    assert nz.z < tank.z1 - 1e-6 and _probe_blockers(res.placements, room) == []
+    routes, inline, notes = route(doc, res.placements, room, plan.routing)
+    pts = [v.as_tuple() for v in routes[0].points]
+    assert not any(segment_hits_box(a, b_, pump) for a, b_ in zip(pts, pts[1:]))
+    assert _router_counts(notes)["segments through equipment"] == 0
+
+
+def test_solver_reports_an_unreachable_fixed_nozzle_for_repair():
+    """A pump against the ship side turned so that its suction flange faces the shell cannot be fixed
+    by moving it along the shell: the covered nozzle is reported in the issues fed back to Gemma."""
+    doc = _lo_doc()
+    room = engine_room_for(doc.info)
+    plan = LayoutPlan(items=[
+        PlanItem(object_id="o1", zone="double_bottom", side="center", longitudinal="mid"),
+        PlanItem(object_id="o2", zone="ship_side_port", deck="tank_top", orientation_deg=270),
+    ])
+    res = solve_detailed(plan, doc, room)
+    pump = next(p for p in res.placements if p.object_id == "o2")
+    assert abs(placement_box(pump).y1 - room.breadth / 2) < 1e-6  # against the port shell
+    issues = res.issues()
+    assert any(i.startswith("o2: nozzle suction is covered by the room boundary") for i in issues), issues
+    assert any("nozzle(s) without free access" in n for n in res.notes)
+
+
+def test_compute_nozzles_reports_a_fixed_port_facing_the_wall():
+    doc = ballast_doc()
+    room = engine_room_for(doc.info)
+    pump = next(o for o in doc.objects if o.cls == S.PUMP_CENTRIFUGAL)
+    from shippid.model import Placement3D, Vec3
+    from shippid.model3d.solver import compute_nozzles_detailed
+
+    pl = Placement3D(object_id=pump.id, cls=pump.cls, position=Vec3(x=0.4, y=0.0, z=room.deck_z("tank_top")),
+                     size=Vec3(x=0.8, y=0.8, z=1.6), deck="tank_top")  # suction flange on the -x face, at x = 0
+    noz, blocked = compute_nozzles_detailed(doc, pump, pl, {pump.id: pl}, room)
+    assert "suction" in noz and any(b.key == "suction" and b.blocker == "room" for b in blocked)
+
+
 # =========================================================================== router
 
 
@@ -495,6 +682,36 @@ def test_router_orthogonal_routes_per_pipe_and_inline_items(name):
             a, b = p.nozzles["in"].as_tuple(), p.nozzles["out"].as_tuple()
             assert math.dist(a, b) > 0.05 and sum(1 for i in range(3) if abs(a[i] - b[i]) > 1e-6) == 1
     assert objs  # documents are non-trivial
+    # the rendered model is clash-free: inline bodies (stems / actuators included) are obstacles for
+    # the pipes routed after them, pipes keep clear of each other, bodies stay inside the room
+    # (regression: ballast p3 300A-BA-002 ran through the hydraulic actuator of BA-V012)
+    lo, hi = room.bounds_vec()
+    layout = Layout3D(planner="heuristic", decks=room.to_decks(), bounds_min=lo, bounds_max=hi,
+                      placements=placements + inline, routes=routes)
+    assert _layout_clashes(layout, doc, room) == {"pipe_item": [], "pipe_pipe": [], "body_overlap": [],
+                                                  "outside": []}
+    counts = _router_counts(notes)  # the router's own audit agrees
+    assert all(v == 0 for v in counts.values()), counts
+
+
+
+def test_inline_body_clamped_to_room():
+    """A 300A valve on a pipe running 0.25 m from the ship side would poke 0.06 m through the shell
+    (reviewer: o144 y1 18.06 > 18.0); its body is reduced until it fits."""
+    from types import SimpleNamespace
+    from shippid.model3d.router import _clamp_to_room, _make_inline, item_box
+
+    doc = ballast_doc()
+    room = engine_room_for(doc.info)
+    valve = next(o for o in doc.objects if o.cls == S.BUTTERFLY_VALVE)
+    y = room.breadth / 2 - 0.25
+    ctx = SimpleNamespace(room=room)
+    size = (0.31, 0.82, 1.03)
+    make = lambda sz: _make_inline(ctx, valve, sz, (5.0, y, 3.0), (5.31, y, 3.0), "in", "out", False, "test")
+    assert item_box(make(size), valve).y1 > room.bounds.y1 + 0.05  # the nominal body pokes out
+    pl, box, clamped = _clamp_to_room(ctx, valve, size, make)
+    assert clamped and box.y1 <= room.bounds.y1 + 1e-3 and pl.size.y < size[1]
+    assert box == item_box(pl, valve)
 
 
 # =========================================================================== Gemma planner (mock / HTTP)
@@ -633,6 +850,148 @@ def test_gemma_planner_chunks_large_drawings():
     assert later["already_placed"] and len(later["objects"]) <= 8
 
 
+def test_gemma_planner_failing_repair_round_keeps_the_best_plan():
+    """Regression: an LLMError in a repair round (here: unparseable output after LLMClient's own
+    attempts) used to discard the valid round-1 plan and fall back to the heuristic."""
+    doc = ballast_doc()
+    room = engine_room_for(doc.info)
+    calls = []
+
+    def responder(m, s, n):
+        calls.append(1)
+        if len(calls) == 1:
+            plan = _rule_plan(_digest(m))
+            plan["items"].append(dict(plan["items"][0], object_id="o999"))  # one fixable problem
+            return plan
+        return "sorry, I cannot help with that"
+
+    planner = GemmaLayoutPlanner(LLMClient(MockBackend(responder), max_attempts=1), max_rounds=3)
+    plan, usage = planner.plan(doc, room)
+    required = {o.id for o in doc.objects if is_planned(o)}
+    assert plan.planner == "mock" and {it.object_id for it in plan.items} == required
+    assert all(it.source == "mock" for it in plan.items)
+    assert usage.calls == 2 and any("repair round 2 failed" in e for e in usage.errors)
+    assert any("kept the plan of round 1" in n for n in plan.notes)
+    assert not any("no valid plan" in n for n in plan.notes)
+    assert planner.log[-1]["error"] and planner.log[0]["problems"]
+
+
+def test_gemma_planner_http_400_in_repair_round_keeps_the_best_plan():
+    """vLLM answers a prompt that overflows --max-model-len with HTTP 400 (non-retryable): the
+    planner keeps the round-1 plan instead of throwing it away."""
+    httpx = pytest.importorskip("httpx")
+    oc = pytest.importorskip("shippid.llm.openai_compat")
+    seen = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append(body)
+        if len(seen) > 1:
+            return httpx.Response(400, json={
+                "object": "error", "type": "BadRequestError", "param": None, "code": 400,
+                "message": "This model's maximum context length is 32768 tokens. However, you requested 33012 "
+                           "tokens (21012 in the messages, 12000 in the completion). Please reduce the length of "
+                           "the messages or completion."})
+        user = next(m for m in body["messages"] if m["role"] == "user")["content"]
+        plan = _rule_plan(json.loads(user.split("\n\n", 1)[1].split("\n", 1)[0]))
+        plan["items"].append(dict(plan["items"][0], object_id="o999"))
+        return httpx.Response(200, json={
+            "id": "chatcmpl-1", "object": "chat.completion", "created": 0, "model": body["model"],
+            "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant",
+                                                                          "content": json.dumps(plan)}}],
+            "usage": {"prompt_tokens": 2100, "completion_tokens": 640, "total_tokens": 2740}})
+
+    backend = oc.OpenAICompatBackend("google/gemma-4-31B-it", "http://gpu:8000/v1",
+                                     transport=httpx.MockTransport(handler), backoff=0)
+    doc = ballast_doc()
+    plan, usage = GemmaLayoutPlanner(LLMClient(backend)).plan(doc, engine_room_for(doc.info))
+    assert len(seen) == 2 and plan.planner == "gemma" and all(it.source == "gemma" for it in plan.items)
+    assert any("HTTP 400" in e and "repair round 2 failed" in e for e in usage.errors)
+
+
+def test_gemma_planner_partial_repair_answer_is_merged():
+    """Regression: a repair answer with only the corrected item scored better than a complete plan
+    with soft issues, so 6 of 7 items fell back to the heuristic. It is now a patch of the plan."""
+    doc = ballast_doc()
+    room = engine_room_for(doc.info)
+    calls = []
+
+    def responder(m, s, n):
+        calls.append(1)
+        plan = _rule_plan(_digest(m))
+        if len(calls) == 1:  # complete and valid, but three relations the solver cannot meet
+            first = plan["items"][0]["object_id"]
+            for it in plan["items"][1:4]:
+                it.update(anchor_id=first, relation="above")
+            return plan
+        plan["items"] = plan["items"][1:2]  # the repair answer lists only the item it changed
+        return plan
+
+    planner = GemmaLayoutPlanner(LLMClient(MockBackend(responder)), max_rounds=2)
+    plan, usage = planner.plan(doc, room)
+    required = {o.id for o in doc.objects if is_planned(o)}
+    assert {it.object_id for it in plan.items} == required and all(it.source == "mock" for it in plan.items)
+    assert planner.log[1]["merged"] and planner.log[1]["score"][0] == 0  # nothing missing after the merge
+    assert usage.calls == 3
+
+
+class _RecordingMock(MockBackend):
+    """MockBackend that also records the max_tokens of each call."""
+
+    def __init__(self, responder):
+        super().__init__(responder)
+        self.max_tokens: list[int] = []
+
+    def complete(self, messages, **kw):
+        self.max_tokens.append(kw["max_tokens"])
+        return super().complete(messages, **kw)
+
+
+def test_gemma_planner_repair_context_is_bounded_and_fits_the_context():
+    """Regression: every repair round resent the whole conversation (41k -> 80k characters for a
+    49-item chunk) with max_tokens 12000, past vLLM's 32k context. Repair prompts are now system +
+    request + latest plan + latest feedback, and max_tokens is sized to what the context leaves."""
+    from shippid.model3d.gemma_planner import estimate_tokens
+
+    doc = large_doc(150)
+    room = engine_room_for(doc.info)
+
+    def responder(m, s, n):
+        plan = _rule_plan(_digest(m))
+        first = plan["items"][0]["object_id"]
+        for it in plan["items"][1:]:
+            it.update(anchor_id=first, relation="above")  # every round has solver issues
+        return plan
+
+    backend = _RecordingMock(responder)
+    planner = GemmaLayoutPlanner(LLMClient(backend), max_rounds=3)
+    plan, usage = planner.plan(doc, room)
+    assert usage.calls == 4 and plan.planner == "mock"
+    sizes = []
+    for (msgs, _, _), mt in zip(backend.calls, backend.max_tokens):
+        assert len(msgs) <= 4 and msgs[0].role == "system"
+        assert msgs[1].parts()[0] == backend.calls[0][0][1].parts()[0]  # the original request, unchanged
+        prompt = sum(estimate_tokens(m.text()) + 8 for m in msgs)
+        assert prompt + mt <= 32768, (prompt, mt)
+        sizes.append(sum(len(m.text()) for m in msgs))
+    assert sizes[3] <= sizes[1] * 1.05  # no growth over the repair rounds
+    assert all(mt <= 12000 for mt in backend.max_tokens)
+
+
+def test_gemma_planner_splits_a_chunk_whose_prompt_does_not_fit():
+    from shippid.model3d.gemma_planner import estimate_tokens
+
+    doc = large_doc(60)
+    room = engine_room_for(doc.info)
+    backend = _RecordingMock(lambda m, s, n: _rule_plan(_digest(m)))
+    planner = GemmaLayoutPlanner(LLMClient(backend), max_rounds=0, context_tokens=14000)
+    plan, usage = planner.plan(doc, room)
+    assert any("split in two" in n for n in plan.notes)
+    assert sorted(it.object_id for it in plan.items) == sorted(o.id for o in doc.objects if is_planned(o))
+    for (msgs, _, _), mt in zip(backend.calls, backend.max_tokens):
+        assert sum(estimate_tokens(m.text()) + 8 for m in msgs) + mt <= 14000
+
+
 def test_gemma_planner_over_openai_compatible_http():
     """vLLM-style /chat/completions emulated with httpx.MockTransport -> planner label 'gemma'."""
     httpx = pytest.importorskip("httpx")
@@ -682,6 +1041,10 @@ def test_glb_export_names_extras_materials(tmp_path):
     assert {o.id for o in doc.objects} <= set(by_id) and {r.pipe_id for r in layout.routes} <= set(by_id)
     pump = by_id["o4"]["extras"]
     assert pump["tag"] == "BA-P001" and pump["class"] == "pump_centrifugal" and pump["system"] == "ballast"
+    # human label under its own key: GLTFLoader sets userData.name to the node name before the extras,
+    # so a "name" extra would be shadowed by the slug "BA-P001_o4" (reviewer: 명칭 BA-V012_o8)
+    assert pump["label"] == "NO.1 BALLAST PUMP" and "name" not in pump
+    assert all("name" not in n.get("extras", {}) for n in js["nodes"])
     assert pump["deck"] == "tank_top" and pump["rationale"] and pump["medium"] == "ballast_water"
     assert by_id["p1"]["extras"]["line_number"] == "350A-BA-001" and by_id["p1"]["extras"]["medium"] == "ballast_water"
     groups = [n["extras"] for n in js["nodes"] if n.get("extras", {}).get("kind") == "group"]
@@ -718,6 +1081,36 @@ def test_viewers_threejs_and_plotly(tmp_path):
     assert '"type":"mesh3d"' in html_text.replace(" ", "") and '"aspectmode":"data"' in html_text.replace(" ", "")
     with pytest.raises(ValueError):
         write_viewer_html(glb, layout, doc, tmp_path / "x.html", mode="vr")
+    assert data["fields"]["label"] == "명칭" and "name" not in data["fields"]
+    assert "'label', 'line_number'" in page and "u.tag || u.label || u.id" in page
+    n_planned = sum(1 for o in doc.objects if is_planned(o))  # badge counts: plan items vs router-placed
+    assert data["sources"] == {"heuristic": n_planned, "router": len(layout.placements) - n_planned}
+
+
+def test_viewer_survives_script_breaking_strings(tmp_path):
+    """Regression: a title with '<!--<script>' switched the HTML parser into the double-escaped
+    script state, the viewer-data element swallowed the GLB and the module, nothing loaded."""
+    doc = ballast_doc()
+    nasty = "BALLAST <!--<script> SYSTEM </script> & \u2028 <b>x</b>"
+    doc.info.title = nasty
+    layout = build_layout(doc)
+    layout.notes.append("model note: </script><script>alert(1)</script>")
+    glb = export_glb(layout_to_scene(layout, doc), tmp_path / "b.glb")
+    page = write_viewer_html(glb, layout, doc, tmp_path / "b.html").read_text(encoding="utf-8")
+    assert len(re.findall(r"<script\b", page)) == 4  # importmap, viewer-data, glb-data, module
+    raw = re.search(r'<script id="viewer-data" type="application/json">(.*?)</script>', page, re.S).group(1)
+    assert not set(raw) & {"<", ">", "&", "\u2028"}
+    data = json.loads(raw)
+    assert data["title"] == nasty and data["notes"][-1] == "model note: </script><script>alert(1)</script>"
+    b64 = re.search(r'<script id="glb-data" type="application/octet-stream">(.*?)</script>', page, re.S).group(1)
+    assert base64.b64decode(b64) == glb.read_bytes()
+    assert html_title(page) == f"{nasty} – 3D"
+
+
+def html_title(page: str) -> str:
+    import html as html_mod
+
+    return html_mod.unescape(re.search(r"<title>(.*?)</title>", page, re.S).group(1))
 
 
 # =========================================================================== scale
@@ -734,11 +1127,15 @@ def test_large_drawing_performance():
     assert len(layout.placements) == len(doc.objects)
     assert len(layout.routes) == len([p for p in doc.pipes if p.kind != PipeKind.SIGNAL])
     assert not any("Manhattan fallback route" in n for n in layout.notes)
-    router_note = next(n for n in layout.notes if n.startswith("router:"))
-    assert "segments through equipment 0" in router_note
+    counts = _router_counts(layout.notes)
+    assert all(v == 0 for v in counts.values()), counts
+    t_check = time.time()
+    clashes = _layout_clashes(layout, doc, engine_room_for(doc.info))  # independent of the router's audit
+    assert clashes == {"pipe_item": [], "pipe_pipe": [], "body_overlap": [], "outside": []}, clashes
+    t_check = time.time() - t_check
     assert len(scene.geometry) > 300
     print(f"\n150-object drawing: {len(doc.objects)} objects, {len(doc.pipes)} pipes: layout {t_layout:.2f} s, "
-          f"layout + scene {t_total:.2f} s")
+          f"layout + scene {t_total:.2f} s, clash check {t_check:.2f} s")
     assert t_layout < 60
 
 
@@ -767,6 +1164,8 @@ def test_degraded_extraction_output_still_builds(tmp_path):
     assert any("signal line" in n for n in layout.notes)
     lt = next(p for p in layout.placements if p.object_id == "o90")
     assert "signal-linked" in lt.rationale
+    assert _layout_clashes(layout, doc, engine_room_for(doc.info)) == {"pipe_item": [], "pipe_pipe": [],
+                                                                       "body_overlap": [], "outside": []}
     js = read_glb_json(export_glb(layout_to_scene(layout, doc), tmp_path / "degraded.glb"))
     ids = {n["extras"]["id"] for n in js["nodes"] if n.get("extras", {}).get("kind") == "object"}
     assert ids == {o.id for o in doc.objects}
