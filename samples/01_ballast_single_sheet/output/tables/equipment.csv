@@ -1,0 +1,16 @@
+﻿id,tag,name,class,type_en,type_ko,page,x,y,confidence,source,rating,connections,connected_to,isolation_valves
+o7,,NO.1 BALLAST PUMP,pump_centrifugal,Centrifugal pump,원심 펌프,0,606.4,443.5,1.0,vector,,2,BA015V; BA014V,BA016V; BA014V
+o10,,HIGH SEA CHEST,sea_chest,Sea chest,씨체스트,0,273.9,489.1,0.987,vector,,1,BA011V,BA011V
+o17,,LOW SEA CHEST,sea_chest,Sea chest,씨체스트,0,275.5,611.4,0.988,vector,,1,BA012V,BA012V
+o19,,NO.2 BALLAST PUMP,pump_centrifugal,Centrifugal pump,원심 펌프,0,606.4,618.9,1.0,vector,"2,000 M3/H X 30 MTH",2,check_valve:o16; BA017V,BA018V; BA017V
+o28,,NO.3 BALLAST PUMP,pump_centrifugal,Centrifugal pump,원심 펌프,0,606.4,771.3,1.0,vector,"2,000 M3/H X 30 MTH",2,check_valve:o26; BA019V,BA020V; BA019V
+o33,,NO.1 BWTS FILTER,duplex_filter,Duplex / auto-backflush filter,복식(자동역세) 필터,0,324.1,1102.4,0.991,vector,,2,BA016V; BA018V; BA020V; B.W.T. UNIT; BA022V,BA016V; BA018V; BA020V; BA022V
+o34,,B.W.T. UNIT,bwts_unit,Ballast water treatment unit (UV),평형수 처리장치,0,426.3,1102.4,0.985,vector,"1,500 M3/H",2,NO.1 BWTS FILTER; flow_meter:o35; BA022V,BA016V; BA018V; BA020V; BA021V; BA022V
+o35,,,flow_meter,Flow meter,유량계,0,592.2,1102.4,1.0,vector,,2,BA021V; B.W.T. UNIT; BA022V,BA021V; BA022V
+o44,,F.P.TK,tank,Tank,탱크,0,857.0,1240.2,0.978,vector,,1,BA023V,BA023V
+o45,,NO.1 W.B.TK (P),tank,Tank,탱크,0,993.2,1240.1,0.98,vector,"6,200 M3",1,BA024V,BA024V
+o46,,NO.1 W.B.TK (S),tank,Tank,탱크,0,1130.0,1241.6,0.978,vector,,1,BA025V,BA025V
+o47,,NO.2 W.B.TK (P),tank,Tank,탱크,0,1266.8,1243.8,0.98,vector,"3,100 M3",1,BA026V,BA026V
+o48,,NO.2 W.B.TK (S),tank,Tank,탱크,0,1402.0,1242.9,0.98,vector,,1,BA027V,BA027V
+o49,,NO.3 W.B.TK (P),tank,Tank,탱크,0,1537.2,1242.1,0.98,vector,"3,100 M3",1,BA028V,BA028V
+o50,,OVERBOARD,overboard,Overboard discharge,선외 배출구,0,1651.5,1232.0,1.0,vector,,1,BA029V,BA029V

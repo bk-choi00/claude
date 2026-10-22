@@ -1,0 +1,2561 @@
+{
+ "schema_version": "1.0",
+ "units": "m",
+ "planner": "heuristic",
+ "decks": [
+  {
+   "name": "tank_top",
+   "z": 2.75
+  },
+  {
+   "name": "floor",
+   "z": 4.95
+  },
+  {
+   "name": "3rd_deck",
+   "z": 11.55
+  },
+  {
+   "name": "2nd_deck",
+   "z": 17.6
+  },
+  {
+   "name": "upper_deck",
+   "z": 26.4
+  }
+ ],
+ "bounds_min": {
+  "x": 0.0,
+  "y": -17.0,
+  "z": 0.0
+ },
+ "bounds_max": {
+  "x": 38.0,
+  "y": 17.0,
+  "z": 26.4
+ },
+ "placements": [
+  {
+   "object_id": "o1",
+   "cls": "tank",
+   "position": {
+    "x": 3.0159,
+    "y": 6.1842,
+    "z": 2.75
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 4.0,
+    "y": 3.0,
+    "z": 2.1
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "n0": {
+     "x": 3.0159,
+     "y": 4.6842,
+     "z": 3.8
+    }
+   },
+   "rationale": "[heuristic] storage tank at the ship side on the tank top (size: tank-top tank below the floor)"
+  },
+  {
+   "object_id": "o11",
+   "cls": "tank",
+   "position": {
+    "x": 3.0159,
+    "y": -5.6667,
+    "z": 2.75
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 4.0,
+    "y": 3.0,
+    "z": 2.1
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "n0": {
+     "x": 3.0159,
+     "y": -4.1667,
+     "z": 3.8
+    },
+    "n1": {
+     "x": 5.0159,
+     "y": -5.6667,
+     "z": 4.325
+    }
+   },
+   "rationale": "[heuristic] storage tank at the ship side on the tank top (size: tank-top tank below the floor)"
+  },
+  {
+   "object_id": "o16",
+   "cls": "tank",
+   "position": {
+    "x": 3.0159,
+    "y": 9.1852,
+    "z": 2.75
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 4.0,
+    "y": 3.0,
+    "z": 2.1
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "n0": {
+     "x": 5.0159,
+     "y": 7.8352,
+     "z": 3.8
+    }
+   },
+   "rationale": "[heuristic] storage tank at the ship side on the tank top (size: tank-top tank below the floor)"
+  },
+  {
+   "object_id": "o4",
+   "cls": "pump_screw",
+   "position": {
+    "x": 11.6367,
+    "y": 5.6667,
+    "z": 2.75
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 1.643,
+    "y": 0.639,
+    "z": 0.822
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 10.8152,
+     "y": 5.6667,
+     "z": 3.161
+    },
+    "out": {
+     "x": 11.1438,
+     "y": 5.6667,
+     "z": 3.572
+    }
+   },
+   "rationale": "[heuristic] pump on the tank top near its suction source (positive suction head) (size: catalog x0.91 (DN125))"
+  },
+  {
+   "object_id": "o18",
+   "cls": "pump_screw",
+   "position": {
+    "x": 11.6367,
+    "y": 6.9067,
+    "z": 2.75
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 1.643,
+    "y": 0.639,
+    "z": 0.822
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 10.8152,
+     "y": 6.9067,
+     "z": 3.161
+    },
+    "out": {
+     "x": 11.1438,
+     "y": 6.9067,
+     "z": 3.572
+    }
+   },
+   "rationale": "[heuristic] pump on the tank top near its suction source (positive suction head) (size: catalog x0.91 (DN125))"
+  },
+  {
+   "object_id": "o31",
+   "cls": "tank",
+   "position": {
+    "x": 31.5714,
+    "y": -5.6667,
+    "z": 4.95
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 3.5,
+    "y": 3.0,
+    "z": 5.0
+   },
+   "deck": "floor",
+   "nozzles": {
+    "n0": {
+     "x": 33.1714,
+     "y": -4.1667,
+     "z": 7.45
+    },
+    "n1": {
+     "x": 31.5706,
+     "y": -7.1667,
+     "z": 7.45
+    }
+   },
+   "rationale": "[heuristic] settling/service tank elevated at the ship side (gravity head to the pumps) (size: elevated tank, 0.8 x deck height)"
+  },
+  {
+   "object_id": "o32",
+   "cls": "tank",
+   "position": {
+    "x": 35.0724,
+    "y": -5.6667,
+    "z": 4.95
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 3.5,
+    "y": 3.0,
+    "z": 5.0
+   },
+   "deck": "floor",
+   "nozzles": {
+    "n0": {
+     "x": 34.1714,
+     "y": -4.1667,
+     "z": 7.45
+    }
+   },
+   "rationale": "[heuristic] settling/service tank elevated at the ship side (gravity head to the pumps) (size: elevated tank, 0.8 x deck height)"
+  },
+  {
+   "object_id": "o34",
+   "cls": "tank",
+   "position": {
+    "x": 35.0724,
+    "y": -8.6677,
+    "z": 4.95
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 3.5,
+    "y": 3.0,
+    "z": 5.0
+   },
+   "deck": "floor",
+   "nozzles": {
+    "n0": {
+     "x": 36.8224,
+     "y": -7.3177,
+     "z": 6.2
+    },
+    "n1": {
+     "x": 35.0724,
+     "y": -10.1677,
+     "z": 7.45
+    }
+   },
+   "rationale": "[heuristic] settling/service tank elevated at the ship side (gravity head to the pumps) (size: elevated tank, 0.8 x deck height)"
+  },
+  {
+   "object_id": "o35",
+   "cls": "off_page_connector",
+   "position": {
+    "x": 37.5734,
+    "y": -5.6667,
+    "z": 4.95
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.3,
+    "y": 0.3,
+    "z": 0.3
+   },
+   "deck": "floor",
+   "nozzles": {
+    "in": {
+     "x": 37.5734,
+     "y": -5.8167,
+     "z": 5.1
+    }
+   },
+   "rationale": "[heuristic] off-page connector: pipe continues on another drawing (size: catalog)"
+  },
+  {
+   "object_id": "o2",
+   "cls": "gate_valve",
+   "position": {
+    "x": 3.25,
+    "y": 3.9586,
+    "z": 7.0775
+   },
+   "yaw_deg": 270.0,
+   "size": {
+    "x": 0.403,
+    "y": 0.345,
+    "z": 0.691
+   },
+   "deck": "floor",
+   "nozzles": {
+    "out": {
+     "x": 3.25,
+     "y": 3.7571,
+     "z": 7.25
+    },
+    "in": {
+     "x": 3.25,
+     "y": 4.1601,
+     "z": 7.25
+    }
+   },
+   "rationale": "[router] inline on 125-FO-001 (pipes p2, p1)"
+  },
+  {
+   "object_id": "o12",
+   "cls": "gate_valve",
+   "position": {
+    "x": 4.9356,
+    "y": -3.75,
+    "z": 7.0775
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.403,
+    "y": 0.345,
+    "z": 0.691
+   },
+   "deck": "floor",
+   "nozzles": {
+    "out": {
+     "x": 5.1371,
+     "y": -3.75,
+     "z": 7.25
+    },
+    "in": {
+     "x": 4.7341,
+     "y": -3.75,
+     "z": 7.25
+    }
+   },
+   "rationale": "[router] inline on 125-FO-002 (pipes p19, p18)"
+  },
+  {
+   "object_id": "o17",
+   "cls": "gate_valve",
+   "position": {
+    "x": 7.75,
+    "y": 5.5389,
+    "z": 7.0775
+   },
+   "yaw_deg": 270.0,
+   "size": {
+    "x": 0.403,
+    "y": 0.345,
+    "z": 0.691
+   },
+   "deck": "floor",
+   "nozzles": {
+    "out": {
+     "x": 7.75,
+     "y": 5.3374,
+     "z": 7.25
+    },
+    "in": {
+     "x": 7.75,
+     "y": 5.7404,
+     "z": 7.25
+    }
+   },
+   "rationale": "[router] inline on 125-FO-004 (pipes p27, p26)"
+  },
+  {
+   "object_id": "o5",
+   "cls": "gate_valve",
+   "position": {
+    "x": 8.4124,
+    "y": 2.25,
+    "z": 7.5775
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.403,
+    "y": 0.345,
+    "z": 0.691
+   },
+   "deck": "floor",
+   "nozzles": {
+    "in": {
+     "x": 8.2109,
+     "y": 2.25,
+     "z": 7.75
+    },
+    "out": {
+     "x": 8.6139,
+     "y": 2.25,
+     "z": 7.75
+    }
+   },
+   "rationale": "[router] inline on 125-FO-005 (pipes p5, p7, p8)"
+  },
+  {
+   "object_id": "o7",
+   "cls": "strainer",
+   "position": {
+    "x": 9.2862,
+    "y": 2.25,
+    "z": 7.4045
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.691,
+    "y": 0.576,
+    "z": 0.691
+   },
+   "deck": "floor",
+   "nozzles": {
+    "in": {
+     "x": 8.9407,
+     "y": 2.25,
+     "z": 7.75
+    },
+    "out": {
+     "x": 9.6317,
+     "y": 2.25,
+     "z": 7.75
+    }
+   },
+   "rationale": "[router] inline on 125-FO-005 (pipes p5, p7, p8)"
+  },
+  {
+   "object_id": "o8",
+   "cls": "check_valve",
+   "position": {
+    "x": 16.4331,
+    "y": 1.75,
+    "z": 7.0775
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.403,
+    "y": 0.345,
+    "z": 0.461
+   },
+   "deck": "floor",
+   "nozzles": {
+    "in": {
+     "x": 16.2316,
+     "y": 1.75,
+     "z": 7.25
+    },
+    "out": {
+     "x": 16.6346,
+     "y": 1.75,
+     "z": 7.25
+    }
+   },
+   "rationale": "[router] inline on 125-FO-007 (pipes p14, p16, p17)"
+  },
+  {
+   "object_id": "o6",
+   "cls": "globe_valve",
+   "position": {
+    "x": 16.9908,
+    "y": 1.75,
+    "z": 7.0775
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.403,
+    "y": 0.345,
+    "z": 0.691
+   },
+   "deck": "floor",
+   "nozzles": {
+    "in": {
+     "x": 16.7893,
+     "y": 1.75,
+     "z": 7.25
+    },
+    "out": {
+     "x": 17.1923,
+     "y": 1.75,
+     "z": 7.25
+    }
+   },
+   "rationale": "[router] inline on 125-FO-007 (pipes p14, p16, p17)"
+  },
+  {
+   "object_id": "o19",
+   "cls": "gate_valve",
+   "position": {
+    "x": 7.9281,
+    "y": -1.25,
+    "z": 7.0775
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.403,
+    "y": 0.345,
+    "z": 0.691
+   },
+   "deck": "floor",
+   "nozzles": {
+    "in": {
+     "x": 7.7266,
+     "y": -1.25,
+     "z": 7.25
+    },
+    "out": {
+     "x": 8.1296,
+     "y": -1.25,
+     "z": 7.25
+    }
+   },
+   "rationale": "[router] inline on 125-FO-009 (pipes p28, p29, p30)"
+  },
+  {
+   "object_id": "o21",
+   "cls": "strainer",
+   "position": {
+    "x": 8.7944,
+    "y": -1.25,
+    "z": 6.9045
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.691,
+    "y": 0.576,
+    "z": 0.691
+   },
+   "deck": "floor",
+   "nozzles": {
+    "in": {
+     "x": 8.4489,
+     "y": -1.25,
+     "z": 7.25
+    },
+    "out": {
+     "x": 9.1399,
+     "y": -1.25,
+     "z": 7.25
+    }
+   },
+   "rationale": "[router] inline on 125-FO-009 (pipes p28, p29, p30)"
+  },
+  {
+   "object_id": "o22",
+   "cls": "check_valve",
+   "position": {
+    "x": 16.3747,
+    "y": -1.25,
+    "z": 7.0775
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.403,
+    "y": 0.345,
+    "z": 0.461
+   },
+   "deck": "floor",
+   "nozzles": {
+    "in": {
+     "x": 16.1732,
+     "y": -1.25,
+     "z": 7.25
+    },
+    "out": {
+     "x": 16.5762,
+     "y": -1.25,
+     "z": 7.25
+    }
+   },
+   "rationale": "[router] inline on 125-FO-011 (pipes p36, p38, p22)"
+  },
+  {
+   "object_id": "o20",
+   "cls": "globe_valve",
+   "position": {
+    "x": 16.8846,
+    "y": -1.25,
+    "z": 7.0775
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.403,
+    "y": 0.345,
+    "z": 0.691
+   },
+   "deck": "floor",
+   "nozzles": {
+    "in": {
+     "x": 16.6831,
+     "y": -1.25,
+     "z": 7.25
+    },
+    "out": {
+     "x": 17.0861,
+     "y": -1.25,
+     "z": 7.25
+    }
+   },
+   "rationale": "[router] inline on 125-FO-011 (pipes p36, p38, p22)"
+  },
+  {
+   "object_id": "o25",
+   "cls": "off_page_connector",
+   "position": {
+    "x": 20.2525,
+    "y": 0.75,
+    "z": 7.0775
+   },
+   "yaw_deg": 180.0,
+   "size": {
+    "x": 0.345,
+    "y": 0.345,
+    "z": 0.345
+   },
+   "deck": "floor",
+   "nozzles": {
+    "in": {
+     "x": 20.425,
+     "y": 0.75,
+     "z": 7.25
+    },
+    "sheet_link": {
+     "x": 20.08,
+     "y": 0.75,
+     "z": 7.25
+    }
+   },
+   "rationale": "[router] inline on 125-FO-015 (pipes p39, sheet_link:o14:o25, p23)"
+  },
+  {
+   "object_id": "o14",
+   "cls": "off_page_connector",
+   "position": {
+    "x": 19.8575,
+    "y": 0.75,
+    "z": 7.0775
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.345,
+    "y": 0.345,
+    "z": 0.345
+   },
+   "deck": "floor",
+   "nozzles": {
+    "sheet_link": {
+     "x": 20.03,
+     "y": 0.75,
+     "z": 7.25
+    },
+    "in": {
+     "x": 19.685,
+     "y": 0.75,
+     "z": 7.25
+    }
+   },
+   "rationale": "[router] inline on 125-FO-015 (pipes p39, sheet_link:o14:o25, p23)"
+  },
+  {
+   "object_id": "o29",
+   "cls": "globe_valve",
+   "position": {
+    "x": 37.75,
+    "y": -5.9586,
+    "z": 7.0775
+   },
+   "yaw_deg": 270.0,
+   "size": {
+    "x": 0.403,
+    "y": 0.345,
+    "z": 0.691
+   },
+   "deck": "floor",
+   "nozzles": {
+    "in": {
+     "x": 37.75,
+     "y": -5.7571,
+     "z": 7.25
+    },
+    "out": {
+     "x": 37.75,
+     "y": -6.1601,
+     "z": 7.25
+    }
+   },
+   "rationale": "[router] inline on 125-FO-020 (pipes p47, p51)"
+  },
+  {
+   "object_id": "o30",
+   "cls": "globe_valve",
+   "position": {
+    "x": 12.424,
+    "y": -5.75,
+    "z": 7.1
+   },
+   "yaw_deg": 180.0,
+   "size": {
+    "x": 0.35,
+    "y": 0.3,
+    "z": 0.6
+   },
+   "deck": "floor",
+   "nozzles": {
+    "in": {
+     "x": 12.599,
+     "y": -5.75,
+     "z": 7.25
+    },
+    "out": {
+     "x": 12.249,
+     "y": -5.75,
+     "z": 7.25
+    }
+   },
+   "rationale": "[router] inline on unnumbered line (pipes p40, p52, sheet_link:o33:o13, p21)"
+  },
+  {
+   "object_id": "o33",
+   "cls": "off_page_connector",
+   "position": {
+    "x": 5.4771,
+    "y": -5.75,
+    "z": 7.1
+   },
+   "yaw_deg": 180.0,
+   "size": {
+    "x": 0.3,
+    "y": 0.3,
+    "z": 0.3
+   },
+   "deck": "floor",
+   "nozzles": {
+    "in": {
+     "x": 5.6271,
+     "y": -5.75,
+     "z": 7.25
+    },
+    "sheet_link": {
+     "x": 5.3271,
+     "y": -5.75,
+     "z": 7.25
+    }
+   },
+   "rationale": "[router] inline on unnumbered line (pipes p40, p52, sheet_link:o33:o13, p21)"
+  },
+  {
+   "object_id": "o13",
+   "cls": "off_page_connector",
+   "position": {
+    "x": 5.25,
+    "y": -5.75,
+    "z": 6.8729
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.3,
+    "y": 0.3,
+    "z": 0.3
+   },
+   "deck": "floor",
+   "nozzles": {
+    "sheet_link": {
+     "x": 5.25,
+     "y": -5.75,
+     "z": 7.1729
+    },
+    "in": {
+     "x": 5.25,
+     "y": -5.75,
+     "z": 6.8729
+    }
+   },
+   "rationale": "[router] inline on unnumbered line (pipes p40, p52, sheet_link:o33:o13, p21)"
+  },
+  {
+   "object_id": "o26",
+   "cls": "globe_valve",
+   "position": {
+    "x": 31.4295,
+    "y": -3.25,
+    "z": 7.1
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.35,
+    "y": 0.3,
+    "z": 0.6
+   },
+   "deck": "floor",
+   "nozzles": {
+    "in": {
+     "x": 31.2545,
+     "y": -3.25,
+     "z": 7.25
+    },
+    "out": {
+     "x": 31.6045,
+     "y": -3.25,
+     "z": 7.25
+    }
+   },
+   "rationale": "[router] inline on 65-FO-017 (pipes p42, p48)"
+  },
+  {
+   "object_id": "o27",
+   "cls": "globe_valve",
+   "position": {
+    "x": 33.75,
+    "y": -2.7133,
+    "z": 7.1
+   },
+   "yaw_deg": 270.0,
+   "size": {
+    "x": 0.35,
+    "y": 0.3,
+    "z": 0.6
+   },
+   "deck": "floor",
+   "nozzles": {
+    "in": {
+     "x": 33.75,
+     "y": -2.5383,
+     "z": 7.25
+    },
+    "out": {
+     "x": 33.75,
+     "y": -2.8883,
+     "z": 7.25
+    }
+   },
+   "rationale": "[router] inline on 65-FO-018 (pipes p44, p49)"
+  },
+  {
+   "object_id": "o28",
+   "cls": "globe_valve",
+   "position": {
+    "x": 37.25,
+    "y": -5.0545,
+    "z": 7.1
+   },
+   "yaw_deg": 270.0,
+   "size": {
+    "x": 0.35,
+    "y": 0.3,
+    "z": 0.6
+   },
+   "deck": "floor",
+   "nozzles": {
+    "in": {
+     "x": 37.25,
+     "y": -4.8795,
+     "z": 7.25
+    },
+    "out": {
+     "x": 37.25,
+     "y": -5.2295,
+     "z": 7.25
+    }
+   },
+   "rationale": "[router] inline on 65-FO-019 (pipes p46, p50)"
+  },
+  {
+   "object_id": "o3",
+   "cls": "safety_valve",
+   "position": {
+    "x": 13.588,
+    "y": 2.75,
+    "z": 7.625
+   },
+   "yaw_deg": 180.0,
+   "size": {
+    "x": 0.25,
+    "y": 0.25,
+    "z": 0.5
+   },
+   "deck": "floor",
+   "nozzles": {
+    "out": {
+     "x": 13.463,
+     "y": 2.75,
+     "z": 7.75
+    },
+    "in": {
+     "x": 13.713,
+     "y": 2.75,
+     "z": 7.75
+    }
+   },
+   "rationale": "[router] inline on 25-FO-008 (pipes p3, p4)"
+  },
+  {
+   "object_id": "o15",
+   "cls": "safety_valve",
+   "position": {
+    "x": 13.588,
+    "y": -0.25,
+    "z": 7.625
+   },
+   "yaw_deg": 180.0,
+   "size": {
+    "x": 0.25,
+    "y": 0.25,
+    "z": 0.5
+   },
+   "deck": "floor",
+   "nozzles": {
+    "out": {
+     "x": 13.463,
+     "y": -0.25,
+     "z": 7.75
+    },
+    "in": {
+     "x": 13.713,
+     "y": -0.25,
+     "z": 7.75
+    }
+   },
+   "rationale": "[router] inline on 25-FO-012 (pipes p24, p25)"
+  },
+  {
+   "object_id": "o10",
+   "cls": "instrument_local",
+   "position": {
+    "x": 15.75,
+    "y": 1.75,
+    "z": 7.8
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.15,
+    "y": 0.1,
+    "z": 0.15
+   },
+   "deck": "floor",
+   "nozzles": {
+    "n0": {
+     "x": 15.75,
+     "y": 1.75,
+     "z": 7.8
+    }
+   },
+   "rationale": "[router] instrument on a stub of its line"
+  },
+  {
+   "object_id": "o23",
+   "cls": "instrument_local",
+   "position": {
+    "x": 9.75,
+    "y": -1.25,
+    "z": 7.8
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.15,
+    "y": 0.1,
+    "z": 0.15
+   },
+   "deck": "floor",
+   "nozzles": {
+    "n0": {
+     "x": 9.75,
+     "y": -1.25,
+     "z": 7.8
+    }
+   },
+   "rationale": "[router] instrument on a stub of its line"
+  },
+  {
+   "object_id": "o24",
+   "cls": "instrument_local",
+   "position": {
+    "x": 15.75,
+    "y": -1.25,
+    "z": 7.8
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.15,
+    "y": 0.1,
+    "z": 0.15
+   },
+   "deck": "floor",
+   "nozzles": {
+    "n0": {
+     "x": 15.75,
+     "y": -1.25,
+     "z": 7.8
+    }
+   },
+   "rationale": "[router] instrument on a stub of its line"
+  },
+  {
+   "object_id": "o36",
+   "cls": "instrument_shared",
+   "position": {
+    "x": 31.5706,
+    "y": -7.4667,
+    "z": 8.0
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.15,
+    "y": 0.1,
+    "z": 0.15
+   },
+   "deck": "floor",
+   "nozzles": {
+    "n0": {
+     "x": 31.5706,
+     "y": -7.4667,
+     "z": 8.0
+    }
+   },
+   "rationale": "[router] instrument on a stub of its line"
+  },
+  {
+   "object_id": "o37",
+   "cls": "instrument_shared",
+   "position": {
+    "x": 35.0724,
+    "y": -10.4677,
+    "z": 8.0
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.15,
+    "y": 0.1,
+    "z": 0.15
+   },
+   "deck": "floor",
+   "nozzles": {
+    "n0": {
+     "x": 35.0724,
+     "y": -10.4677,
+     "z": 8.0
+    }
+   },
+   "rationale": "[router] instrument on a stub of its line"
+  },
+  {
+   "object_id": "o9",
+   "cls": "instrument_local",
+   "position": {
+    "x": 9.2,
+    "y": 2.25,
+    "z": 7.25
+   },
+   "yaw_deg": 180.0,
+   "size": {
+    "x": 0.15,
+    "y": 0.1,
+    "z": 0.15
+   },
+   "deck": "floor",
+   "nozzles": {
+    "n0": {
+     "x": 9.2,
+     "y": 2.25,
+     "z": 7.25
+    }
+   },
+   "rationale": "[router] instrument on a stub of its line"
+  }
+ ],
+ "routes": [
+  {
+   "pipe_id": "p1",
+   "points": [
+    {
+     "x": 3.0159,
+     "y": 4.6842,
+     "z": 3.8
+    },
+    {
+     "x": 3.0159,
+     "y": 4.4643,
+     "z": 3.8
+    },
+    {
+     "x": 3.0159,
+     "y": 4.4643,
+     "z": 3.75
+    },
+    {
+     "x": 3.25,
+     "y": 4.4643,
+     "z": 3.75
+    },
+    {
+     "x": 3.25,
+     "y": 4.25,
+     "z": 3.75
+    },
+    {
+     "x": 3.25,
+     "y": 4.25,
+     "z": 7.25
+    },
+    {
+     "x": 3.25,
+     "y": 4.1601,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-001"
+  },
+  {
+   "pipe_id": "p2",
+   "points": [
+    {
+     "x": 3.25,
+     "y": 3.7571,
+     "z": 7.25
+    },
+    {
+     "x": 3.25,
+     "y": 2.25,
+     "z": 7.25
+    },
+    {
+     "x": 6.75,
+     "y": 2.25,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-001"
+  },
+  {
+   "pipe_id": "p3",
+   "points": [
+    {
+     "x": 13.463,
+     "y": 2.75,
+     "z": 7.75
+    },
+    {
+     "x": 11.75,
+     "y": 2.75,
+     "z": 7.75
+    },
+    {
+     "x": 11.75,
+     "y": 2.75,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.034,
+   "medium": "fuel_oil",
+   "line_number": "25-FO-008"
+  },
+  {
+   "pipe_id": "p4",
+   "points": [
+    {
+     "x": 13.713,
+     "y": 2.75,
+     "z": 7.75
+    },
+    {
+     "x": 13.75,
+     "y": 2.75,
+     "z": 7.75
+    },
+    {
+     "x": 13.75,
+     "y": 2.75,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.034,
+   "medium": "fuel_oil",
+   "line_number": "25-FO-008"
+  },
+  {
+   "pipe_id": "p5",
+   "points": [
+    {
+     "x": 6.75,
+     "y": 2.25,
+     "z": 7.25
+    },
+    {
+     "x": 6.75,
+     "y": 2.25,
+     "z": 7.75
+    },
+    {
+     "x": 8.2109,
+     "y": 2.25,
+     "z": 7.75
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-005"
+  },
+  {
+   "pipe_id": "p6",
+   "points": [
+    {
+     "x": 6.75,
+     "y": 2.25,
+     "z": 7.25
+    },
+    {
+     "x": 6.75,
+     "y": 1.25,
+     "z": 7.25
+    },
+    {
+     "x": 5.25,
+     "y": 1.25,
+     "z": 7.25
+    },
+    {
+     "x": 5.25,
+     "y": -0.25,
+     "z": 7.25
+    },
+    {
+     "x": 5.75,
+     "y": -0.25,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-014"
+  },
+  {
+   "pipe_id": "p7",
+   "points": [
+    {
+     "x": 8.6139,
+     "y": 2.25,
+     "z": 7.75
+    },
+    {
+     "x": 8.9407,
+     "y": 2.25,
+     "z": 7.75
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-005"
+  },
+  {
+   "pipe_id": "p8",
+   "points": [
+    {
+     "x": 9.6317,
+     "y": 2.25,
+     "z": 7.75
+    },
+    {
+     "x": 9.75,
+     "y": 2.25,
+     "z": 7.75
+    },
+    {
+     "x": 9.75,
+     "y": 2.25,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-006"
+  },
+  {
+   "pipe_id": "p9",
+   "points": [
+    {
+     "x": 9.75,
+     "y": 2.25,
+     "z": 7.25
+    },
+    {
+     "x": 9.2,
+     "y": 2.25,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.0217,
+   "medium": "fuel_oil",
+   "line_number": null
+  },
+  {
+   "pipe_id": "p10",
+   "points": [
+    {
+     "x": 9.75,
+     "y": 2.25,
+     "z": 7.25
+    },
+    {
+     "x": 11.75,
+     "y": 2.25,
+     "z": 7.25
+    },
+    {
+     "x": 11.75,
+     "y": 2.75,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-006"
+  },
+  {
+   "pipe_id": "p11",
+   "points": [
+    {
+     "x": 10.8152,
+     "y": 5.6667,
+     "z": 3.161
+    },
+    {
+     "x": 10.5953,
+     "y": 5.6667,
+     "z": 3.161
+    },
+    {
+     "x": 10.5953,
+     "y": 5.6667,
+     "z": 3.25
+    },
+    {
+     "x": 10.25,
+     "y": 5.6667,
+     "z": 3.25
+    },
+    {
+     "x": 10.25,
+     "y": 5.75,
+     "z": 3.25
+    },
+    {
+     "x": 10.25,
+     "y": 5.75,
+     "z": 7.25
+    },
+    {
+     "x": 11.75,
+     "y": 5.75,
+     "z": 7.25
+    },
+    {
+     "x": 11.75,
+     "y": 2.75,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-006"
+  },
+  {
+   "pipe_id": "p12",
+   "points": [
+    {
+     "x": 11.1438,
+     "y": 5.6667,
+     "z": 3.572
+    },
+    {
+     "x": 11.1438,
+     "y": 5.6667,
+     "z": 4.25
+    },
+    {
+     "x": 11.25,
+     "y": 5.6667,
+     "z": 4.25
+    },
+    {
+     "x": 11.25,
+     "y": 5.75,
+     "z": 4.25
+    },
+    {
+     "x": 11.25,
+     "y": 5.75,
+     "z": 6.75
+    },
+    {
+     "x": 13.75,
+     "y": 5.75,
+     "z": 6.75
+    },
+    {
+     "x": 13.75,
+     "y": 5.75,
+     "z": 7.25
+    },
+    {
+     "x": 13.75,
+     "y": 2.75,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-007"
+  },
+  {
+   "pipe_id": "p13",
+   "points": [
+    {
+     "x": 13.75,
+     "y": 2.75,
+     "z": 7.25
+    },
+    {
+     "x": 15.75,
+     "y": 2.75,
+     "z": 7.25
+    },
+    {
+     "x": 15.75,
+     "y": 1.75,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-007"
+  },
+  {
+   "pipe_id": "p14",
+   "points": [
+    {
+     "x": 16.2316,
+     "y": 1.75,
+     "z": 7.25
+    },
+    {
+     "x": 15.75,
+     "y": 1.75,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-007"
+  },
+  {
+   "pipe_id": "p15",
+   "points": [
+    {
+     "x": 15.75,
+     "y": 1.75,
+     "z": 7.25
+    },
+    {
+     "x": 15.75,
+     "y": 1.75,
+     "z": 7.8
+    }
+   ],
+   "diameter": 0.0217,
+   "medium": "fuel_oil",
+   "line_number": null
+  },
+  {
+   "pipe_id": "p16",
+   "points": [
+    {
+     "x": 16.6346,
+     "y": 1.75,
+     "z": 7.25
+    },
+    {
+     "x": 16.7893,
+     "y": 1.75,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-007"
+  },
+  {
+   "pipe_id": "p17",
+   "points": [
+    {
+     "x": 17.1923,
+     "y": 1.75,
+     "z": 7.25
+    },
+    {
+     "x": 18.75,
+     "y": 1.75,
+     "z": 7.25
+    },
+    {
+     "x": 18.75,
+     "y": 0.75,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-007"
+  },
+  {
+   "pipe_id": "p18",
+   "points": [
+    {
+     "x": 3.0159,
+     "y": -4.1667,
+     "z": 3.8
+    },
+    {
+     "x": 3.0159,
+     "y": -3.9468,
+     "z": 3.8
+    },
+    {
+     "x": 3.0159,
+     "y": -3.9468,
+     "z": 3.75
+    },
+    {
+     "x": 3.25,
+     "y": -3.9468,
+     "z": 3.75
+    },
+    {
+     "x": 3.25,
+     "y": -3.75,
+     "z": 3.75
+    },
+    {
+     "x": 3.25,
+     "y": -3.75,
+     "z": 7.25
+    },
+    {
+     "x": 4.7341,
+     "y": -3.75,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-002"
+  },
+  {
+   "pipe_id": "p19",
+   "points": [
+    {
+     "x": 5.1371,
+     "y": -3.75,
+     "z": 7.25
+    },
+    {
+     "x": 5.75,
+     "y": -3.75,
+     "z": 7.25
+    },
+    {
+     "x": 5.75,
+     "y": -0.25,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-002"
+  },
+  {
+   "pipe_id": "p20",
+   "points": [
+    {
+     "x": 5.75,
+     "y": -0.25,
+     "z": 7.25
+    },
+    {
+     "x": 5.75,
+     "y": 0.25,
+     "z": 7.25
+    },
+    {
+     "x": 6.75,
+     "y": 0.25,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-014"
+  },
+  {
+   "pipe_id": "p21",
+   "points": [
+    {
+     "x": 5.25,
+     "y": -5.75,
+     "z": 6.8729
+    },
+    {
+     "x": 5.25,
+     "y": -5.75,
+     "z": 4.25
+    },
+    {
+     "x": 5.25,
+     "y": -5.6667,
+     "z": 4.25
+    },
+    {
+     "x": 5.2231,
+     "y": -5.6667,
+     "z": 4.25
+    },
+    {
+     "x": 5.2231,
+     "y": -5.6667,
+     "z": 4.325
+    },
+    {
+     "x": 5.0159,
+     "y": -5.6667,
+     "z": 4.325
+    }
+   ],
+   "diameter": 0.1143,
+   "medium": "fuel_oil",
+   "line_number": null
+  },
+  {
+   "pipe_id": "p22",
+   "points": [
+    {
+     "x": 18.75,
+     "y": 0.75,
+     "z": 7.25
+    },
+    {
+     "x": 18.75,
+     "y": -1.25,
+     "z": 7.25
+    },
+    {
+     "x": 17.0861,
+     "y": -1.25,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-011"
+  },
+  {
+   "pipe_id": "p23",
+   "points": [
+    {
+     "x": 18.75,
+     "y": 0.75,
+     "z": 7.25
+    },
+    {
+     "x": 19.685,
+     "y": 0.75,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-013"
+  },
+  {
+   "pipe_id": "p24",
+   "points": [
+    {
+     "x": 13.463,
+     "y": -0.25,
+     "z": 7.75
+    },
+    {
+     "x": 11.75,
+     "y": -0.25,
+     "z": 7.75
+    },
+    {
+     "x": 11.75,
+     "y": -0.25,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.034,
+   "medium": "fuel_oil",
+   "line_number": "25-FO-012"
+  },
+  {
+   "pipe_id": "p25",
+   "points": [
+    {
+     "x": 13.713,
+     "y": -0.25,
+     "z": 7.75
+    },
+    {
+     "x": 13.75,
+     "y": -0.25,
+     "z": 7.75
+    },
+    {
+     "x": 13.75,
+     "y": -0.25,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.034,
+   "medium": "fuel_oil",
+   "line_number": "25-FO-012"
+  },
+  {
+   "pipe_id": "p26",
+   "points": [
+    {
+     "x": 5.0159,
+     "y": 7.8352,
+     "z": 3.8
+    },
+    {
+     "x": 5.2358,
+     "y": 7.8352,
+     "z": 3.8
+    },
+    {
+     "x": 5.2358,
+     "y": 7.8352,
+     "z": 3.75
+    },
+    {
+     "x": 5.25,
+     "y": 7.8352,
+     "z": 3.75
+    },
+    {
+     "x": 5.25,
+     "y": 7.75,
+     "z": 3.75
+    },
+    {
+     "x": 5.25,
+     "y": 7.75,
+     "z": 7.25
+    },
+    {
+     "x": 7.75,
+     "y": 7.75,
+     "z": 7.25
+    },
+    {
+     "x": 7.75,
+     "y": 5.7404,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-004"
+  },
+  {
+   "pipe_id": "p27",
+   "points": [
+    {
+     "x": 7.75,
+     "y": 5.3374,
+     "z": 7.25
+    },
+    {
+     "x": 7.75,
+     "y": 0.25,
+     "z": 7.25
+    },
+    {
+     "x": 6.75,
+     "y": 0.25,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-004"
+  },
+  {
+   "pipe_id": "p28",
+   "points": [
+    {
+     "x": 6.75,
+     "y": 0.25,
+     "z": 7.25
+    },
+    {
+     "x": 6.75,
+     "y": -1.25,
+     "z": 7.25
+    },
+    {
+     "x": 7.7266,
+     "y": -1.25,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-009"
+  },
+  {
+   "pipe_id": "p29",
+   "points": [
+    {
+     "x": 8.1296,
+     "y": -1.25,
+     "z": 7.25
+    },
+    {
+     "x": 8.4489,
+     "y": -1.25,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-009"
+  },
+  {
+   "pipe_id": "p30",
+   "points": [
+    {
+     "x": 9.1399,
+     "y": -1.25,
+     "z": 7.25
+    },
+    {
+     "x": 9.75,
+     "y": -1.25,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-010"
+  },
+  {
+   "pipe_id": "p31",
+   "points": [
+    {
+     "x": 9.75,
+     "y": -1.25,
+     "z": 7.25
+    },
+    {
+     "x": 9.75,
+     "y": -1.25,
+     "z": 7.8
+    }
+   ],
+   "diameter": 0.0217,
+   "medium": "fuel_oil",
+   "line_number": null
+  },
+  {
+   "pipe_id": "p32",
+   "points": [
+    {
+     "x": 9.75,
+     "y": -1.25,
+     "z": 7.25
+    },
+    {
+     "x": 9.75,
+     "y": -0.25,
+     "z": 7.25
+    },
+    {
+     "x": 11.75,
+     "y": -0.25,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-010"
+  },
+  {
+   "pipe_id": "p33",
+   "points": [
+    {
+     "x": 10.8152,
+     "y": 6.9067,
+     "z": 3.161
+    },
+    {
+     "x": 10.5953,
+     "y": 6.9067,
+     "z": 3.161
+    },
+    {
+     "x": 10.5953,
+     "y": 6.9067,
+     "z": 3.25
+    },
+    {
+     "x": 10.25,
+     "y": 6.9067,
+     "z": 3.25
+    },
+    {
+     "x": 10.25,
+     "y": 6.75,
+     "z": 3.25
+    },
+    {
+     "x": 10.25,
+     "y": 6.75,
+     "z": 7.25
+    },
+    {
+     "x": 12.75,
+     "y": 6.75,
+     "z": 7.25
+    },
+    {
+     "x": 12.75,
+     "y": -0.25,
+     "z": 7.25
+    },
+    {
+     "x": 11.75,
+     "y": -0.25,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-010"
+  },
+  {
+   "pipe_id": "p34",
+   "points": [
+    {
+     "x": 11.1438,
+     "y": 6.9067,
+     "z": 3.572
+    },
+    {
+     "x": 11.1438,
+     "y": 6.9067,
+     "z": 4.25
+    },
+    {
+     "x": 11.25,
+     "y": 6.9067,
+     "z": 4.25
+    },
+    {
+     "x": 11.25,
+     "y": 6.75,
+     "z": 4.25
+    },
+    {
+     "x": 11.25,
+     "y": 6.75,
+     "z": 6.75
+    },
+    {
+     "x": 14.25,
+     "y": 6.75,
+     "z": 6.75
+    },
+    {
+     "x": 14.25,
+     "y": -0.25,
+     "z": 6.75
+    },
+    {
+     "x": 14.25,
+     "y": -0.25,
+     "z": 7.25
+    },
+    {
+     "x": 13.75,
+     "y": -0.25,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-011"
+  },
+  {
+   "pipe_id": "p35",
+   "points": [
+    {
+     "x": 13.75,
+     "y": -0.25,
+     "z": 7.25
+    },
+    {
+     "x": 13.75,
+     "y": -1.25,
+     "z": 7.25
+    },
+    {
+     "x": 15.75,
+     "y": -1.25,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-011"
+  },
+  {
+   "pipe_id": "p36",
+   "points": [
+    {
+     "x": 16.1732,
+     "y": -1.25,
+     "z": 7.25
+    },
+    {
+     "x": 15.75,
+     "y": -1.25,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-011"
+  },
+  {
+   "pipe_id": "p37",
+   "points": [
+    {
+     "x": 15.75,
+     "y": -1.25,
+     "z": 7.25
+    },
+    {
+     "x": 15.75,
+     "y": -1.25,
+     "z": 7.8
+    }
+   ],
+   "diameter": 0.0217,
+   "medium": "fuel_oil",
+   "line_number": null
+  },
+  {
+   "pipe_id": "p38",
+   "points": [
+    {
+     "x": 16.5762,
+     "y": -1.25,
+     "z": 7.25
+    },
+    {
+     "x": 16.6831,
+     "y": -1.25,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-011"
+  },
+  {
+   "pipe_id": "p39",
+   "points": [
+    {
+     "x": 20.425,
+     "y": 0.75,
+     "z": 7.25
+    },
+    {
+     "x": 23.25,
+     "y": 0.75,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-015"
+  },
+  {
+   "pipe_id": "p40",
+   "points": [
+    {
+     "x": 23.25,
+     "y": 0.75,
+     "z": 7.25
+    },
+    {
+     "x": 23.25,
+     "y": -5.75,
+     "z": 7.25
+    },
+    {
+     "x": 12.599,
+     "y": -5.75,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.0763,
+   "medium": "fuel_oil",
+   "line_number": "65-FO-016"
+  },
+  {
+   "pipe_id": "p41",
+   "points": [
+    {
+     "x": 23.25,
+     "y": 0.75,
+     "z": 7.25
+    },
+    {
+     "x": 30.75,
+     "y": 0.75,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-021"
+  },
+  {
+   "pipe_id": "p42",
+   "points": [
+    {
+     "x": 30.75,
+     "y": 0.75,
+     "z": 7.25
+    },
+    {
+     "x": 30.75,
+     "y": -3.25,
+     "z": 7.25
+    },
+    {
+     "x": 31.2545,
+     "y": -3.25,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.0763,
+   "medium": "fuel_oil",
+   "line_number": "65-FO-017"
+  },
+  {
+   "pipe_id": "p43",
+   "points": [
+    {
+     "x": 30.75,
+     "y": 0.75,
+     "z": 7.25
+    },
+    {
+     "x": 33.75,
+     "y": 0.75,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-021"
+  },
+  {
+   "pipe_id": "p44",
+   "points": [
+    {
+     "x": 33.75,
+     "y": 0.75,
+     "z": 7.25
+    },
+    {
+     "x": 33.75,
+     "y": -2.5383,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.0763,
+   "medium": "fuel_oil",
+   "line_number": "65-FO-018"
+  },
+  {
+   "pipe_id": "p45",
+   "points": [
+    {
+     "x": 33.75,
+     "y": 0.75,
+     "z": 7.25
+    },
+    {
+     "x": 35.75,
+     "y": 0.75,
+     "z": 7.25
+    },
+    {
+     "x": 35.75,
+     "y": -0.75,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-020"
+  },
+  {
+   "pipe_id": "p46",
+   "points": [
+    {
+     "x": 35.75,
+     "y": -0.75,
+     "z": 7.25
+    },
+    {
+     "x": 35.75,
+     "y": -3.25,
+     "z": 7.25
+    },
+    {
+     "x": 37.25,
+     "y": -3.25,
+     "z": 7.25
+    },
+    {
+     "x": 37.25,
+     "y": -4.8795,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.0763,
+   "medium": "fuel_oil",
+   "line_number": "65-FO-019"
+  },
+  {
+   "pipe_id": "p47",
+   "points": [
+    {
+     "x": 35.75,
+     "y": -0.75,
+     "z": 7.25
+    },
+    {
+     "x": 37.75,
+     "y": -0.75,
+     "z": 7.25
+    },
+    {
+     "x": 37.75,
+     "y": -5.7571,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-020"
+  },
+  {
+   "pipe_id": "p48",
+   "points": [
+    {
+     "x": 31.6045,
+     "y": -3.25,
+     "z": 7.25
+    },
+    {
+     "x": 33.25,
+     "y": -3.25,
+     "z": 7.25
+    },
+    {
+     "x": 33.25,
+     "y": -3.9667,
+     "z": 7.25
+    },
+    {
+     "x": 33.1714,
+     "y": -3.9667,
+     "z": 7.25
+    },
+    {
+     "x": 33.1714,
+     "y": -3.9667,
+     "z": 7.45
+    },
+    {
+     "x": 33.1714,
+     "y": -4.1667,
+     "z": 7.45
+    }
+   ],
+   "diameter": 0.0763,
+   "medium": "fuel_oil",
+   "line_number": "65-FO-017"
+  },
+  {
+   "pipe_id": "p49",
+   "points": [
+    {
+     "x": 33.75,
+     "y": -2.8883,
+     "z": 7.25
+    },
+    {
+     "x": 33.75,
+     "y": -3.75,
+     "z": 7.25
+    },
+    {
+     "x": 34.25,
+     "y": -3.75,
+     "z": 7.25
+    },
+    {
+     "x": 34.25,
+     "y": -3.9667,
+     "z": 7.25
+    },
+    {
+     "x": 34.1714,
+     "y": -3.9667,
+     "z": 7.25
+    },
+    {
+     "x": 34.1714,
+     "y": -3.9667,
+     "z": 7.45
+    },
+    {
+     "x": 34.1714,
+     "y": -4.1667,
+     "z": 7.45
+    }
+   ],
+   "diameter": 0.0763,
+   "medium": "fuel_oil",
+   "line_number": "65-FO-018"
+  },
+  {
+   "pipe_id": "p50",
+   "points": [
+    {
+     "x": 37.25,
+     "y": -5.2295,
+     "z": 7.25
+    },
+    {
+     "x": 37.25,
+     "y": -7.25,
+     "z": 7.25
+    },
+    {
+     "x": 37.25,
+     "y": -7.25,
+     "z": 6.25
+    },
+    {
+     "x": 37.25,
+     "y": -7.3177,
+     "z": 6.25
+    },
+    {
+     "x": 37.0224,
+     "y": -7.3177,
+     "z": 6.25
+    },
+    {
+     "x": 37.0224,
+     "y": -7.3177,
+     "z": 6.2
+    },
+    {
+     "x": 36.8224,
+     "y": -7.3177,
+     "z": 6.2
+    }
+   ],
+   "diameter": 0.0763,
+   "medium": "fuel_oil",
+   "line_number": "65-FO-019"
+  },
+  {
+   "pipe_id": "p51",
+   "points": [
+    {
+     "x": 37.75,
+     "y": -6.1601,
+     "z": 7.25
+    },
+    {
+     "x": 37.75,
+     "y": -6.25,
+     "z": 7.25
+    },
+    {
+     "x": 37.75,
+     "y": -6.25,
+     "z": 5.25
+    },
+    {
+     "x": 37.75,
+     "y": -6.0366,
+     "z": 5.25
+    },
+    {
+     "x": 37.5734,
+     "y": -6.0366,
+     "z": 5.25
+    },
+    {
+     "x": 37.5734,
+     "y": -6.0366,
+     "z": 5.1
+    },
+    {
+     "x": 37.5734,
+     "y": -5.8167,
+     "z": 5.1
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": "125-FO-020"
+  },
+  {
+   "pipe_id": "p52",
+   "points": [
+    {
+     "x": 12.249,
+     "y": -5.75,
+     "z": 7.25
+    },
+    {
+     "x": 5.6271,
+     "y": -5.75,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.0763,
+   "medium": "fuel_oil",
+   "line_number": "65-FO-016"
+  },
+  {
+   "pipe_id": "p53",
+   "points": [
+    {
+     "x": 31.5706,
+     "y": -7.1667,
+     "z": 7.45
+    },
+    {
+     "x": 31.5706,
+     "y": -7.4667,
+     "z": 7.45
+    },
+    {
+     "x": 31.5706,
+     "y": -7.4667,
+     "z": 8.0
+    }
+   ],
+   "diameter": 0.0217,
+   "medium": "fuel_oil",
+   "line_number": null
+  },
+  {
+   "pipe_id": "p54",
+   "points": [
+    {
+     "x": 35.0724,
+     "y": -10.1677,
+     "z": 7.45
+    },
+    {
+     "x": 35.0724,
+     "y": -10.4677,
+     "z": 7.45
+    },
+    {
+     "x": 35.0724,
+     "y": -10.4677,
+     "z": 8.0
+    }
+   ],
+   "diameter": 0.0217,
+   "medium": "fuel_oil",
+   "line_number": null
+  },
+  {
+   "pipe_id": "sheet_link:o14:o25",
+   "points": [
+    {
+     "x": 20.03,
+     "y": 0.75,
+     "z": 7.25
+    },
+    {
+     "x": 20.08,
+     "y": 0.75,
+     "z": 7.25
+    }
+   ],
+   "diameter": 0.1398,
+   "medium": "fuel_oil",
+   "line_number": null
+  },
+  {
+   "pipe_id": "sheet_link:o33:o13",
+   "points": [
+    {
+     "x": 5.3271,
+     "y": -5.75,
+     "z": 7.25
+    },
+    {
+     "x": 5.25,
+     "y": -5.75,
+     "z": 7.25
+    },
+    {
+     "x": 5.25,
+     "y": -5.75,
+     "z": 7.1729
+    }
+   ],
+   "diameter": 0.0763,
+   "medium": "fuel_oil",
+   "line_number": null
+  }
+ ],
+ "notes": [
+  "3D arrangement inferred from a P&ID (which has no spatial data): a plausible engine-room layout for visualisation, not a survey or a design",
+  "engine room envelope is a heuristic for a large container ship: ~38 m ER length, ~34 m usable breadth, D ~ 26 m (ship type 24,000 TEU CONTAINER CARRIER); not a survey",
+  "sheets: 2 linked off-page connector pair(s) routed as one continuous pipe (route ids sheet_link:<a>:<b>), both connectors shown as markers on it: o14-o25, o33-o13",
+  "plan: heuristic arrangement from marine rules of thumb and the drawing position (bow right, port top)",
+  "planner: heuristic; items by source: heuristic 9",
+  "solver: ok 9; unsatisfied relations 0; covered nozzles 0",
+  "router: 34 chains (6 stubs), A* 28 (widened 0, soft obstacles 0, re-routed for inline items 0), Manhattan fallback 0, segments through equipment 0, pipe/inline-item clashes 0, pipe-pipe clashes 0 (pipes sharing no node), inline item overlaps 0, items outside the room 0, total pipe length 199.0 m, grid 0.5 m, 0.21 s",
+  "layout built in 0.23 s"
+ ],
+ "llm": {
+  "backend": "none",
+  "model": null,
+  "calls": 0,
+  "prompt_tokens": 0,
+  "completion_tokens": 0,
+  "seconds": 0.0,
+  "errors": []
+ }
+}

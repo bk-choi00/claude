@@ -227,4 +227,16 @@ def summarize(result: RunResult) -> dict[str, Any]:
     if result.layout is not None:
         out["layout"] = {"planner": result.layout.planner, "placements": len(result.layout.placements),
                          "routes": len(result.layout.routes)}
+    meta = result.report.meta if result.report is not None else doc.meta
+    skipped = {k: list(meta.get(k) or doc.meta.get(k) or []) for k in ("unreadable_pages", "empty_pages")}
+    if any(skipped.values()):
+        out["pages_not_analysed"] = skipped
+    if doc.meta.get("damaged"):
+        out["damaged_pdf"] = doc.meta["damaged"]
     return out
+
+
+def nothing_extracted(result: RunResult) -> bool:
+    """True when no page could be analysed (e.g. a scanned-only PDF): the CLI exits 1."""
+    return not result.document.objects and bool(
+        result.document.meta.get("unreadable_pages") or result.document.meta.get("empty_pages"))

@@ -1,0 +1,43 @@
+{
+ "llm": "none",
+ "objects": 37,
+ "pipes": 54,
+ "texts": 233,
+ "system": "fuel_oil_transfer",
+ "drawing_no": "4431-PD-FO-19",
+ "timings_s": {
+  "extract": 1.38,
+  "link_sheets": 0.01,
+  "analyze": 0.01,
+  "model3d": 0.46,
+  "report": 0.22
+ },
+ "outputs": {
+  "extracted": "samples/02_fo_transfer_multisheet/output/extracted.json",
+  "document": "samples/02_fo_transfer_multisheet/output/document.json",
+  "analysis": "samples/02_fo_transfer_multisheet/output/analysis.json",
+  "layout": "samples/02_fo_transfer_multisheet/output/layout3d.json",
+  "glb": "samples/02_fo_transfer_multisheet/output/model.glb",
+  "viewer:threejs": "samples/02_fo_transfer_multisheet/output/viewer.html",
+  "report": "samples/02_fo_transfer_multisheet/output/report.html"
+ },
+ "findings": {
+  "pass": 15,
+  "not_applicable": 16,
+  "fail": 1
+ },
+ "llm_usage": {
+  "backend": "none",
+  "model": null,
+  "calls": 0,
+  "prompt_tokens": 0,
+  "completion_tokens": 0,
+  "seconds": 0.0,
+  "errors": []
+ },
+ "layout": {
+  "planner": "heuristic",
+  "placements": 37,
+  "routes": 56
+ }
+}

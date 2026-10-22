@@ -1,0 +1,8593 @@
+{
+ "schema_version": "1.0",
+ "source": "synthetic:7",
+ "pages": [
+  {
+   "index": 0,
+   "width": 2384.0,
+   "height": 1684.0,
+   "rotation": 0,
+   "drawing_area": {
+    "x0": 40.06008367258971,
+    "y0": 40.06008367258971,
+    "x1": 1823.9399163274102,
+    "y1": 1643.9399163274102
+   }
+  }
+ ],
+ "info": {
+  "drawing_no": "57694-BA447",
+  "title": "BALLAST WATER SYSTEM DIAGRAMMATIC PIPING",
+  "system": "ballast",
+  "systems": [
+   "ballast"
+  ],
+  "hull_no": "H.7694",
+  "ship_type": "24,000 TEU CONTAINER CARRIER",
+  "revision": "3",
+  "sheet": "1 OF 1",
+  "scale": "NONE",
+  "extra": {
+   "yard": "HALCYON OFFSHORE & SHIPBUILDING",
+   "owner": "POLARIS MARITIME CORP.",
+   "date": "2026-11-24",
+   "paper": "A1",
+   "system_name": "Ballast water system"
+  }
+ },
+ "objects": [
+  {
+   "id": "o1",
+   "cls": "sea_chest",
+   "category": "equipment",
+   "bbox": {
+    "x0": 258.3091,
+    "y0": 479.5977,
+    "x1": 289.4707,
+    "y1": 498.6158
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": null,
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "out",
+     "position": {
+      "x": 273.8899,
+      "y": 479.5977
+     },
+     "direction": {
+      "x": 0.0,
+      "y": -1.0
+     }
+    }
+   ],
+   "attributes": {
+    "name": "HIGH SEA CHEST",
+    "role": "source"
+   },
+   "text_ids": [
+    "t45"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o2",
+   "cls": "butterfly_valve",
+   "category": "valve",
+   "bbox": {
+    "x0": 349.5523,
+    "y0": 446.6719,
+    "x1": 358.2542,
+    "y1": 465.8162
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "BA011V",
+   "actuator": "hydraulic",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 349.5523,
+      "y": 459.7248
+     },
+     "direction": {
+      "x": -1.0,
+      "y": 0.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 358.2542,
+      "y": 459.7248
+     },
+     "direction": {
+      "x": 1.0,
+      "y": 0.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [
+    "t57"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o3",
+   "cls": "sea_chest",
+   "category": "equipment",
+   "bbox": {
+    "x0": 261.6015,
+    "y0": 601.0358,
+    "x1": 289.4707,
+    "y1": 621.8724
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": null,
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "out",
+     "position": {
+      "x": 275.5361,
+      "y": 601.0358
+     },
+     "direction": {
+      "x": 0.0,
+      "y": -1.0
+     }
+    }
+   ],
+   "attributes": {
+    "name": "LOW SEA CHEST",
+    "role": "source"
+   },
+   "text_ids": [
+    "t53"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o4",
+   "cls": "butterfly_valve",
+   "category": "valve",
+   "bbox": {
+    "x0": 351.1985,
+    "y0": 568.11,
+    "x1": 359.9004,
+    "y1": 587.2544
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "BA012V",
+   "actuator": "hydraulic",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 351.1985,
+      "y": 581.163
+     },
+     "direction": {
+      "x": -1.0,
+      "y": 0.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 359.9004,
+      "y": 581.163
+     },
+     "direction": {
+      "x": 1.0,
+      "y": 0.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [
+    "t65"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o5",
+   "cls": "off_page_connector",
+   "category": "connector",
+   "bbox": {
+    "x0": 256.8987,
+    "y0": 702.0905,
+    "x1": 289.4707,
+    "y1": 712.2692
+   },
+   "page": 0,
+   "rotation": 180,
+   "mirrored": false,
+   "tag": null,
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 289.4707,
+      "y": 707.1798
+     },
+     "direction": {
+      "x": 1.0,
+      "y": 0.0
+     }
+    }
+   ],
+   "attributes": {
+    "name": "FROM DEBALLAST MAIN",
+    "ref": "K5",
+    "role": "source",
+    "direction": "in",
+    "arrow_along_flow": false
+   },
+   "text_ids": [
+    "t1",
+    "t56"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o6",
+   "cls": "butterfly_valve",
+   "category": "valve",
+   "bbox": {
+    "x0": 361.4136,
+    "y0": 694.1269,
+    "x1": 370.1156,
+    "y1": 713.2712
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "BA013V",
+   "actuator": "hydraulic",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 361.4136,
+      "y": 707.1798
+     },
+     "direction": {
+      "x": -1.0,
+      "y": 0.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 370.1156,
+      "y": 707.1798
+     },
+     "direction": {
+      "x": 1.0,
+      "y": 0.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [
+    "t74"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o7",
+   "cls": "butterfly_valve",
+   "category": "valve",
+   "bbox": {
+    "x0": 505.9063,
+    "y0": 430.4244,
+    "x1": 514.6083,
+    "y1": 449.5687
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "BA014V",
+   "actuator": "hydraulic",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 505.9063,
+      "y": 443.4773
+     },
+     "direction": {
+      "x": -1.0,
+      "y": 0.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 514.6083,
+      "y": 443.4773
+     },
+     "direction": {
+      "x": 1.0,
+      "y": 0.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [
+    "t58"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o8",
+   "cls": "instrument_panel",
+   "category": "instrument",
+   "bbox": {
+    "x0": 542.9613,
+    "y0": 400.6944,
+    "x1": 564.5432,
+    "y1": 422.2764
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "PI-710",
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "n0",
+     "position": {
+      "x": 553.7522,
+      "y": 422.2764
+     },
+     "direction": {
+      "x": 0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {
+    "service": "pump suction",
+    "letters": "PI",
+    "loop": "710"
+   },
+   "text_ids": [
+    "t2",
+    "t3"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o9",
+   "cls": "pump_centrifugal",
+   "category": "equipment",
+   "bbox": {
+    "x0": 594.6235,
+    "y0": 431.7297,
+    "x1": 618.1187,
+    "y1": 455.225
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": null,
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "suction",
+     "position": {
+      "x": 594.6235,
+      "y": 443.4773
+     },
+     "direction": {
+      "x": -1.0,
+      "y": 0.0
+     }
+    },
+    {
+     "name": "discharge",
+     "position": {
+      "x": 606.3711,
+      "y": 431.7297
+     },
+     "direction": {
+      "x": 0.0,
+      "y": -1.0
+     }
+    }
+   ],
+   "attributes": {
+    "name": "NO.1 BALLAST PUMP"
+   },
+   "text_ids": [
+    "t44"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o10",
+   "cls": "instrument_panel",
+   "category": "instrument",
+   "bbox": {
+    "x0": 637.6181,
+    "y0": 368.1725,
+    "x1": 659.2,
+    "y1": 389.7545
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "PI-711",
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "n0",
+     "position": {
+      "x": 648.4091,
+      "y": 389.7545
+     },
+     "direction": {
+      "x": 0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {
+    "service": "pump discharge",
+    "letters": "PI",
+    "loop": "711"
+   },
+   "text_ids": [
+    "t4",
+    "t5"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o11",
+   "cls": "instrument_shared",
+   "category": "instrument",
+   "bbox": {
+    "x0": 675.8576,
+    "y0": 368.1725,
+    "x1": 697.4396,
+    "y1": 389.7545
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "PT-712",
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "n0",
+     "position": {
+      "x": 686.6486,
+      "y": 389.7545
+     },
+     "direction": {
+      "x": 0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {
+    "service": "pump discharge",
+    "letters": "PT",
+    "loop": "712"
+   },
+   "text_ids": [
+    "t6",
+    "t7"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o12",
+   "cls": "check_valve",
+   "category": "valve",
+   "bbox": {
+    "x0": 717.1708,
+    "y0": 405.7343,
+    "x1": 734.5747,
+    "y1": 416.1766
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "BA015V",
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 717.1708,
+      "y": 410.9555
+     },
+     "direction": {
+      "x": -1.0,
+      "y": 0.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 734.5747,
+      "y": 410.9555
+     },
+     "direction": {
+      "x": 1.0,
+      "y": 0.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [
+    "t59"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o13",
+   "cls": "butterfly_valve",
+   "category": "valve",
+   "bbox": {
+    "x0": 763.5364,
+    "y0": 397.9025,
+    "x1": 772.2384,
+    "y1": 417.0468
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "BA016V",
+   "actuator": "hydraulic",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 763.5364,
+      "y": 410.9555
+     },
+     "direction": {
+      "x": -1.0,
+      "y": 0.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 772.2384,
+      "y": 410.9555
+     },
+     "direction": {
+      "x": 1.0,
+      "y": 0.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [
+    "t60"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o14",
+   "cls": "butterfly_valve",
+   "category": "valve",
+   "bbox": {
+    "x0": 505.9063,
+    "y0": 605.8263,
+    "x1": 514.6083,
+    "y1": 624.9706
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "BA017V",
+   "actuator": "hydraulic",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 505.9063,
+      "y": 618.8793
+     },
+     "direction": {
+      "x": -1.0,
+      "y": 0.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 514.6083,
+      "y": 618.8793
+     },
+     "direction": {
+      "x": 1.0,
+      "y": 0.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [
+    "t61"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o15",
+   "cls": "instrument_panel",
+   "category": "instrument",
+   "bbox": {
+    "x0": 542.9613,
+    "y0": 576.0963,
+    "x1": 564.5432,
+    "y1": 597.6783
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "PI-713",
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "n0",
+     "position": {
+      "x": 553.7522,
+      "y": 597.6783
+     },
+     "direction": {
+      "x": 0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {
+    "service": "pump suction",
+    "letters": "PI",
+    "loop": "713"
+   },
+   "text_ids": [
+    "t8",
+    "t9"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o16",
+   "cls": "pump_centrifugal",
+   "category": "equipment",
+   "bbox": {
+    "x0": 594.6235,
+    "y0": 607.1316,
+    "x1": 618.1187,
+    "y1": 630.6269
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": null,
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "suction",
+     "position": {
+      "x": 594.6235,
+      "y": 618.8793
+     },
+     "direction": {
+      "x": -1.0,
+      "y": 0.0
+     }
+    },
+    {
+     "name": "discharge",
+     "position": {
+      "x": 606.3711,
+      "y": 607.1316
+     },
+     "direction": {
+      "x": 0.0,
+      "y": -1.0
+     }
+    }
+   ],
+   "attributes": {
+    "name": "NO.2 BALLAST PUMP",
+    "rating": "2,000 M3/H x 30 MTH"
+   },
+   "text_ids": [
+    "t46",
+    "t47"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o17",
+   "cls": "instrument_panel",
+   "category": "instrument",
+   "bbox": {
+    "x0": 637.6181,
+    "y0": 543.5744,
+    "x1": 659.2,
+    "y1": 565.1564
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "PI-714",
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "n0",
+     "position": {
+      "x": 648.4091,
+      "y": 565.1564
+     },
+     "direction": {
+      "x": 0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {
+    "service": "pump discharge",
+    "letters": "PI",
+    "loop": "714"
+   },
+   "text_ids": [
+    "t10",
+    "t11"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o18",
+   "cls": "instrument_shared",
+   "category": "instrument",
+   "bbox": {
+    "x0": 675.8576,
+    "y0": 543.5744,
+    "x1": 697.4396,
+    "y1": 565.1564
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "PT-715",
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "n0",
+     "position": {
+      "x": 686.6486,
+      "y": 565.1564
+     },
+     "direction": {
+      "x": 0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {
+    "service": "pump discharge",
+    "letters": "PT",
+    "loop": "715"
+   },
+   "text_ids": [
+    "t12",
+    "t13"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o19",
+   "cls": "check_valve",
+   "category": "valve",
+   "bbox": {
+    "x0": 717.1708,
+    "y0": 581.1362,
+    "x1": 734.5747,
+    "y1": 591.5786
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": null,
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 717.1708,
+      "y": 586.3574
+     },
+     "direction": {
+      "x": -1.0,
+      "y": 0.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 734.5747,
+      "y": 586.3574
+     },
+     "direction": {
+      "x": 1.0,
+      "y": 0.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o20",
+   "cls": "butterfly_valve",
+   "category": "valve",
+   "bbox": {
+    "x0": 763.5364,
+    "y0": 573.3044,
+    "x1": 772.2384,
+    "y1": 592.4488
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "BA018V",
+   "actuator": "hydraulic",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 763.5364,
+      "y": 586.3574
+     },
+     "direction": {
+      "x": -1.0,
+      "y": 0.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 772.2384,
+      "y": 586.3574
+     },
+     "direction": {
+      "x": 1.0,
+      "y": 0.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [
+    "t62"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o21",
+   "cls": "butterfly_valve",
+   "category": "valve",
+   "bbox": {
+    "x0": 505.9063,
+    "y0": 758.268,
+    "x1": 514.6083,
+    "y1": 777.4124
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "BA019V",
+   "actuator": "hydraulic",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 505.9063,
+      "y": 771.321
+     },
+     "direction": {
+      "x": -1.0,
+      "y": 0.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 514.6083,
+      "y": 771.321
+     },
+     "direction": {
+      "x": 1.0,
+      "y": 0.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [
+    "t63"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o22",
+   "cls": "instrument_panel",
+   "category": "instrument",
+   "bbox": {
+    "x0": 542.9613,
+    "y0": 728.538,
+    "x1": 564.5432,
+    "y1": 750.12
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "PI-716",
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "n0",
+     "position": {
+      "x": 553.7522,
+      "y": 750.12
+     },
+     "direction": {
+      "x": 0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {
+    "service": "pump suction",
+    "letters": "PI",
+    "loop": "716"
+   },
+   "text_ids": [
+    "t14",
+    "t15"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o23",
+   "cls": "pump_centrifugal",
+   "category": "equipment",
+   "bbox": {
+    "x0": 594.6235,
+    "y0": 759.5733,
+    "x1": 618.1187,
+    "y1": 783.0686
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": null,
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "suction",
+     "position": {
+      "x": 594.6235,
+      "y": 771.321
+     },
+     "direction": {
+      "x": -1.0,
+      "y": 0.0
+     }
+    },
+    {
+     "name": "discharge",
+     "position": {
+      "x": 606.3711,
+      "y": 759.5733
+     },
+     "direction": {
+      "x": 0.0,
+      "y": -1.0
+     }
+    }
+   ],
+   "attributes": {
+    "name": "NO.3 BALLAST PUMP",
+    "rating": "2,000 M3/H x 30 MTH"
+   },
+   "text_ids": [
+    "t48",
+    "t49"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o24",
+   "cls": "instrument_panel",
+   "category": "instrument",
+   "bbox": {
+    "x0": 637.6181,
+    "y0": 696.0162,
+    "x1": 659.2,
+    "y1": 717.5981
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "PI-717",
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "n0",
+     "position": {
+      "x": 648.4091,
+      "y": 717.5981
+     },
+     "direction": {
+      "x": 0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {
+    "service": "pump discharge",
+    "letters": "PI",
+    "loop": "717"
+   },
+   "text_ids": [
+    "t16",
+    "t17"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o25",
+   "cls": "instrument_shared",
+   "category": "instrument",
+   "bbox": {
+    "x0": 675.8576,
+    "y0": 696.0162,
+    "x1": 697.4396,
+    "y1": 717.5981
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "PT-718",
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "n0",
+     "position": {
+      "x": 686.6486,
+      "y": 717.5981
+     },
+     "direction": {
+      "x": 0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {
+    "service": "pump discharge",
+    "letters": "PT",
+    "loop": "718"
+   },
+   "text_ids": [
+    "t18",
+    "t19"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o26",
+   "cls": "check_valve",
+   "category": "valve",
+   "bbox": {
+    "x0": 717.1708,
+    "y0": 733.5779,
+    "x1": 734.5747,
+    "y1": 744.0203
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": null,
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 717.1708,
+      "y": 738.7991
+     },
+     "direction": {
+      "x": -1.0,
+      "y": 0.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 734.5747,
+      "y": 738.7991
+     },
+     "direction": {
+      "x": 1.0,
+      "y": 0.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o27",
+   "cls": "butterfly_valve",
+   "category": "valve",
+   "bbox": {
+    "x0": 763.5364,
+    "y0": 725.7462,
+    "x1": 772.2384,
+    "y1": 744.8905
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "BA020V",
+   "actuator": "hydraulic",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 763.5364,
+      "y": 738.7991
+     },
+     "direction": {
+      "x": -1.0,
+      "y": 0.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 772.2384,
+      "y": 738.7991
+     },
+     "direction": {
+      "x": 1.0,
+      "y": 0.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [
+    "t64"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o28",
+   "cls": "duplex_filter",
+   "category": "equipment",
+   "bbox": {
+    "x0": 315.387,
+    "y0": 1093.7339,
+    "x1": 332.7909,
+    "y1": 1111.1378
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": null,
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 315.387,
+      "y": 1102.4359
+     },
+     "direction": {
+      "x": -1.0,
+      "y": 0.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 332.7909,
+      "y": 1102.4359
+     },
+     "direction": {
+      "x": 1.0,
+      "y": 0.0
+     }
+    }
+   ],
+   "attributes": {
+    "name": "NO.1 BWTS FILTER"
+   },
+   "text_ids": [
+    "t50"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o29",
+   "cls": "bwts_unit",
+   "category": "equipment",
+   "bbox": {
+    "x0": 407.363,
+    "y0": 1094.0282,
+    "x1": 445.2123,
+    "y1": 1110.8435
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": null,
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 407.363,
+      "y": 1102.4359
+     },
+     "direction": {
+      "x": -1.0,
+      "y": 0.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 445.2123,
+      "y": 1102.4359
+     },
+     "direction": {
+      "x": 1.0,
+      "y": 0.0
+     }
+    }
+   ],
+   "attributes": {
+    "name": "B.W.T. UNIT",
+    "rating": "1,500 M3/H"
+   },
+   "text_ids": [
+    "t51",
+    "t52"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o30",
+   "cls": "instrument_shared",
+   "category": "instrument",
+   "bbox": {
+    "x0": 498.955,
+    "y0": 1060.3779,
+    "x1": 520.5369,
+    "y1": 1081.9598
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "QT-710",
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "n0",
+     "position": {
+      "x": 509.746,
+      "y": 1081.9598
+     },
+     "direction": {
+      "x": 0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {
+    "service": "UV intensity",
+    "letters": "QT",
+    "loop": "710"
+   },
+   "text_ids": [
+    "t20",
+    "t21"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o31",
+   "cls": "flow_meter",
+   "category": "equipment",
+   "bbox": {
+    "x0": 584.8963,
+    "y0": 1097.2147,
+    "x1": 599.5156,
+    "y1": 1107.657
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": null,
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 584.8963,
+      "y": 1102.4359
+     },
+     "direction": {
+      "x": -1.0,
+      "y": 0.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 599.5156,
+      "y": 1102.4359
+     },
+     "direction": {
+      "x": 1.0,
+      "y": 0.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o32",
+   "cls": "instrument_shared",
+   "category": "instrument",
+   "bbox": {
+    "x0": 627.8683,
+    "y0": 1060.3779,
+    "x1": 649.4503,
+    "y1": 1081.9598
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "FT-710",
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "n0",
+     "position": {
+      "x": 638.6593,
+      "y": 1081.9598
+     },
+     "direction": {
+      "x": 0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {
+    "service": "ballast flow",
+    "letters": "FT",
+    "loop": "710"
+   },
+   "text_ids": [
+    "t22",
+    "t23"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o33",
+   "cls": "butterfly_valve",
+   "category": "valve",
+   "bbox": {
+    "x0": 666.5013,
+    "y0": 1089.3829,
+    "x1": 675.2033,
+    "y1": 1108.5272
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "BA021V",
+   "actuator": "hydraulic",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 666.5013,
+      "y": 1102.4359
+     },
+     "direction": {
+      "x": -1.0,
+      "y": 0.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 675.2033,
+      "y": 1102.4359
+     },
+     "direction": {
+      "x": 1.0,
+      "y": 0.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [
+    "t66"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o34",
+   "cls": "butterfly_valve",
+   "category": "valve",
+   "bbox": {
+    "x0": 369.8452,
+    "y0": 1135.5236,
+    "x1": 378.5471,
+    "y1": 1154.6679
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "BA022V",
+   "actuator": "hydraulic",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 369.8452,
+      "y": 1148.5766
+     },
+     "direction": {
+      "x": -1.0,
+      "y": 0.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 378.5471,
+      "y": 1148.5766
+     },
+     "direction": {
+      "x": 1.0,
+      "y": 0.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [
+    "t67"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o35",
+   "cls": "butterfly_valve",
+   "category": "valve",
+   "bbox": {
+    "x0": 851.5493,
+    "y0": 1178.0131,
+    "x1": 870.6936,
+    "y1": 1186.715
+   },
+   "page": 0,
+   "rotation": 90,
+   "mirrored": false,
+   "tag": "BA023V",
+   "actuator": "hydraulic",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 857.6407,
+      "y": 1178.0131
+     },
+     "direction": {
+      "x": 0.0,
+      "y": -1.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 857.6407,
+      "y": 1186.715
+     },
+     "direction": {
+      "x": 0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [
+    "t68"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o36",
+   "cls": "tank",
+   "category": "equipment",
+   "bbox": {
+    "x0": 826.8515,
+    "y0": 1227.0252,
+    "x1": 887.2095,
+    "y1": 1253.4463
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": null,
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "n0",
+     "position": {
+      "x": 857.6407,
+      "y": 1227.0252
+     },
+     "direction": {
+      "x": -0.0,
+      "y": -1.0
+     }
+    },
+    {
+     "name": "n1",
+     "position": {
+      "x": 857.0305,
+      "y": 1253.4463
+     },
+     "direction": {
+      "x": -0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {
+    "name": "F.P.TK",
+    "role": "sink"
+   },
+   "text_ids": [
+    "t24"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o37",
+   "cls": "instrument_shared",
+   "category": "instrument",
+   "bbox": {
+    "x0": 846.2395,
+    "y0": 1269.1098,
+    "x1": 867.8215,
+    "y1": 1290.6918
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "LT-710",
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "n0",
+     "position": {
+      "x": 857.0305,
+      "y": 1269.1098
+     },
+     "direction": {
+      "x": 0.0,
+      "y": -1.0
+     }
+    }
+   ],
+   "attributes": {
+    "service": "tank level",
+    "letters": "LT",
+    "loop": "710"
+   },
+   "text_ids": [
+    "t25",
+    "t26"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o38",
+   "cls": "butterfly_valve",
+   "category": "valve",
+   "bbox": {
+    "x0": 987.7193,
+    "y0": 1178.0131,
+    "x1": 1006.8636,
+    "y1": 1186.715
+   },
+   "page": 0,
+   "rotation": 90,
+   "mirrored": false,
+   "tag": "BA024V",
+   "actuator": "hydraulic",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 993.8107,
+      "y": 1178.0131
+     },
+     "direction": {
+      "x": 0.0,
+      "y": -1.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 993.8107,
+      "y": 1186.715
+     },
+     "direction": {
+      "x": 0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [
+    "t69"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o39",
+   "cls": "tank",
+   "category": "equipment",
+   "bbox": {
+    "x0": 964.0662,
+    "y0": 1227.0252,
+    "x1": 1022.3762,
+    "y1": 1253.272
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": null,
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "n0",
+     "position": {
+      "x": 993.8107,
+      "y": 1227.0252
+     },
+     "direction": {
+      "x": -0.0,
+      "y": -1.0
+     }
+    }
+   ],
+   "attributes": {
+    "name": "NO.1 W.B.TK (P)",
+    "rating": "6,200 M3",
+    "role": "sink"
+   },
+   "text_ids": [
+    "t27",
+    "t28"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o40",
+   "cls": "butterfly_valve",
+   "category": "valve",
+   "bbox": {
+    "x0": 1124.5623,
+    "y0": 1178.0131,
+    "x1": 1143.7066,
+    "y1": 1186.715
+   },
+   "page": 0,
+   "rotation": 90,
+   "mirrored": false,
+   "tag": "BA025V",
+   "actuator": "hydraulic",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 1130.6537,
+      "y": 1178.0131
+     },
+     "direction": {
+      "x": 0.0,
+      "y": -1.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 1130.6537,
+      "y": 1186.715
+     },
+     "direction": {
+      "x": 0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [
+    "t70"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o41",
+   "cls": "tank",
+   "category": "equipment",
+   "bbox": {
+    "x0": 1099.2329,
+    "y0": 1227.0252,
+    "x1": 1160.829,
+    "y1": 1256.2655
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": null,
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "n0",
+     "position": {
+      "x": 1130.6537,
+      "y": 1227.0252
+     },
+     "direction": {
+      "x": -0.0,
+      "y": -1.0
+     }
+    },
+    {
+     "name": "n1",
+     "position": {
+      "x": 1130.0309,
+      "y": 1256.2655
+     },
+     "direction": {
+      "x": -0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {
+    "name": "NO.1 W.B.TK (S)",
+    "role": "sink"
+   },
+   "text_ids": [
+    "t29"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o42",
+   "cls": "instrument_shared",
+   "category": "instrument",
+   "bbox": {
+    "x0": 1119.24,
+    "y0": 1271.929,
+    "x1": 1140.8219,
+    "y1": 1293.511
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "LT-711",
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "n0",
+     "position": {
+      "x": 1130.0309,
+      "y": 1271.929
+     },
+     "direction": {
+      "x": 0.0,
+      "y": -1.0
+     }
+    }
+   ],
+   "attributes": {
+    "service": "tank level",
+    "letters": "LT",
+    "loop": "711"
+   },
+   "text_ids": [
+    "t30",
+    "t31"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o43",
+   "cls": "butterfly_valve",
+   "category": "valve",
+   "bbox": {
+    "x0": 1261.3388,
+    "y0": 1178.0131,
+    "x1": 1280.4831,
+    "y1": 1186.715
+   },
+   "page": 0,
+   "rotation": 90,
+   "mirrored": false,
+   "tag": "BA026V",
+   "actuator": "hydraulic",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 1267.4302,
+      "y": 1178.0131
+     },
+     "direction": {
+      "x": 0.0,
+      "y": -1.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 1267.4302,
+      "y": 1186.715
+     },
+     "direction": {
+      "x": 0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [
+    "t71"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o44",
+   "cls": "tank",
+   "category": "equipment",
+   "bbox": {
+    "x0": 1237.6857,
+    "y0": 1227.0252,
+    "x1": 1295.9957,
+    "y1": 1260.5103
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": null,
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "n0",
+     "position": {
+      "x": 1267.4302,
+      "y": 1227.0252
+     },
+     "direction": {
+      "x": -0.0,
+      "y": -1.0
+     }
+    },
+    {
+     "name": "n1",
+     "position": {
+      "x": 1266.8407,
+      "y": 1260.5103
+     },
+     "direction": {
+      "x": -0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {
+    "name": "NO.2 W.B.TK (P)",
+    "rating": "3,100 M3",
+    "role": "sink"
+   },
+   "text_ids": [
+    "t32",
+    "t33"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o45",
+   "cls": "instrument_shared",
+   "category": "instrument",
+   "bbox": {
+    "x0": 1256.0497,
+    "y0": 1276.1738,
+    "x1": 1277.6317,
+    "y1": 1297.7558
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "LT-712",
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "n0",
+     "position": {
+      "x": 1266.8407,
+      "y": 1276.1738
+     },
+     "direction": {
+      "x": 0.0,
+      "y": -1.0
+     }
+    }
+   ],
+   "attributes": {
+    "service": "tank level",
+    "letters": "LT",
+    "loop": "712"
+   },
+   "text_ids": [
+    "t34",
+    "t35"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o46",
+   "cls": "butterfly_valve",
+   "category": "valve",
+   "bbox": {
+    "x0": 1396.5055,
+    "y0": 1178.0131,
+    "x1": 1415.6498,
+    "y1": 1186.715
+   },
+   "page": 0,
+   "rotation": 90,
+   "mirrored": false,
+   "tag": "BA027V",
+   "actuator": "hydraulic",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 1402.5969,
+      "y": 1178.0131
+     },
+     "direction": {
+      "x": 0.0,
+      "y": -1.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 1402.5969,
+      "y": 1186.715
+     },
+     "direction": {
+      "x": 0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [
+    "t72"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o47",
+   "cls": "tank",
+   "category": "equipment",
+   "bbox": {
+    "x0": 1372.8524,
+    "y0": 1227.0252,
+    "x1": 1431.1624,
+    "y1": 1258.7128
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": null,
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "n0",
+     "position": {
+      "x": 1402.5969,
+      "y": 1227.0252
+     },
+     "direction": {
+      "x": -0.0,
+      "y": -1.0
+     }
+    },
+    {
+     "name": "n1",
+     "position": {
+      "x": 1402.0074,
+      "y": 1258.7128
+     },
+     "direction": {
+      "x": -0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {
+    "name": "NO.2 W.B.TK (S)",
+    "role": "sink"
+   },
+   "text_ids": [
+    "t36"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o48",
+   "cls": "instrument_shared",
+   "category": "instrument",
+   "bbox": {
+    "x0": 1391.2164,
+    "y0": 1274.3763,
+    "x1": 1412.7984,
+    "y1": 1295.9583
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "LT-713",
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "n0",
+     "position": {
+      "x": 1402.0074,
+      "y": 1274.3763
+     },
+     "direction": {
+      "x": 0.0,
+      "y": -1.0
+     }
+    }
+   ],
+   "attributes": {
+    "service": "tank level",
+    "letters": "LT",
+    "loop": "713"
+   },
+   "text_ids": [
+    "t37",
+    "t38"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o49",
+   "cls": "butterfly_valve",
+   "category": "valve",
+   "bbox": {
+    "x0": 1531.6722,
+    "y0": 1178.0131,
+    "x1": 1550.8165,
+    "y1": 1186.715
+   },
+   "page": 0,
+   "rotation": 90,
+   "mirrored": false,
+   "tag": "BA028V",
+   "actuator": "hydraulic",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 1537.7636,
+      "y": 1178.0131
+     },
+     "direction": {
+      "x": 0.0,
+      "y": -1.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 1537.7636,
+      "y": 1186.715
+     },
+     "direction": {
+      "x": 0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [
+    "t73"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o50",
+   "cls": "tank",
+   "category": "equipment",
+   "bbox": {
+    "x0": 1508.0191,
+    "y0": 1227.0252,
+    "x1": 1566.3291,
+    "y1": 1257.2743
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": null,
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "n0",
+     "position": {
+      "x": 1537.7636,
+      "y": 1227.0252
+     },
+     "direction": {
+      "x": -0.0,
+      "y": -1.0
+     }
+    },
+    {
+     "name": "n1",
+     "position": {
+      "x": 1537.1741,
+      "y": 1257.2743
+     },
+     "direction": {
+      "x": -0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {
+    "name": "NO.3 W.B.TK (P)",
+    "rating": "3,100 M3",
+    "role": "sink"
+   },
+   "text_ids": [
+    "t39",
+    "t40"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o51",
+   "cls": "instrument_shared",
+   "category": "instrument",
+   "bbox": {
+    "x0": 1526.3831,
+    "y0": 1272.9378,
+    "x1": 1547.965,
+    "y1": 1294.5198
+   },
+   "page": 0,
+   "rotation": 0,
+   "mirrored": false,
+   "tag": "LT-714",
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "n0",
+     "position": {
+      "x": 1537.1741,
+      "y": 1272.9378
+     },
+     "direction": {
+      "x": 0.0,
+      "y": -1.0
+     }
+    }
+   ],
+   "attributes": {
+    "service": "tank level",
+    "letters": "LT",
+    "loop": "714"
+   },
+   "text_ids": [
+    "t41",
+    "t42"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o52",
+   "cls": "butterfly_valve",
+   "category": "valve",
+   "bbox": {
+    "x0": 1645.4483,
+    "y0": 1177.7656,
+    "x1": 1664.5926,
+    "y1": 1186.4676
+   },
+   "page": 0,
+   "rotation": 90,
+   "mirrored": false,
+   "tag": "BA029V",
+   "actuator": "hydraulic",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 1651.5396,
+      "y": 1177.7656
+     },
+     "direction": {
+      "x": 0.0,
+      "y": -1.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 1651.5396,
+      "y": 1186.4676
+     },
+     "direction": {
+      "x": 0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [
+    "t75"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o53",
+   "cls": "overboard",
+   "category": "equipment",
+   "bbox": {
+    "x0": 1643.1858,
+    "y0": 1227.0252,
+    "x1": 1659.8935,
+    "y1": 1237.0499
+   },
+   "page": 0,
+   "rotation": 90,
+   "mirrored": false,
+   "tag": null,
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 1651.5396,
+      "y": 1227.0252
+     },
+     "direction": {
+      "x": 0.0,
+      "y": -1.0
+     }
+    }
+   ],
+   "attributes": {
+    "name": "OVERBOARD",
+    "role": "sink"
+   },
+   "text_ids": [
+    "t54"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o54",
+   "cls": "ball_valve",
+   "category": "valve",
+   "bbox": {
+    "x0": 456.809,
+    "y0": 462.6217,
+    "x1": 469.8619,
+    "y1": 480.0256
+   },
+   "page": 0,
+   "rotation": 90,
+   "mirrored": false,
+   "tag": null,
+   "actuator": "handwheel",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 462.0301,
+      "y": 462.6217
+     },
+     "direction": {
+      "x": 0.0,
+      "y": -1.0
+     }
+    },
+    {
+     "name": "out",
+     "position": {
+      "x": 462.0301,
+      "y": 480.0256
+     },
+     "direction": {
+      "x": 0.0,
+      "y": 1.0
+     }
+    }
+   ],
+   "attributes": {},
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "o55",
+   "cls": "off_page_connector",
+   "category": "connector",
+   "bbox": {
+    "x0": 456.9408,
+    "y0": 803.9533,
+    "x1": 467.1195,
+    "y1": 836.5253
+   },
+   "page": 0,
+   "rotation": 90,
+   "mirrored": false,
+   "tag": null,
+   "actuator": "none",
+   "ports": [
+    {
+     "name": "in",
+     "position": {
+      "x": 462.0301,
+      "y": 803.9533
+     },
+     "direction": {
+      "x": 0.0,
+      "y": -1.0
+     }
+    }
+   ],
+   "attributes": {
+    "name": "TO BILGE WELL",
+    "ref": "S.5",
+    "direction": "out",
+    "arrow_along_flow": true
+   },
+   "text_ids": [
+    "t43",
+    "t55"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  }
+ ],
+ "junctions": [
+  {
+   "id": "j1",
+   "position": {
+    "x": 423.7415,
+    "y": 459.7248
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j2",
+   "position": {
+    "x": 423.7415,
+    "y": 581.163
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j3",
+   "position": {
+    "x": 423.7415,
+    "y": 707.1798
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j4",
+   "position": {
+    "x": 462.0301,
+    "y": 443.4773
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j5",
+   "position": {
+    "x": 553.7522,
+    "y": 443.4773
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j6",
+   "position": {
+    "x": 648.4091,
+    "y": 410.9555
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j7",
+   "position": {
+    "x": 686.6486,
+    "y": 410.9555
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j8",
+   "position": {
+    "x": 864.5636,
+    "y": 586.3574
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j9",
+   "position": {
+    "x": 423.7415,
+    "y": 618.8793
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j10",
+   "position": {
+    "x": 553.7522,
+    "y": 618.8793
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j11",
+   "position": {
+    "x": 648.4091,
+    "y": 586.3574
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j12",
+   "position": {
+    "x": 686.6486,
+    "y": 586.3574
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j13",
+   "position": {
+    "x": 553.7522,
+    "y": 771.321
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j14",
+   "position": {
+    "x": 648.4091,
+    "y": 738.7991
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j15",
+   "position": {
+    "x": 686.6486,
+    "y": 738.7991
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j16",
+   "position": {
+    "x": 864.5636,
+    "y": 738.7991
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j17",
+   "position": {
+    "x": 273.0808,
+    "y": 1102.4359
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j18",
+   "position": {
+    "x": 475.3115,
+    "y": 1102.4359
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j19",
+   "position": {
+    "x": 509.746,
+    "y": 1102.4359
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j20",
+   "position": {
+    "x": 638.6593,
+    "y": 1102.4359
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j21",
+   "position": {
+    "x": 857.6407,
+    "y": 1102.4359
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j22",
+   "position": {
+    "x": 993.8107,
+    "y": 1102.4359
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j23",
+   "position": {
+    "x": 1130.6537,
+    "y": 1102.4359
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j24",
+   "position": {
+    "x": 1267.4302,
+    "y": 1102.4359
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j25",
+   "position": {
+    "x": 1402.5969,
+    "y": 1102.4359
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  },
+  {
+   "id": "j26",
+   "position": {
+    "x": 1537.7636,
+    "y": 1102.4359
+   },
+   "page": 0,
+   "kind": "tee",
+   "dotted": true
+  }
+ ],
+ "pipes": [
+  {
+   "id": "p1",
+   "page": 0,
+   "points": [
+    {
+     "x": 273.8899,
+     "y": 479.5977
+    },
+    {
+     "x": 273.8899,
+     "y": 459.7248
+    },
+    {
+     "x": 349.5523,
+     "y": 459.7248
+    }
+   ],
+   "start": {
+    "object_id": "o1",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": "o2",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "450-BA-011",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t76"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p2",
+   "page": 0,
+   "points": [
+    {
+     "x": 358.2542,
+     "y": 459.7248
+    },
+    {
+     "x": 423.7415,
+     "y": 459.7248
+    }
+   ],
+   "start": {
+    "object_id": "o2",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j1"
+   },
+   "kind": "process",
+   "line_number": "450-BA-011",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p3",
+   "page": 0,
+   "points": [
+    {
+     "x": 275.5361,
+     "y": 601.0358
+    },
+    {
+     "x": 275.5361,
+     "y": 581.163
+    },
+    {
+     "x": 351.1985,
+     "y": 581.163
+    }
+   ],
+   "start": {
+    "object_id": "o3",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": "o4",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "450-BA-012",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t77"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p4",
+   "page": 0,
+   "points": [
+    {
+     "x": 359.9004,
+     "y": 581.163
+    },
+    {
+     "x": 423.7415,
+     "y": 581.163
+    }
+   ],
+   "start": {
+    "object_id": "o4",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j2"
+   },
+   "kind": "process",
+   "line_number": "450-BA-012",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p5",
+   "page": 0,
+   "points": [
+    {
+     "x": 289.4707,
+     "y": 707.1798
+    },
+    {
+     "x": 361.4136,
+     "y": 707.1798
+    }
+   ],
+   "start": {
+    "object_id": "o5",
+    "port": "in",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": "o6",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "450-BA-013",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t78"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p6",
+   "page": 0,
+   "points": [
+    {
+     "x": 370.1156,
+     "y": 707.1798
+    },
+    {
+     "x": 423.7415,
+     "y": 707.1798
+    }
+   ],
+   "start": {
+    "object_id": "o6",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j3"
+   },
+   "kind": "process",
+   "line_number": "450-BA-013",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p7",
+   "page": 0,
+   "points": [
+    {
+     "x": 423.7415,
+     "y": 459.7248
+    },
+    {
+     "x": 423.7415,
+     "y": 443.4773
+    },
+    {
+     "x": 462.0301,
+     "y": 443.4773
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j1"
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j4"
+   },
+   "kind": "process",
+   "line_number": "450-BA-014",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p8",
+   "page": 0,
+   "points": [
+    {
+     "x": 514.6083,
+     "y": 443.4773
+    },
+    {
+     "x": 553.7522,
+     "y": 443.4773
+    }
+   ],
+   "start": {
+    "object_id": "o7",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j5"
+   },
+   "kind": "process",
+   "line_number": "450-BA-014",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p9",
+   "page": 0,
+   "points": [
+    {
+     "x": 553.7522,
+     "y": 443.4773
+    },
+    {
+     "x": 553.7522,
+     "y": 422.2764
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j5"
+   },
+   "end": {
+    "object_id": "o8",
+    "port": "n0",
+    "junction_id": null
+   },
+   "kind": "instrument_tap",
+   "line_number": null,
+   "size": null,
+   "medium": "ballast_water",
+   "flow_direction": null,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p10",
+   "page": 0,
+   "points": [
+    {
+     "x": 553.7522,
+     "y": 443.4773
+    },
+    {
+     "x": 594.6235,
+     "y": 443.4773
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j5"
+   },
+   "end": {
+    "object_id": "o9",
+    "port": "suction",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "450-BA-014",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p11",
+   "page": 0,
+   "points": [
+    {
+     "x": 606.3711,
+     "y": 431.7297
+    },
+    {
+     "x": 606.3711,
+     "y": 410.9555
+    },
+    {
+     "x": 648.4091,
+     "y": 410.9555
+    }
+   ],
+   "start": {
+    "object_id": "o9",
+    "port": "discharge",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j6"
+   },
+   "kind": "process",
+   "line_number": "450-BA-015",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p12",
+   "page": 0,
+   "points": [
+    {
+     "x": 648.4091,
+     "y": 410.9555
+    },
+    {
+     "x": 648.4091,
+     "y": 389.7545
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j6"
+   },
+   "end": {
+    "object_id": "o10",
+    "port": "n0",
+    "junction_id": null
+   },
+   "kind": "instrument_tap",
+   "line_number": null,
+   "size": null,
+   "medium": "ballast_water",
+   "flow_direction": null,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p13",
+   "page": 0,
+   "points": [
+    {
+     "x": 648.4091,
+     "y": 410.9555
+    },
+    {
+     "x": 686.6486,
+     "y": 410.9555
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j6"
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j7"
+   },
+   "kind": "process",
+   "line_number": "450-BA-015",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p14",
+   "page": 0,
+   "points": [
+    {
+     "x": 686.6486,
+     "y": 410.9555
+    },
+    {
+     "x": 686.6486,
+     "y": 389.7545
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j7"
+   },
+   "end": {
+    "object_id": "o11",
+    "port": "n0",
+    "junction_id": null
+   },
+   "kind": "instrument_tap",
+   "line_number": null,
+   "size": null,
+   "medium": "ballast_water",
+   "flow_direction": null,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p15",
+   "page": 0,
+   "points": [
+    {
+     "x": 686.6486,
+     "y": 410.9555
+    },
+    {
+     "x": 717.1708,
+     "y": 410.9555
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j7"
+   },
+   "end": {
+    "object_id": "o12",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "450-BA-015",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p16",
+   "page": 0,
+   "points": [
+    {
+     "x": 734.5747,
+     "y": 410.9555
+    },
+    {
+     "x": 763.5364,
+     "y": 410.9555
+    }
+   ],
+   "start": {
+    "object_id": "o12",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": "o13",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "450-BA-015",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p17",
+   "page": 0,
+   "points": [
+    {
+     "x": 772.2384,
+     "y": 410.9555
+    },
+    {
+     "x": 864.5636,
+     "y": 410.9555
+    },
+    {
+     "x": 864.5636,
+     "y": 586.3574
+    }
+   ],
+   "start": {
+    "object_id": "o13",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j8"
+   },
+   "kind": "process",
+   "line_number": "450-BA-015",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t80"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p18",
+   "page": 0,
+   "points": [
+    {
+     "x": 423.7415,
+     "y": 618.8793
+    },
+    {
+     "x": 505.9063,
+     "y": 618.8793
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j9"
+   },
+   "end": {
+    "object_id": "o14",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "450-BA-016",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t81"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p19",
+   "page": 0,
+   "points": [
+    {
+     "x": 514.6083,
+     "y": 618.8793
+    },
+    {
+     "x": 553.7522,
+     "y": 618.8793
+    }
+   ],
+   "start": {
+    "object_id": "o14",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j10"
+   },
+   "kind": "process",
+   "line_number": "450-BA-016",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p20",
+   "page": 0,
+   "points": [
+    {
+     "x": 553.7522,
+     "y": 618.8793
+    },
+    {
+     "x": 553.7522,
+     "y": 597.6783
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j10"
+   },
+   "end": {
+    "object_id": "o15",
+    "port": "n0",
+    "junction_id": null
+   },
+   "kind": "instrument_tap",
+   "line_number": null,
+   "size": null,
+   "medium": "ballast_water",
+   "flow_direction": null,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p21",
+   "page": 0,
+   "points": [
+    {
+     "x": 553.7522,
+     "y": 618.8793
+    },
+    {
+     "x": 594.6235,
+     "y": 618.8793
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j10"
+   },
+   "end": {
+    "object_id": "o16",
+    "port": "suction",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "450-BA-016",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p22",
+   "page": 0,
+   "points": [
+    {
+     "x": 606.3711,
+     "y": 607.1316
+    },
+    {
+     "x": 606.3711,
+     "y": 586.3574
+    },
+    {
+     "x": 648.4091,
+     "y": 586.3574
+    }
+   ],
+   "start": {
+    "object_id": "o16",
+    "port": "discharge",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j11"
+   },
+   "kind": "process",
+   "line_number": "450-BA-017",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p23",
+   "page": 0,
+   "points": [
+    {
+     "x": 648.4091,
+     "y": 586.3574
+    },
+    {
+     "x": 648.4091,
+     "y": 565.1564
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j11"
+   },
+   "end": {
+    "object_id": "o17",
+    "port": "n0",
+    "junction_id": null
+   },
+   "kind": "instrument_tap",
+   "line_number": null,
+   "size": null,
+   "medium": "ballast_water",
+   "flow_direction": null,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p24",
+   "page": 0,
+   "points": [
+    {
+     "x": 648.4091,
+     "y": 586.3574
+    },
+    {
+     "x": 686.6486,
+     "y": 586.3574
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j11"
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j12"
+   },
+   "kind": "process",
+   "line_number": "450-BA-017",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p25",
+   "page": 0,
+   "points": [
+    {
+     "x": 686.6486,
+     "y": 586.3574
+    },
+    {
+     "x": 686.6486,
+     "y": 565.1564
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j12"
+   },
+   "end": {
+    "object_id": "o18",
+    "port": "n0",
+    "junction_id": null
+   },
+   "kind": "instrument_tap",
+   "line_number": null,
+   "size": null,
+   "medium": "ballast_water",
+   "flow_direction": null,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p26",
+   "page": 0,
+   "points": [
+    {
+     "x": 686.6486,
+     "y": 586.3574
+    },
+    {
+     "x": 717.1708,
+     "y": 586.3574
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j12"
+   },
+   "end": {
+    "object_id": "o19",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "450-BA-017",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p27",
+   "page": 0,
+   "points": [
+    {
+     "x": 734.5747,
+     "y": 586.3574
+    },
+    {
+     "x": 763.5364,
+     "y": 586.3574
+    }
+   ],
+   "start": {
+    "object_id": "o19",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": "o20",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "450-BA-017",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p28",
+   "page": 0,
+   "points": [
+    {
+     "x": 772.2384,
+     "y": 586.3574
+    },
+    {
+     "x": 864.5636,
+     "y": 586.3574
+    }
+   ],
+   "start": {
+    "object_id": "o20",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j8"
+   },
+   "kind": "process",
+   "line_number": "450-BA-017",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t82"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p29",
+   "page": 0,
+   "points": [
+    {
+     "x": 423.7415,
+     "y": 707.1798
+    },
+    {
+     "x": 423.7415,
+     "y": 771.321
+    },
+    {
+     "x": 505.9063,
+     "y": 771.321
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j3"
+   },
+   "end": {
+    "object_id": "o21",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "450-BA-018",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t83"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p30",
+   "page": 0,
+   "points": [
+    {
+     "x": 514.6083,
+     "y": 771.321
+    },
+    {
+     "x": 553.7522,
+     "y": 771.321
+    }
+   ],
+   "start": {
+    "object_id": "o21",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j13"
+   },
+   "kind": "process",
+   "line_number": "450-BA-018",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p31",
+   "page": 0,
+   "points": [
+    {
+     "x": 553.7522,
+     "y": 771.321
+    },
+    {
+     "x": 553.7522,
+     "y": 750.12
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j13"
+   },
+   "end": {
+    "object_id": "o22",
+    "port": "n0",
+    "junction_id": null
+   },
+   "kind": "instrument_tap",
+   "line_number": null,
+   "size": null,
+   "medium": "ballast_water",
+   "flow_direction": null,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p32",
+   "page": 0,
+   "points": [
+    {
+     "x": 553.7522,
+     "y": 771.321
+    },
+    {
+     "x": 594.6235,
+     "y": 771.321
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j13"
+   },
+   "end": {
+    "object_id": "o23",
+    "port": "suction",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "450-BA-018",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p33",
+   "page": 0,
+   "points": [
+    {
+     "x": 606.3711,
+     "y": 759.5733
+    },
+    {
+     "x": 606.3711,
+     "y": 738.7991
+    },
+    {
+     "x": 648.4091,
+     "y": 738.7991
+    }
+   ],
+   "start": {
+    "object_id": "o23",
+    "port": "discharge",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j14"
+   },
+   "kind": "process",
+   "line_number": "450-BA-019",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p34",
+   "page": 0,
+   "points": [
+    {
+     "x": 648.4091,
+     "y": 738.7991
+    },
+    {
+     "x": 648.4091,
+     "y": 717.5981
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j14"
+   },
+   "end": {
+    "object_id": "o24",
+    "port": "n0",
+    "junction_id": null
+   },
+   "kind": "instrument_tap",
+   "line_number": null,
+   "size": null,
+   "medium": "ballast_water",
+   "flow_direction": null,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p35",
+   "page": 0,
+   "points": [
+    {
+     "x": 648.4091,
+     "y": 738.7991
+    },
+    {
+     "x": 686.6486,
+     "y": 738.7991
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j14"
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j15"
+   },
+   "kind": "process",
+   "line_number": "450-BA-019",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p36",
+   "page": 0,
+   "points": [
+    {
+     "x": 686.6486,
+     "y": 738.7991
+    },
+    {
+     "x": 686.6486,
+     "y": 717.5981
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j15"
+   },
+   "end": {
+    "object_id": "o25",
+    "port": "n0",
+    "junction_id": null
+   },
+   "kind": "instrument_tap",
+   "line_number": null,
+   "size": null,
+   "medium": "ballast_water",
+   "flow_direction": null,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p37",
+   "page": 0,
+   "points": [
+    {
+     "x": 686.6486,
+     "y": 738.7991
+    },
+    {
+     "x": 717.1708,
+     "y": 738.7991
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j15"
+   },
+   "end": {
+    "object_id": "o26",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "450-BA-019",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p38",
+   "page": 0,
+   "points": [
+    {
+     "x": 734.5747,
+     "y": 738.7991
+    },
+    {
+     "x": 763.5364,
+     "y": 738.7991
+    }
+   ],
+   "start": {
+    "object_id": "o26",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": "o27",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "450-BA-019",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p39",
+   "page": 0,
+   "points": [
+    {
+     "x": 772.2384,
+     "y": 738.7991
+    },
+    {
+     "x": 864.5636,
+     "y": 738.7991
+    }
+   ],
+   "start": {
+    "object_id": "o27",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j16"
+   },
+   "kind": "process",
+   "line_number": "450-BA-019",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t84"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p40",
+   "page": 0,
+   "points": [
+    {
+     "x": 864.5636,
+     "y": 738.7991
+    },
+    {
+     "x": 864.5636,
+     "y": 921.7232
+    },
+    {
+     "x": 198.3594,
+     "y": 921.7232
+    },
+    {
+     "x": 198.3594,
+     "y": 1102.4359
+    },
+    {
+     "x": 273.0808,
+     "y": 1102.4359
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j16"
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j17"
+   },
+   "kind": "process",
+   "line_number": "450-BA-020",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t85"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p41",
+   "page": 0,
+   "points": [
+    {
+     "x": 273.0808,
+     "y": 1102.4359
+    },
+    {
+     "x": 315.387,
+     "y": 1102.4359
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j17"
+   },
+   "end": {
+    "object_id": "o28",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "450-BA-020",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p42",
+   "page": 0,
+   "points": [
+    {
+     "x": 332.7909,
+     "y": 1102.4359
+    },
+    {
+     "x": 407.363,
+     "y": 1102.4359
+    }
+   ],
+   "start": {
+    "object_id": "o28",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": "o29",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "450-BA-021",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t86"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p43",
+   "page": 0,
+   "points": [
+    {
+     "x": 445.2123,
+     "y": 1102.4359
+    },
+    {
+     "x": 475.3115,
+     "y": 1102.4359
+    }
+   ],
+   "start": {
+    "object_id": "o29",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j18"
+   },
+   "kind": "process",
+   "line_number": "450-BA-022",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p44",
+   "page": 0,
+   "points": [
+    {
+     "x": 475.3115,
+     "y": 1102.4359
+    },
+    {
+     "x": 509.746,
+     "y": 1102.4359
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j18"
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j19"
+   },
+   "kind": "process",
+   "line_number": "450-BA-022",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p45",
+   "page": 0,
+   "points": [
+    {
+     "x": 509.746,
+     "y": 1102.4359
+    },
+    {
+     "x": 509.746,
+     "y": 1081.9598
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j19"
+   },
+   "end": {
+    "object_id": "o30",
+    "port": "n0",
+    "junction_id": null
+   },
+   "kind": "instrument_tap",
+   "line_number": null,
+   "size": null,
+   "medium": "ballast_water",
+   "flow_direction": null,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p46",
+   "page": 0,
+   "points": [
+    {
+     "x": 509.746,
+     "y": 1102.4359
+    },
+    {
+     "x": 584.8963,
+     "y": 1102.4359
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j19"
+   },
+   "end": {
+    "object_id": "o31",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "450-BA-022",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t87"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p47",
+   "page": 0,
+   "points": [
+    {
+     "x": 599.5156,
+     "y": 1102.4359
+    },
+    {
+     "x": 638.6593,
+     "y": 1102.4359
+    }
+   ],
+   "start": {
+    "object_id": "o31",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j20"
+   },
+   "kind": "process",
+   "line_number": "450-BA-023",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p48",
+   "page": 0,
+   "points": [
+    {
+     "x": 638.6593,
+     "y": 1102.4359
+    },
+    {
+     "x": 638.6593,
+     "y": 1081.9598
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j20"
+   },
+   "end": {
+    "object_id": "o32",
+    "port": "n0",
+    "junction_id": null
+   },
+   "kind": "instrument_tap",
+   "line_number": null,
+   "size": null,
+   "medium": "ballast_water",
+   "flow_direction": null,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p49",
+   "page": 0,
+   "points": [
+    {
+     "x": 638.6593,
+     "y": 1102.4359
+    },
+    {
+     "x": 666.5013,
+     "y": 1102.4359
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j20"
+   },
+   "end": {
+    "object_id": "o33",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "450-BA-023",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p50",
+   "page": 0,
+   "points": [
+    {
+     "x": 675.2033,
+     "y": 1102.4359
+    },
+    {
+     "x": 857.6407,
+     "y": 1102.4359
+    }
+   ],
+   "start": {
+    "object_id": "o33",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j21"
+   },
+   "kind": "process",
+   "line_number": "450-BA-023",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t88"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p51",
+   "page": 0,
+   "points": [
+    {
+     "x": 273.0808,
+     "y": 1102.4359
+    },
+    {
+     "x": 273.0808,
+     "y": 1148.5766
+    },
+    {
+     "x": 369.8452,
+     "y": 1148.5766
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j17"
+   },
+   "end": {
+    "object_id": "o34",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "450-BA-024",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t89"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p52",
+   "page": 0,
+   "points": [
+    {
+     "x": 378.5471,
+     "y": 1148.5766
+    },
+    {
+     "x": 475.3115,
+     "y": 1148.5766
+    },
+    {
+     "x": 475.3115,
+     "y": 1102.4359
+    }
+   ],
+   "start": {
+    "object_id": "o34",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j18"
+   },
+   "kind": "process",
+   "line_number": "450-BA-024",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p53",
+   "page": 0,
+   "points": [
+    {
+     "x": 857.6407,
+     "y": 1102.4359
+    },
+    {
+     "x": 857.6407,
+     "y": 1178.0131
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j21"
+   },
+   "end": {
+    "object_id": "o35",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "350-BA-025",
+   "size": "350A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t90"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p54",
+   "page": 0,
+   "points": [
+    {
+     "x": 857.6407,
+     "y": 1186.715
+    },
+    {
+     "x": 857.6407,
+     "y": 1227.0252
+    }
+   ],
+   "start": {
+    "object_id": "o35",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": "o36",
+    "port": "n0",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "350-BA-025",
+   "size": "350A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p55",
+   "page": 0,
+   "points": [
+    {
+     "x": 857.0305,
+     "y": 1253.4463
+    },
+    {
+     "x": 857.0305,
+     "y": 1269.1098
+    }
+   ],
+   "start": {
+    "object_id": "o36",
+    "port": "n1",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": "o37",
+    "port": "n0",
+    "junction_id": null
+   },
+   "kind": "instrument_tap",
+   "line_number": null,
+   "size": null,
+   "medium": "ballast_water",
+   "flow_direction": null,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p56",
+   "page": 0,
+   "points": [
+    {
+     "x": 993.8107,
+     "y": 1102.4359
+    },
+    {
+     "x": 993.8107,
+     "y": 1178.0131
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j22"
+   },
+   "end": {
+    "object_id": "o38",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "350-BA-026",
+   "size": "350A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t91"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p57",
+   "page": 0,
+   "points": [
+    {
+     "x": 993.8107,
+     "y": 1186.715
+    },
+    {
+     "x": 993.8107,
+     "y": 1227.0252
+    }
+   ],
+   "start": {
+    "object_id": "o38",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": "o39",
+    "port": "n0",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "350-BA-026",
+   "size": "350A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p58",
+   "page": 0,
+   "points": [
+    {
+     "x": 1130.6537,
+     "y": 1102.4359
+    },
+    {
+     "x": 1130.6537,
+     "y": 1178.0131
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j23"
+   },
+   "end": {
+    "object_id": "o40",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "350-BA-027",
+   "size": "350A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t92"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p59",
+   "page": 0,
+   "points": [
+    {
+     "x": 1130.6537,
+     "y": 1186.715
+    },
+    {
+     "x": 1130.6537,
+     "y": 1227.0252
+    }
+   ],
+   "start": {
+    "object_id": "o40",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": "o41",
+    "port": "n0",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "350-BA-027",
+   "size": "350A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p60",
+   "page": 0,
+   "points": [
+    {
+     "x": 1130.0309,
+     "y": 1256.2655
+    },
+    {
+     "x": 1130.0309,
+     "y": 1271.929
+    }
+   ],
+   "start": {
+    "object_id": "o41",
+    "port": "n1",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": "o42",
+    "port": "n0",
+    "junction_id": null
+   },
+   "kind": "instrument_tap",
+   "line_number": null,
+   "size": null,
+   "medium": "ballast_water",
+   "flow_direction": null,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p61",
+   "page": 0,
+   "points": [
+    {
+     "x": 1267.4302,
+     "y": 1102.4359
+    },
+    {
+     "x": 1267.4302,
+     "y": 1178.0131
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j24"
+   },
+   "end": {
+    "object_id": "o43",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "350-BA-028",
+   "size": "350A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t93"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p62",
+   "page": 0,
+   "points": [
+    {
+     "x": 1267.4302,
+     "y": 1186.715
+    },
+    {
+     "x": 1267.4302,
+     "y": 1227.0252
+    }
+   ],
+   "start": {
+    "object_id": "o43",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": "o44",
+    "port": "n0",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "350-BA-028",
+   "size": "350A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p63",
+   "page": 0,
+   "points": [
+    {
+     "x": 1266.8407,
+     "y": 1260.5103
+    },
+    {
+     "x": 1266.8407,
+     "y": 1276.1738
+    }
+   ],
+   "start": {
+    "object_id": "o44",
+    "port": "n1",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": "o45",
+    "port": "n0",
+    "junction_id": null
+   },
+   "kind": "instrument_tap",
+   "line_number": null,
+   "size": null,
+   "medium": "ballast_water",
+   "flow_direction": null,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p64",
+   "page": 0,
+   "points": [
+    {
+     "x": 1402.5969,
+     "y": 1102.4359
+    },
+    {
+     "x": 1402.5969,
+     "y": 1178.0131
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j25"
+   },
+   "end": {
+    "object_id": "o46",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "350-BA-029",
+   "size": "350A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t94"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p65",
+   "page": 0,
+   "points": [
+    {
+     "x": 1402.5969,
+     "y": 1186.715
+    },
+    {
+     "x": 1402.5969,
+     "y": 1227.0252
+    }
+   ],
+   "start": {
+    "object_id": "o46",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": "o47",
+    "port": "n0",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "350-BA-029",
+   "size": "350A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p66",
+   "page": 0,
+   "points": [
+    {
+     "x": 1402.0074,
+     "y": 1258.7128
+    },
+    {
+     "x": 1402.0074,
+     "y": 1274.3763
+    }
+   ],
+   "start": {
+    "object_id": "o47",
+    "port": "n1",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": "o48",
+    "port": "n0",
+    "junction_id": null
+   },
+   "kind": "instrument_tap",
+   "line_number": null,
+   "size": null,
+   "medium": "ballast_water",
+   "flow_direction": null,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p67",
+   "page": 0,
+   "points": [
+    {
+     "x": 1537.7636,
+     "y": 1102.4359
+    },
+    {
+     "x": 1537.7636,
+     "y": 1178.0131
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j26"
+   },
+   "end": {
+    "object_id": "o49",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "350-BA-030",
+   "size": "350A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t95"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p68",
+   "page": 0,
+   "points": [
+    {
+     "x": 1537.7636,
+     "y": 1186.715
+    },
+    {
+     "x": 1537.7636,
+     "y": 1227.0252
+    }
+   ],
+   "start": {
+    "object_id": "o49",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": "o50",
+    "port": "n0",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "350-BA-030",
+   "size": "350A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p69",
+   "page": 0,
+   "points": [
+    {
+     "x": 1537.1741,
+     "y": 1257.2743
+    },
+    {
+     "x": 1537.1741,
+     "y": 1272.9378
+    }
+   ],
+   "start": {
+    "object_id": "o50",
+    "port": "n1",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": "o51",
+    "port": "n0",
+    "junction_id": null
+   },
+   "kind": "instrument_tap",
+   "line_number": null,
+   "size": null,
+   "medium": "ballast_water",
+   "flow_direction": null,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p70",
+   "page": 0,
+   "points": [
+    {
+     "x": 1537.7636,
+     "y": 1102.4359
+    },
+    {
+     "x": 1651.5396,
+     "y": 1102.4359
+    },
+    {
+     "x": 1651.5396,
+     "y": 1177.7656
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j26"
+   },
+   "end": {
+    "object_id": "o52",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "450-BA-031",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t96"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p71",
+   "page": 0,
+   "points": [
+    {
+     "x": 1651.5396,
+     "y": 1186.4676
+    },
+    {
+     "x": 1651.5396,
+     "y": 1227.0252
+    }
+   ],
+   "start": {
+    "object_id": "o52",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": "o53",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "450-BA-031",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p72",
+   "page": 0,
+   "points": [
+    {
+     "x": 857.6407,
+     "y": 1102.4359
+    },
+    {
+     "x": 993.8107,
+     "y": 1102.4359
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j21"
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j22"
+   },
+   "kind": "process",
+   "line_number": "450-BA-032",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p73",
+   "page": 0,
+   "points": [
+    {
+     "x": 993.8107,
+     "y": 1102.4359
+    },
+    {
+     "x": 1130.6537,
+     "y": 1102.4359
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j22"
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j23"
+   },
+   "kind": "process",
+   "line_number": "450-BA-032",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t97"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p74",
+   "page": 0,
+   "points": [
+    {
+     "x": 1130.6537,
+     "y": 1102.4359
+    },
+    {
+     "x": 1267.4302,
+     "y": 1102.4359
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j23"
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j24"
+   },
+   "kind": "process",
+   "line_number": "450-BA-032",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p75",
+   "page": 0,
+   "points": [
+    {
+     "x": 1267.4302,
+     "y": 1102.4359
+    },
+    {
+     "x": 1402.5969,
+     "y": 1102.4359
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j24"
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j25"
+   },
+   "kind": "process",
+   "line_number": "450-BA-032",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p76",
+   "page": 0,
+   "points": [
+    {
+     "x": 1402.5969,
+     "y": 1102.4359
+    },
+    {
+     "x": 1537.7636,
+     "y": 1102.4359
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j25"
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j26"
+   },
+   "kind": "process",
+   "line_number": "450-BA-032",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p77",
+   "page": 0,
+   "points": [
+    {
+     "x": 423.7415,
+     "y": 459.7248
+    },
+    {
+     "x": 423.7415,
+     "y": 581.163
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j1"
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j2"
+   },
+   "kind": "process",
+   "line_number": "450-BA-033",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": null,
+   "text_ids": [
+    "t98"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p78",
+   "page": 0,
+   "points": [
+    {
+     "x": 423.7415,
+     "y": 581.163
+    },
+    {
+     "x": 423.7415,
+     "y": 618.8793
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j2"
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j9"
+   },
+   "kind": "process",
+   "line_number": "450-BA-033",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": null,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p79",
+   "page": 0,
+   "points": [
+    {
+     "x": 423.7415,
+     "y": 618.8793
+    },
+    {
+     "x": 423.7415,
+     "y": 707.1798
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j9"
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j3"
+   },
+   "kind": "process",
+   "line_number": "450-BA-033",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": null,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p80",
+   "page": 0,
+   "points": [
+    {
+     "x": 864.5636,
+     "y": 586.3574
+    },
+    {
+     "x": 864.5636,
+     "y": 738.7991
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j8"
+   },
+   "end": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j16"
+   },
+   "kind": "process",
+   "line_number": "450-BA-034",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": null,
+   "text_ids": [
+    "t99"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p81",
+   "page": 0,
+   "points": [
+    {
+     "x": 462.0301,
+     "y": 443.4773
+    },
+    {
+     "x": 505.9063,
+     "y": 443.4773
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j4"
+   },
+   "end": {
+    "object_id": "o7",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "450-BA-014",
+   "size": "450A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t79"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p82",
+   "page": 0,
+   "points": [
+    {
+     "x": 462.0301,
+     "y": 443.4773
+    },
+    {
+     "x": 462.0301,
+     "y": 462.6217
+    }
+   ],
+   "start": {
+    "object_id": null,
+    "port": null,
+    "junction_id": "j4"
+   },
+   "end": {
+    "object_id": "o54",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "50-BA-035",
+   "size": "50A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [],
+   "confidence": 1.0,
+   "source": "gt"
+  },
+  {
+   "id": "p83",
+   "page": 0,
+   "points": [
+    {
+     "x": 462.0301,
+     "y": 480.0256
+    },
+    {
+     "x": 462.0301,
+     "y": 803.9533
+    }
+   ],
+   "start": {
+    "object_id": "o54",
+    "port": "out",
+    "junction_id": null
+   },
+   "end": {
+    "object_id": "o55",
+    "port": "in",
+    "junction_id": null
+   },
+   "kind": "process",
+   "line_number": "50-BA-035",
+   "size": "50A",
+   "medium": "ballast_water",
+   "flow_direction": 1,
+   "text_ids": [
+    "t100"
+   ],
+   "confidence": 1.0,
+   "source": "gt"
+  }
+ ],
+ "texts": [
+  {
+   "id": "t1",
+   "text": "K5",
+   "bbox": {
+    "x0": 272.5222,
+    "y0": 703.3119,
+    "x1": 279.9545,
+    "y1": 711.0478
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.194,
+   "role": "connector",
+   "owner_id": "o5"
+  },
+  {
+   "id": "t2",
+   "text": "PI",
+   "bbox": {
+    "x0": 549.8522,
+    "y0": 402.7669,
+    "x1": 557.6522,
+    "y1": 410.8854
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o8"
+  },
+  {
+   "id": "t3",
+   "text": "710",
+   "bbox": {
+    "x0": 547.9022,
+    "y0": 412.0854,
+    "x1": 559.6022,
+    "y1": 420.2039
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o8"
+  },
+  {
+   "id": "t4",
+   "text": "PI",
+   "bbox": {
+    "x0": 644.5091,
+    "y0": 370.245,
+    "x1": 652.3091,
+    "y1": 378.3635
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o10"
+  },
+  {
+   "id": "t5",
+   "text": "711",
+   "bbox": {
+    "x0": 642.5591,
+    "y0": 379.5635,
+    "x1": 654.2591,
+    "y1": 387.682
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o10"
+  },
+  {
+   "id": "t6",
+   "text": "PT",
+   "bbox": {
+    "x0": 682.7486,
+    "y0": 370.445,
+    "x1": 690.5486,
+    "y1": 378.5635
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o11"
+  },
+  {
+   "id": "t7",
+   "text": "712",
+   "bbox": {
+    "x0": 680.7986,
+    "y0": 379.3635,
+    "x1": 692.4986,
+    "y1": 387.482
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o11"
+  },
+  {
+   "id": "t8",
+   "text": "PI",
+   "bbox": {
+    "x0": 549.8522,
+    "y0": 578.1688,
+    "x1": 557.6522,
+    "y1": 586.2873
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o15"
+  },
+  {
+   "id": "t9",
+   "text": "713",
+   "bbox": {
+    "x0": 547.9022,
+    "y0": 587.4873,
+    "x1": 559.6022,
+    "y1": 595.6058
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o15"
+  },
+  {
+   "id": "t10",
+   "text": "PI",
+   "bbox": {
+    "x0": 644.5091,
+    "y0": 545.6469,
+    "x1": 652.3091,
+    "y1": 553.7654
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o17"
+  },
+  {
+   "id": "t11",
+   "text": "714",
+   "bbox": {
+    "x0": 642.5591,
+    "y0": 554.9654,
+    "x1": 654.2591,
+    "y1": 563.0839
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o17"
+  },
+  {
+   "id": "t12",
+   "text": "PT",
+   "bbox": {
+    "x0": 682.7486,
+    "y0": 545.8469,
+    "x1": 690.5486,
+    "y1": 553.9654
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o18"
+  },
+  {
+   "id": "t13",
+   "text": "715",
+   "bbox": {
+    "x0": 680.7986,
+    "y0": 554.7654,
+    "x1": 692.4986,
+    "y1": 562.8839
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o18"
+  },
+  {
+   "id": "t14",
+   "text": "PI",
+   "bbox": {
+    "x0": 549.8522,
+    "y0": 730.6105,
+    "x1": 557.6522,
+    "y1": 738.729
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o22"
+  },
+  {
+   "id": "t15",
+   "text": "716",
+   "bbox": {
+    "x0": 547.9022,
+    "y0": 739.929,
+    "x1": 559.6022,
+    "y1": 748.0475
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o22"
+  },
+  {
+   "id": "t16",
+   "text": "PI",
+   "bbox": {
+    "x0": 644.5091,
+    "y0": 698.0886,
+    "x1": 652.3091,
+    "y1": 706.2071
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o24"
+  },
+  {
+   "id": "t17",
+   "text": "717",
+   "bbox": {
+    "x0": 642.5591,
+    "y0": 707.4071,
+    "x1": 654.2591,
+    "y1": 715.5256
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o24"
+  },
+  {
+   "id": "t18",
+   "text": "PT",
+   "bbox": {
+    "x0": 682.7486,
+    "y0": 698.2886,
+    "x1": 690.5486,
+    "y1": 706.4071
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o25"
+  },
+  {
+   "id": "t19",
+   "text": "718",
+   "bbox": {
+    "x0": 680.7986,
+    "y0": 707.2071,
+    "x1": 692.4986,
+    "y1": 715.3256
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o25"
+  },
+  {
+   "id": "t20",
+   "text": "QT",
+   "bbox": {
+    "x0": 505.846,
+    "y0": 1062.6503,
+    "x1": 513.646,
+    "y1": 1070.7688
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o30"
+  },
+  {
+   "id": "t21",
+   "text": "710",
+   "bbox": {
+    "x0": 503.896,
+    "y0": 1071.5688,
+    "x1": 515.596,
+    "y1": 1079.6873
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o30"
+  },
+  {
+   "id": "t22",
+   "text": "FT",
+   "bbox": {
+    "x0": 634.7593,
+    "y0": 1062.6503,
+    "x1": 642.5593,
+    "y1": 1070.7688
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o32"
+  },
+  {
+   "id": "t23",
+   "text": "710",
+   "bbox": {
+    "x0": 632.8093,
+    "y0": 1071.5688,
+    "x1": 644.5093,
+    "y1": 1079.6873
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o32"
+  },
+  {
+   "id": "t24",
+   "text": "F.P.TK",
+   "bbox": {
+    "x0": 846.9685,
+    "y0": 1236.7448,
+    "x1": 867.0925,
+    "y1": 1243.7267
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.59,
+   "role": "label",
+   "owner_id": "o36"
+  },
+  {
+   "id": "t25",
+   "text": "LT",
+   "bbox": {
+    "x0": 853.1305,
+    "y0": 1271.3823,
+    "x1": 860.9305,
+    "y1": 1279.5008
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o37"
+  },
+  {
+   "id": "t26",
+   "text": "710",
+   "bbox": {
+    "x0": 851.1805,
+    "y0": 1280.3008,
+    "x1": 862.8805,
+    "y1": 1288.4193
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o37"
+  },
+  {
+   "id": "t27",
+   "text": "NO.1 W.B.TK (P)",
+   "bbox": {
+    "x0": 968.0662,
+    "y0": 1232.6431,
+    "x1": 1018.3762,
+    "y1": 1239.625
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.59,
+   "role": "label",
+   "owner_id": "o39"
+  },
+  {
+   "id": "t28",
+   "text": "6,200 M3",
+   "bbox": {
+    "x0": 979.8052,
+    "y0": 1240.6723,
+    "x1": 1006.6372,
+    "y1": 1247.6542
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.59,
+   "role": "label",
+   "owner_id": "o39"
+  },
+  {
+   "id": "t29",
+   "text": "NO.1 W.B.TK (S)",
+   "bbox": {
+    "x0": 1104.8759,
+    "y0": 1238.1544,
+    "x1": 1155.1859,
+    "y1": 1245.1363
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.59,
+   "role": "label",
+   "owner_id": "o41"
+  },
+  {
+   "id": "t30",
+   "text": "LT",
+   "bbox": {
+    "x0": 1126.1309,
+    "y0": 1274.2015,
+    "x1": 1133.9309,
+    "y1": 1282.32
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o42"
+  },
+  {
+   "id": "t31",
+   "text": "711",
+   "bbox": {
+    "x0": 1124.1809,
+    "y0": 1283.12,
+    "x1": 1135.8809,
+    "y1": 1291.2385
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o42"
+  },
+  {
+   "id": "t32",
+   "text": "NO.2 W.B.TK (P)",
+   "bbox": {
+    "x0": 1241.6857,
+    "y0": 1236.2622,
+    "x1": 1291.9957,
+    "y1": 1243.2441
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.59,
+   "role": "label",
+   "owner_id": "o44"
+  },
+  {
+   "id": "t33",
+   "text": "3,100 M3",
+   "bbox": {
+    "x0": 1253.4247,
+    "y0": 1244.2914,
+    "x1": 1280.2567,
+    "y1": 1251.2733
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.59,
+   "role": "label",
+   "owner_id": "o44"
+  },
+  {
+   "id": "t34",
+   "text": "LT",
+   "bbox": {
+    "x0": 1262.9407,
+    "y0": 1278.4463,
+    "x1": 1270.7407,
+    "y1": 1286.5648
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o45"
+  },
+  {
+   "id": "t35",
+   "text": "712",
+   "bbox": {
+    "x0": 1260.9907,
+    "y0": 1287.3648,
+    "x1": 1272.6907,
+    "y1": 1295.4833
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o45"
+  },
+  {
+   "id": "t36",
+   "text": "NO.2 W.B.TK (S)",
+   "bbox": {
+    "x0": 1376.8524,
+    "y0": 1239.3781,
+    "x1": 1427.1624,
+    "y1": 1246.36
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.59,
+   "role": "label",
+   "owner_id": "o47"
+  },
+  {
+   "id": "t37",
+   "text": "LT",
+   "bbox": {
+    "x0": 1398.1074,
+    "y0": 1276.6488,
+    "x1": 1405.9074,
+    "y1": 1284.7673
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o48"
+  },
+  {
+   "id": "t38",
+   "text": "713",
+   "bbox": {
+    "x0": 1396.1574,
+    "y0": 1285.5673,
+    "x1": 1407.8574,
+    "y1": 1293.6858
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o48"
+  },
+  {
+   "id": "t39",
+   "text": "NO.3 W.B.TK (P)",
+   "bbox": {
+    "x0": 1512.0191,
+    "y0": 1234.6442,
+    "x1": 1562.3291,
+    "y1": 1241.6261
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.59,
+   "role": "label",
+   "owner_id": "o50"
+  },
+  {
+   "id": "t40",
+   "text": "3,100 M3",
+   "bbox": {
+    "x0": 1523.7581,
+    "y0": 1242.6734,
+    "x1": 1550.5901,
+    "y1": 1249.6553
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.59,
+   "role": "label",
+   "owner_id": "o50"
+  },
+  {
+   "id": "t41",
+   "text": "LT",
+   "bbox": {
+    "x0": 1533.2741,
+    "y0": 1275.2103,
+    "x1": 1541.0741,
+    "y1": 1283.3288
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o51"
+  },
+  {
+   "id": "t42",
+   "text": "714",
+   "bbox": {
+    "x0": 1531.3241,
+    "y0": 1284.1288,
+    "x1": 1543.0241,
+    "y1": 1292.2473
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.5,
+   "role": "instrument",
+   "owner_id": "o51"
+  },
+  {
+   "id": "t43",
+   "text": "S.5",
+   "bbox": {
+    "x0": 458.1622,
+    "y0": 811.6114,
+    "x1": 465.8981,
+    "y1": 822.76
+   },
+   "page": 0,
+   "rotation": 90,
+   "size": 6.194,
+   "role": "connector",
+   "owner_id": "o55"
+  },
+  {
+   "id": "t44",
+   "text": "NO.1 BALLAST PUMP",
+   "bbox": {
+    "x0": 577.8621,
+    "y0": 457.225,
+    "x1": 634.8801,
+    "y1": 464.2069
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.59,
+   "role": "label",
+   "owner_id": "o9"
+  },
+  {
+   "id": "t45",
+   "text": "HIGH SEA CHEST",
+   "bbox": {
+    "x0": 250.4119,
+    "y0": 500.6158,
+    "x1": 297.3679,
+    "y1": 507.5977
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.59,
+   "role": "label",
+   "owner_id": "o1"
+  },
+  {
+   "id": "t46",
+   "text": "NO.2 BALLAST PUMP",
+   "bbox": {
+    "x0": 577.8621,
+    "y0": 632.6269,
+    "x1": 634.8801,
+    "y1": 639.6088
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.59,
+   "role": "label",
+   "owner_id": "o16"
+  },
+  {
+   "id": "t47",
+   "text": "2,000 M3/H x 30 MTH",
+   "bbox": {
+    "x0": 574.5081,
+    "y0": 640.4466,
+    "x1": 638.2341,
+    "y1": 647.4286
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.59,
+   "role": "label",
+   "owner_id": "o16"
+  },
+  {
+   "id": "t48",
+   "text": "NO.3 BALLAST PUMP",
+   "bbox": {
+    "x0": 577.8621,
+    "y0": 785.0686,
+    "x1": 634.8801,
+    "y1": 792.0505
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.59,
+   "role": "label",
+   "owner_id": "o23"
+  },
+  {
+   "id": "t49",
+   "text": "2,000 M3/H x 30 MTH",
+   "bbox": {
+    "x0": 574.5081,
+    "y0": 792.8884,
+    "x1": 638.2341,
+    "y1": 799.8703
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.59,
+   "role": "label",
+   "owner_id": "o23"
+  },
+  {
+   "id": "t50",
+   "text": "NO.1 BWTS FILTER",
+   "bbox": {
+    "x0": 297.2569,
+    "y0": 1084.752,
+    "x1": 350.9209,
+    "y1": 1091.7339
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.59,
+   "role": "label",
+   "owner_id": "o28"
+  },
+  {
+   "id": "t51",
+   "text": "B.W.T. UNIT",
+   "bbox": {
+    "x0": 407.8406,
+    "y0": 1077.2266,
+    "x1": 444.7346,
+    "y1": 1084.2085
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.59,
+   "role": "label",
+   "owner_id": "o29"
+  },
+  {
+   "id": "t52",
+   "text": "1,500 M3/H",
+   "bbox": {
+    "x0": 409.5176,
+    "y0": 1085.0463,
+    "x1": 443.0576,
+    "y1": 1092.0282
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.59,
+   "role": "label",
+   "owner_id": "o29"
+  },
+  {
+   "id": "t53",
+   "text": "LOW SEA CHEST",
+   "bbox": {
+    "x0": 253.7351,
+    "y0": 623.8724,
+    "x1": 297.3371,
+    "y1": 630.8544
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.59,
+   "role": "label",
+   "owner_id": "o3"
+  },
+  {
+   "id": "t54",
+   "text": "OVERBOARD",
+   "bbox": {
+    "x0": 1661.8935,
+    "y0": 1228.5466,
+    "x1": 1692.0795,
+    "y1": 1235.5285
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.59,
+   "role": "label",
+   "owner_id": "o53"
+  },
+  {
+   "id": "t55",
+   "text": "TO BILGE WELL",
+   "bbox": {
+    "x0": 469.1195,
+    "y0": 803.9533,
+    "x1": 512.7215,
+    "y1": 810.9352
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.59,
+   "role": "connector",
+   "owner_id": "o55"
+  },
+  {
+   "id": "t56",
+   "text": "FROM DEBALLAST MAIN",
+   "bbox": {
+    "x0": 191.1727,
+    "y0": 703.6889,
+    "x1": 254.8987,
+    "y1": 710.6708
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.59,
+   "role": "connector",
+   "owner_id": "o5"
+  },
+  {
+   "id": "t57",
+   "text": "BA011V",
+   "bbox": {
+    "x0": 342.2393,
+    "y0": 436.5784,
+    "x1": 365.5673,
+    "y1": 444.6719
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.48,
+   "role": "tag",
+   "owner_id": "o2"
+  },
+  {
+   "id": "t58",
+   "text": "BA014V",
+   "bbox": {
+    "x0": 498.5933,
+    "y0": 420.3309,
+    "x1": 521.9213,
+    "y1": 428.4244
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.48,
+   "role": "tag",
+   "owner_id": "o7"
+  },
+  {
+   "id": "t59",
+   "text": "BA015V",
+   "bbox": {
+    "x0": 714.2087,
+    "y0": 395.6408,
+    "x1": 737.5367,
+    "y1": 403.7343
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.48,
+   "role": "tag",
+   "owner_id": "o12"
+  },
+  {
+   "id": "t60",
+   "text": "BA016V",
+   "bbox": {
+    "x0": 756.2234,
+    "y0": 387.809,
+    "x1": 779.5514,
+    "y1": 395.9025
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.48,
+   "role": "tag",
+   "owner_id": "o13"
+  },
+  {
+   "id": "t61",
+   "text": "BA017V",
+   "bbox": {
+    "x0": 498.5933,
+    "y0": 595.7328,
+    "x1": 521.9213,
+    "y1": 603.8263
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.48,
+   "role": "tag",
+   "owner_id": "o14"
+  },
+  {
+   "id": "t62",
+   "text": "BA018V",
+   "bbox": {
+    "x0": 756.2234,
+    "y0": 563.2109,
+    "x1": 779.5514,
+    "y1": 571.3044
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.48,
+   "role": "tag",
+   "owner_id": "o20"
+  },
+  {
+   "id": "t63",
+   "text": "BA019V",
+   "bbox": {
+    "x0": 498.5933,
+    "y0": 748.1745,
+    "x1": 521.9213,
+    "y1": 756.268
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.48,
+   "role": "tag",
+   "owner_id": "o21"
+  },
+  {
+   "id": "t64",
+   "text": "BA020V",
+   "bbox": {
+    "x0": 756.2234,
+    "y0": 715.6527,
+    "x1": 779.5514,
+    "y1": 723.7462
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.48,
+   "role": "tag",
+   "owner_id": "o27"
+  },
+  {
+   "id": "t65",
+   "text": "BA012V",
+   "bbox": {
+    "x0": 343.8854,
+    "y0": 558.0165,
+    "x1": 367.2135,
+    "y1": 566.11
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.48,
+   "role": "tag",
+   "owner_id": "o4"
+  },
+  {
+   "id": "t66",
+   "text": "BA021V",
+   "bbox": {
+    "x0": 659.1883,
+    "y0": 1079.2894,
+    "x1": 682.5163,
+    "y1": 1087.3829
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.48,
+   "role": "tag",
+   "owner_id": "o33"
+  },
+  {
+   "id": "t67",
+   "text": "BA022V",
+   "bbox": {
+    "x0": 362.5322,
+    "y0": 1125.4301,
+    "x1": 385.8602,
+    "y1": 1133.5236
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.48,
+   "role": "tag",
+   "owner_id": "o34"
+  },
+  {
+   "id": "t68",
+   "text": "BA023V",
+   "bbox": {
+    "x0": 872.6936,
+    "y0": 1178.3173,
+    "x1": 896.0216,
+    "y1": 1186.4108
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.48,
+   "role": "tag",
+   "owner_id": "o35"
+  },
+  {
+   "id": "t69",
+   "text": "BA024V",
+   "bbox": {
+    "x0": 1008.8636,
+    "y0": 1178.3173,
+    "x1": 1032.1916,
+    "y1": 1186.4108
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.48,
+   "role": "tag",
+   "owner_id": "o38"
+  },
+  {
+   "id": "t70",
+   "text": "BA025V",
+   "bbox": {
+    "x0": 1145.7066,
+    "y0": 1178.3173,
+    "x1": 1169.0346,
+    "y1": 1186.4108
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.48,
+   "role": "tag",
+   "owner_id": "o40"
+  },
+  {
+   "id": "t71",
+   "text": "BA026V",
+   "bbox": {
+    "x0": 1282.4831,
+    "y0": 1178.3173,
+    "x1": 1305.8111,
+    "y1": 1186.4108
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.48,
+   "role": "tag",
+   "owner_id": "o43"
+  },
+  {
+   "id": "t72",
+   "text": "BA027V",
+   "bbox": {
+    "x0": 1417.6498,
+    "y0": 1178.3173,
+    "x1": 1440.9778,
+    "y1": 1186.4108
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.48,
+   "role": "tag",
+   "owner_id": "o46"
+  },
+  {
+   "id": "t73",
+   "text": "BA028V",
+   "bbox": {
+    "x0": 1552.8165,
+    "y0": 1178.3173,
+    "x1": 1576.1445,
+    "y1": 1186.4108
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.48,
+   "role": "tag",
+   "owner_id": "o49"
+  },
+  {
+   "id": "t74",
+   "text": "BA013V",
+   "bbox": {
+    "x0": 354.1006,
+    "y0": 684.0334,
+    "x1": 377.4286,
+    "y1": 692.1269
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.48,
+   "role": "tag",
+   "owner_id": "o6"
+  },
+  {
+   "id": "t75",
+   "text": "BA029V",
+   "bbox": {
+    "x0": 1666.5926,
+    "y0": 1178.0698,
+    "x1": 1689.9206,
+    "y1": 1186.1633
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.48,
+   "role": "tag",
+   "owner_id": "o52"
+  },
+  {
+   "id": "t76",
+   "text": "450-BA-011",
+   "bbox": {
+    "x0": 297.3511,
+    "y0": 450.9426,
+    "x1": 326.0911,
+    "y1": 456.9253
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p1"
+  },
+  {
+   "id": "t77",
+   "text": "450-BA-012",
+   "bbox": {
+    "x0": 298.9973,
+    "y0": 572.3807,
+    "x1": 327.7373,
+    "y1": 578.3634
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p3"
+  },
+  {
+   "id": "t78",
+   "text": "450-BA-013",
+   "bbox": {
+    "x0": 311.0722,
+    "y0": 698.3976,
+    "x1": 339.8122,
+    "y1": 704.3803
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p5"
+  },
+  {
+   "id": "t79",
+   "text": "450-BA-014",
+   "bbox": {
+    "x0": 469.5982,
+    "y0": 434.6951,
+    "x1": 498.3382,
+    "y1": 440.6778
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p81"
+  },
+  {
+   "id": "t80",
+   "text": "450-BA-015",
+   "bbox": {
+    "x0": 855.7814,
+    "y0": 484.2864,
+    "x1": 861.7641,
+    "y1": 513.0264
+   },
+   "page": 0,
+   "rotation": 90,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p17"
+  },
+  {
+   "id": "t81",
+   "text": "450-BA-016",
+   "bbox": {
+    "x0": 474.1663,
+    "y0": 610.097,
+    "x1": 502.9063,
+    "y1": 616.0797
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p18"
+  },
+  {
+   "id": "t82",
+   "text": "450-BA-017",
+   "bbox": {
+    "x0": 804.031,
+    "y0": 577.5751,
+    "x1": 832.771,
+    "y1": 583.5578
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p28"
+  },
+  {
+   "id": "t83",
+   "text": "450-BA-018",
+   "bbox": {
+    "x0": 426.7415,
+    "y0": 762.5387,
+    "x1": 455.4815,
+    "y1": 768.5214
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p29"
+  },
+  {
+   "id": "t84",
+   "text": "450-BA-019",
+   "bbox": {
+    "x0": 804.031,
+    "y0": 730.0168,
+    "x1": 832.771,
+    "y1": 735.9996
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p39"
+  },
+  {
+   "id": "t85",
+   "text": "450-BA-020",
+   "bbox": {
+    "x0": 517.0915,
+    "y0": 912.941,
+    "x1": 545.8315,
+    "y1": 918.9237
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p40"
+  },
+  {
+   "id": "t86",
+   "text": "450-BA-021",
+   "bbox": {
+    "x0": 355.707,
+    "y0": 1093.6536,
+    "x1": 384.447,
+    "y1": 1099.6363
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p42"
+  },
+  {
+   "id": "t87",
+   "text": "450-BA-022",
+   "bbox": {
+    "x0": 532.9511,
+    "y0": 1093.6536,
+    "x1": 561.6911,
+    "y1": 1099.6363
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p46"
+  },
+  {
+   "id": "t88",
+   "text": "450-BA-023",
+   "bbox": {
+    "x0": 752.052,
+    "y0": 1093.6536,
+    "x1": 780.792,
+    "y1": 1099.6363
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p50"
+  },
+  {
+   "id": "t89",
+   "text": "450-BA-024",
+   "bbox": {
+    "x0": 307.093,
+    "y0": 1139.7943,
+    "x1": 335.833,
+    "y1": 1145.777
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p51"
+  },
+  {
+   "id": "t90",
+   "text": "350-BA-025",
+   "bbox": {
+    "x0": 848.8584,
+    "y0": 1125.8545,
+    "x1": 854.8411,
+    "y1": 1154.5945
+   },
+   "page": 0,
+   "rotation": 90,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p53"
+  },
+  {
+   "id": "t91",
+   "text": "350-BA-026",
+   "bbox": {
+    "x0": 985.0284,
+    "y0": 1125.8545,
+    "x1": 991.0111,
+    "y1": 1154.5945
+   },
+   "page": 0,
+   "rotation": 90,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p56"
+  },
+  {
+   "id": "t92",
+   "text": "350-BA-027",
+   "bbox": {
+    "x0": 1121.8714,
+    "y0": 1125.8545,
+    "x1": 1127.8541,
+    "y1": 1154.5945
+   },
+   "page": 0,
+   "rotation": 90,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p58"
+  },
+  {
+   "id": "t93",
+   "text": "350-BA-028",
+   "bbox": {
+    "x0": 1258.6479,
+    "y0": 1125.8545,
+    "x1": 1264.6306,
+    "y1": 1154.5945
+   },
+   "page": 0,
+   "rotation": 90,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p61"
+  },
+  {
+   "id": "t94",
+   "text": "350-BA-029",
+   "bbox": {
+    "x0": 1393.8146,
+    "y0": 1125.8545,
+    "x1": 1399.7973,
+    "y1": 1154.5945
+   },
+   "page": 0,
+   "rotation": 90,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p64"
+  },
+  {
+   "id": "t95",
+   "text": "350-BA-030",
+   "bbox": {
+    "x0": 1528.9813,
+    "y0": 1125.8545,
+    "x1": 1534.964,
+    "y1": 1154.5945
+   },
+   "page": 0,
+   "rotation": 90,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p67"
+  },
+  {
+   "id": "t96",
+   "text": "450-BA-031",
+   "bbox": {
+    "x0": 1580.2816,
+    "y0": 1093.6536,
+    "x1": 1609.0216,
+    "y1": 1099.6363
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p70"
+  },
+  {
+   "id": "t97",
+   "text": "450-BA-032",
+   "bbox": {
+    "x0": 1047.8622,
+    "y0": 1093.6536,
+    "x1": 1076.6022,
+    "y1": 1099.6363
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p73"
+  },
+  {
+   "id": "t98",
+   "text": "450-BA-033",
+   "bbox": {
+    "x0": 414.9593,
+    "y0": 506.0739,
+    "x1": 420.942,
+    "y1": 534.8139
+   },
+   "page": 0,
+   "rotation": 90,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p77"
+  },
+  {
+   "id": "t99",
+   "text": "450-BA-034",
+   "bbox": {
+    "x0": 855.7814,
+    "y0": 648.2082,
+    "x1": 861.7641,
+    "y1": 676.9482
+   },
+   "page": 0,
+   "rotation": 90,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p80"
+  },
+  {
+   "id": "t100",
+   "text": "50-BA-035",
+   "bbox": {
+    "x0": 453.2479,
+    "y0": 629.0564,
+    "x1": 459.2306,
+    "y1": 654.9224
+   },
+   "page": 0,
+   "rotation": 90,
+   "size": 4.79,
+   "role": "line_number",
+   "owner_id": "p83"
+  },
+  {
+   "id": "t101",
+   "text": "1",
+   "bbox": {
+    "x0": 134.1091,
+    "y0": 28.2511,
+    "x1": 138.0011,
+    "y1": 37.8691
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t102",
+   "text": "1",
+   "bbox": {
+    "x0": 134.1091,
+    "y0": 1646.1309,
+    "x1": 138.0011,
+    "y1": 1655.7489
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t103",
+   "text": "2",
+   "bbox": {
+    "x0": 326.0991,
+    "y0": 28.2511,
+    "x1": 329.9911,
+    "y1": 37.8691
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t104",
+   "text": "2",
+   "bbox": {
+    "x0": 326.0991,
+    "y0": 1646.1309,
+    "x1": 329.9911,
+    "y1": 1655.7489
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t105",
+   "text": "3",
+   "bbox": {
+    "x0": 518.089,
+    "y0": 28.2511,
+    "x1": 521.981,
+    "y1": 37.8691
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t106",
+   "text": "3",
+   "bbox": {
+    "x0": 518.089,
+    "y0": 1646.1309,
+    "x1": 521.981,
+    "y1": 1655.7489
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t107",
+   "text": "4",
+   "bbox": {
+    "x0": 710.079,
+    "y0": 28.2511,
+    "x1": 713.971,
+    "y1": 37.8691
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t108",
+   "text": "4",
+   "bbox": {
+    "x0": 710.079,
+    "y0": 1646.1309,
+    "x1": 713.971,
+    "y1": 1655.7489
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t109",
+   "text": "5",
+   "bbox": {
+    "x0": 902.069,
+    "y0": 28.2511,
+    "x1": 905.961,
+    "y1": 37.8691
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t110",
+   "text": "5",
+   "bbox": {
+    "x0": 902.069,
+    "y0": 1646.1309,
+    "x1": 905.961,
+    "y1": 1655.7489
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t111",
+   "text": "6",
+   "bbox": {
+    "x0": 1094.059,
+    "y0": 28.2511,
+    "x1": 1097.951,
+    "y1": 37.8691
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t112",
+   "text": "6",
+   "bbox": {
+    "x0": 1094.059,
+    "y0": 1646.1309,
+    "x1": 1097.951,
+    "y1": 1655.7489
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t113",
+   "text": "7",
+   "bbox": {
+    "x0": 1286.049,
+    "y0": 28.2511,
+    "x1": 1289.941,
+    "y1": 37.8691
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t114",
+   "text": "7",
+   "bbox": {
+    "x0": 1286.049,
+    "y0": 1646.1309,
+    "x1": 1289.941,
+    "y1": 1655.7489
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t115",
+   "text": "8",
+   "bbox": {
+    "x0": 1478.039,
+    "y0": 28.2511,
+    "x1": 1481.931,
+    "y1": 37.8691
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t116",
+   "text": "8",
+   "bbox": {
+    "x0": 1478.039,
+    "y0": 1646.1309,
+    "x1": 1481.931,
+    "y1": 1655.7489
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t117",
+   "text": "9",
+   "bbox": {
+    "x0": 1670.029,
+    "y0": 28.2511,
+    "x1": 1673.921,
+    "y1": 37.8691
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t118",
+   "text": "9",
+   "bbox": {
+    "x0": 1670.029,
+    "y0": 1646.1309,
+    "x1": 1673.921,
+    "y1": 1655.7489
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t119",
+   "text": "10",
+   "bbox": {
+    "x0": 1860.073,
+    "y0": 28.2511,
+    "x1": 1867.857,
+    "y1": 37.8691
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t120",
+   "text": "10",
+   "bbox": {
+    "x0": 1860.073,
+    "y0": 1646.1309,
+    "x1": 1867.857,
+    "y1": 1655.7489
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t121",
+   "text": "11",
+   "bbox": {
+    "x0": 2052.0629,
+    "y0": 28.2511,
+    "x1": 2059.8469,
+    "y1": 37.8691
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t122",
+   "text": "11",
+   "bbox": {
+    "x0": 2052.0629,
+    "y0": 1646.1309,
+    "x1": 2059.8469,
+    "y1": 1655.7489
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t123",
+   "text": "12",
+   "bbox": {
+    "x0": 2244.0529,
+    "y0": 28.2511,
+    "x1": 2251.8369,
+    "y1": 37.8691
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t124",
+   "text": "12",
+   "bbox": {
+    "x0": 2244.0529,
+    "y0": 1646.1309,
+    "x1": 2251.8369,
+    "y1": 1655.7489
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t125",
+   "text": "A",
+   "bbox": {
+    "x0": 30.7256,
+    "y0": 135.4936,
+    "x1": 35.3946,
+    "y1": 145.1116
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t126",
+   "text": "A",
+   "bbox": {
+    "x0": 2348.6054,
+    "y0": 135.4936,
+    "x1": 2353.2744,
+    "y1": 145.1116
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t127",
+   "text": "B",
+   "bbox": {
+    "x0": 30.7256,
+    "y0": 335.9786,
+    "x1": 35.3946,
+    "y1": 345.5966
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t128",
+   "text": "B",
+   "bbox": {
+    "x0": 2348.6054,
+    "y0": 335.9786,
+    "x1": 2353.2744,
+    "y1": 345.5966
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t129",
+   "text": "C",
+   "bbox": {
+    "x0": 30.5331,
+    "y0": 536.4635,
+    "x1": 35.5871,
+    "y1": 546.0815
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t130",
+   "text": "C",
+   "bbox": {
+    "x0": 2348.4129,
+    "y0": 536.4635,
+    "x1": 2353.4669,
+    "y1": 546.0815
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t131",
+   "text": "D",
+   "bbox": {
+    "x0": 30.5331,
+    "y0": 736.9485,
+    "x1": 35.5871,
+    "y1": 746.5665
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t132",
+   "text": "D",
+   "bbox": {
+    "x0": 2348.4129,
+    "y0": 736.9485,
+    "x1": 2353.4669,
+    "y1": 746.5665
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t133",
+   "text": "E",
+   "bbox": {
+    "x0": 30.7256,
+    "y0": 937.4335,
+    "x1": 35.3946,
+    "y1": 947.0515
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t134",
+   "text": "E",
+   "bbox": {
+    "x0": 2348.6054,
+    "y0": 937.4335,
+    "x1": 2353.2744,
+    "y1": 947.0515
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t135",
+   "text": "F",
+   "bbox": {
+    "x0": 30.9216,
+    "y0": 1137.9185,
+    "x1": 35.1986,
+    "y1": 1147.5365
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t136",
+   "text": "F",
+   "bbox": {
+    "x0": 2348.8014,
+    "y0": 1137.9185,
+    "x1": 2353.0784,
+    "y1": 1147.5365
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t137",
+   "text": "G",
+   "bbox": {
+    "x0": 30.3371,
+    "y0": 1338.4034,
+    "x1": 35.7831,
+    "y1": 1348.0214
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t138",
+   "text": "G",
+   "bbox": {
+    "x0": 2348.2169,
+    "y0": 1338.4034,
+    "x1": 2353.6629,
+    "y1": 1348.0214
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t139",
+   "text": "H",
+   "bbox": {
+    "x0": 30.5331,
+    "y0": 1538.8884,
+    "x1": 35.5871,
+    "y1": 1548.5064
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t140",
+   "text": "H",
+   "bbox": {
+    "x0": 2348.4129,
+    "y0": 1538.8884,
+    "x1": 2353.4669,
+    "y1": 1548.5064
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t141",
+   "text": "REV.",
+   "bbox": {
+    "x0": 1839.2199,
+    "y0": 1429.3678,
+    "x1": 1850.2599,
+    "y1": 1435.1132
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t142",
+   "text": "DATE",
+   "bbox": {
+    "x0": 1906.8199,
+    "y0": 1429.3678,
+    "x1": 1917.8599,
+    "y1": 1435.1132
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t143",
+   "text": "DESCRIPTION",
+   "bbox": {
+    "x0": 2058.3599,
+    "y0": 1429.3678,
+    "x1": 2088.7199,
+    "y1": 1435.1132
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t144",
+   "text": "DWN",
+   "bbox": {
+    "x0": 2209.7999,
+    "y0": 1429.3678,
+    "x1": 2218.0799,
+    "y1": 1435.1132
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t145",
+   "text": "CHK",
+   "bbox": {
+    "x0": 2261.7999,
+    "y0": 1429.3678,
+    "x1": 2270.0799,
+    "y1": 1435.1132
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t146",
+   "text": "APP",
+   "bbox": {
+    "x0": 2313.7999,
+    "y0": 1429.3678,
+    "x1": 2322.0799,
+    "y1": 1435.1132
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t147",
+   "text": "0",
+   "bbox": {
+    "x0": 1825.9399,
+    "y0": 1439.2371,
+    "x1": 1829.3059,
+    "y1": 1446.244
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t148",
+   "text": "2026-01-15",
+   "bbox": {
+    "x0": 1867.5399,
+    "y0": 1439.2371,
+    "x1": 1901.1999,
+    "y1": 1446.244
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t149",
+   "text": "ISSUED FOR APPROVAL",
+   "bbox": {
+    "x0": 1961.1399,
+    "y0": 1439.2371,
+    "x1": 2025.0939,
+    "y1": 1446.244
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t150",
+   "text": "LIM",
+   "bbox": {
+    "x0": 2189.9399,
+    "y0": 1439.2371,
+    "x1": 2200.0379,
+    "y1": 1446.244
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t151",
+   "text": "CHOI",
+   "bbox": {
+    "x0": 2241.9399,
+    "y0": 1439.2371,
+    "x1": 2255.4039,
+    "y1": 1446.244
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t152",
+   "text": "KIM",
+   "bbox": {
+    "x0": 2293.9399,
+    "y0": 1439.2371,
+    "x1": 2304.0379,
+    "y1": 1446.244
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t153",
+   "text": "1",
+   "bbox": {
+    "x0": 1825.9399,
+    "y0": 1449.7371,
+    "x1": 1829.3059,
+    "y1": 1456.744
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t154",
+   "text": "2026-02-16",
+   "bbox": {
+    "x0": 1867.5399,
+    "y0": 1449.7371,
+    "x1": 1901.1999,
+    "y1": 1456.744
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t155",
+   "text": "ISSUED FOR OWNER'S COMMENT",
+   "bbox": {
+    "x0": 1961.1399,
+    "y0": 1449.7371,
+    "x1": 2048.6559,
+    "y1": 1456.744
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t156",
+   "text": "LIM",
+   "bbox": {
+    "x0": 2189.9399,
+    "y0": 1449.7371,
+    "x1": 2200.0379,
+    "y1": 1456.744
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t157",
+   "text": "CHOI",
+   "bbox": {
+    "x0": 2241.9399,
+    "y0": 1449.7371,
+    "x1": 2255.4039,
+    "y1": 1456.744
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t158",
+   "text": "KIM",
+   "bbox": {
+    "x0": 2293.9399,
+    "y0": 1449.7371,
+    "x1": 2304.0379,
+    "y1": 1456.744
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t159",
+   "text": "2",
+   "bbox": {
+    "x0": 1825.9399,
+    "y0": 1460.2371,
+    "x1": 1829.3059,
+    "y1": 1467.244
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t160",
+   "text": "2026-08-26",
+   "bbox": {
+    "x0": 1867.5399,
+    "y0": 1460.2371,
+    "x1": 1901.1999,
+    "y1": 1467.244
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t161",
+   "text": "FINAL (AS BUILT)",
+   "bbox": {
+    "x0": 1961.1399,
+    "y0": 1460.2371,
+    "x1": 2014.9959,
+    "y1": 1467.244
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t162",
+   "text": "LIM",
+   "bbox": {
+    "x0": 2189.9399,
+    "y0": 1460.2371,
+    "x1": 2200.0379,
+    "y1": 1467.244
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t163",
+   "text": "CHOI",
+   "bbox": {
+    "x0": 2241.9399,
+    "y0": 1460.2371,
+    "x1": 2255.4039,
+    "y1": 1467.244
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t164",
+   "text": "KIM",
+   "bbox": {
+    "x0": 2293.9399,
+    "y0": 1460.2371,
+    "x1": 2304.0379,
+    "y1": 1467.244
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t165",
+   "text": "3",
+   "bbox": {
+    "x0": 1825.9399,
+    "y0": 1470.7371,
+    "x1": 1829.3059,
+    "y1": 1477.744
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t166",
+   "text": "2026-11-24",
+   "bbox": {
+    "x0": 1867.5399,
+    "y0": 1470.7371,
+    "x1": 1901.1999,
+    "y1": 1477.744
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t167",
+   "text": "REVISED AS PER OWNER'S COMMENT",
+   "bbox": {
+    "x0": 1961.1399,
+    "y0": 1470.7371,
+    "x1": 2062.1199,
+    "y1": 1477.744
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t168",
+   "text": "LIM",
+   "bbox": {
+    "x0": 2189.9399,
+    "y0": 1470.7371,
+    "x1": 2200.0379,
+    "y1": 1477.744
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t169",
+   "text": "CHOI",
+   "bbox": {
+    "x0": 2241.9399,
+    "y0": 1470.7371,
+    "x1": 2255.4039,
+    "y1": 1477.744
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t170",
+   "text": "KIM",
+   "bbox": {
+    "x0": 2293.9399,
+    "y0": 1470.7371,
+    "x1": 2304.0379,
+    "y1": 1477.744
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.61,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t171",
+   "text": "DRAWN",
+   "bbox": {
+    "x0": 1825.9399,
+    "y0": 1481.4905,
+    "x1": 1839.7399,
+    "y1": 1487.2359
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t172",
+   "text": "K.W. LIM",
+   "bbox": {
+    "x0": 1827.9399,
+    "y0": 1488.7359,
+    "x1": 1856.4519,
+    "y1": 1496.155
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.94,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t173",
+   "text": "CHECKED",
+   "bbox": {
+    "x0": 1955.9399,
+    "y0": 1481.4905,
+    "x1": 1975.2599,
+    "y1": 1487.2359
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t174",
+   "text": "D.K. CHOI",
+   "bbox": {
+    "x0": 1957.9399,
+    "y0": 1488.7359,
+    "x1": 1990.0159,
+    "y1": 1496.155
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.94,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t175",
+   "text": "APPROVED",
+   "bbox": {
+    "x0": 2085.9399,
+    "y0": 1481.4905,
+    "x1": 2108.0199,
+    "y1": 1487.2359
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t176",
+   "text": "J.H. KIM",
+   "bbox": {
+    "x0": 2087.9399,
+    "y0": 1488.7359,
+    "x1": 2116.4519,
+    "y1": 1496.155
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.94,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t177",
+   "text": "DATE",
+   "bbox": {
+    "x0": 2215.9399,
+    "y0": 1481.4905,
+    "x1": 2226.9799,
+    "y1": 1487.2359
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t178",
+   "text": "2026-11-24",
+   "bbox": {
+    "x0": 2217.9399,
+    "y0": 1488.7359,
+    "x1": 2253.5799,
+    "y1": 1496.155
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.94,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t179",
+   "text": "HALCYON OFFSHORE & SHIPBUILDING",
+   "bbox": {
+    "x0": 1986.2899,
+    "y0": 1501.655,
+    "x1": 2181.5899,
+    "y1": 1516.355
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 10.5,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t180",
+   "text": "OWNER : POLARIS MARITIME CORP.",
+   "bbox": {
+    "x0": 2038.3999,
+    "y0": 1517.855,
+    "x1": 2129.4799,
+    "y1": 1524.1749
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.06,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t181",
+   "text": "HULL NO.",
+   "bbox": {
+    "x0": 1825.9399,
+    "y0": 1528.6749,
+    "x1": 1848.0199,
+    "y1": 1534.4203
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t182",
+   "text": "H.7694",
+   "bbox": {
+    "x0": 1905.6399,
+    "y0": 1535.9203,
+    "x1": 1939.8399,
+    "y1": 1549.2203
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 9.5,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t183",
+   "text": "SHIP TYPE",
+   "bbox": {
+    "x0": 2023.5399,
+    "y0": 1528.6749,
+    "x1": 2048.3799,
+    "y1": 1534.4203
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t184",
+   "text": "24,000 TEU CONTAINER CARRIER",
+   "bbox": {
+    "x0": 2111.3399,
+    "y0": 1535.9203,
+    "x1": 2254.1399,
+    "y1": 1547.8203
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 8.5,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t185",
+   "text": "TITLE",
+   "bbox": {
+    "x0": 1825.9399,
+    "y0": 1553.7203,
+    "x1": 1839.7399,
+    "y1": 1559.4657
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t186",
+   "text": "BALLAST WATER SYSTEM",
+   "bbox": {
+    "x0": 2017.9399,
+    "y0": 1561.8507,
+    "x1": 2149.9399,
+    "y1": 1577.2507
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 11.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t187",
+   "text": "DIAGRAMMATIC PIPING",
+   "bbox": {
+    "x0": 2021.2399,
+    "y0": 1578.0207,
+    "x1": 2146.6399,
+    "y1": 1593.4207
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 11.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t188",
+   "text": "SCALE",
+   "bbox": {
+    "x0": 1825.9399,
+    "y0": 1598.8057,
+    "x1": 1839.7399,
+    "y1": 1604.5511
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t189",
+   "text": "NONE",
+   "bbox": {
+    "x0": 1881.0199,
+    "y0": 1606.0511,
+    "x1": 1896.8599,
+    "y1": 1614.2945
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t190",
+   "text": "SHEET",
+   "bbox": {
+    "x0": 1955.9399,
+    "y0": 1598.8057,
+    "x1": 1969.7399,
+    "y1": 1604.5511
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t191",
+   "text": "1 OF 1",
+   "bbox": {
+    "x0": 2007.0599,
+    "y0": 1606.0511,
+    "x1": 2030.8199,
+    "y1": 1614.2945
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t192",
+   "text": "SIZE",
+   "bbox": {
+    "x0": 2085.9399,
+    "y0": 1598.8057,
+    "x1": 2096.9799,
+    "y1": 1604.5511
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t193",
+   "text": "A1",
+   "bbox": {
+    "x0": 2144.9799,
+    "y0": 1606.0511,
+    "x1": 2152.8999,
+    "y1": 1614.2945
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t194",
+   "text": "SYSTEM CODE",
+   "bbox": {
+    "x0": 2215.9399,
+    "y0": 1598.8057,
+    "x1": 2246.2999,
+    "y1": 1604.5511
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t195",
+   "text": "BA",
+   "bbox": {
+    "x0": 2274.9799,
+    "y0": 1606.0511,
+    "x1": 2282.8999,
+    "y1": 1614.2945
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 6.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t196",
+   "text": "DWG. NO.",
+   "bbox": {
+    "x0": 1825.9399,
+    "y0": 1618.7945,
+    "x1": 1848.0199,
+    "y1": 1624.5399
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t197",
+   "text": "57694-BA447",
+   "bbox": {
+    "x0": 1995.6399,
+    "y0": 1626.0399,
+    "x1": 2068.2399,
+    "y1": 1641.4399
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 11.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t198",
+   "text": "REV.",
+   "bbox": {
+    "x0": 2241.9399,
+    "y0": 1618.7945,
+    "x1": 2252.9799,
+    "y1": 1624.5399
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 4.6,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t199",
+   "text": "3",
+   "bbox": {
+    "x0": 2288.6399,
+    "y0": 1626.0399,
+    "x1": 2295.2399,
+    "y1": 1641.4399
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 11.0,
+   "role": "title_block",
+   "owner_id": null
+  },
+  {
+   "id": "t200",
+   "text": "GENERAL NOTES",
+   "bbox": {
+    "x0": 1836.9399,
+    "y0": 1371.6527,
+    "x1": 1896.3039,
+    "y1": 1382.3078
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 7.611,
+   "role": "note",
+   "owner_id": null
+  },
+  {
+   "id": "t201",
+   "text": "1.",
+   "bbox": {
+    "x0": 1836.9399,
+    "y0": 1386.5698,
+    "x1": 1843.9652,
+    "y1": 1393.882
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.854,
+   "role": "note",
+   "owner_id": null
+  },
+  {
+   "id": "t202",
+   "text": "LINE NUMBER DESIGNATION: SIZE - SYSTEM CODE - SERIAL NO. - PIPE CLASS.",
+   "bbox": {
+    "x0": 1850.9399,
+    "y0": 1386.5698,
+    "x1": 2096.8261,
+    "y1": 1393.882
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.854,
+   "role": "note",
+   "owner_id": null
+  },
+  {
+   "id": "t203",
+   "text": "2.",
+   "bbox": {
+    "x0": 1836.9399,
+    "y0": 1395.7101,
+    "x1": 1843.9652,
+    "y1": 1403.0222
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.854,
+   "role": "note",
+   "owner_id": null
+  },
+  {
+   "id": "t204",
+   "text": "DIMENSIONS AND ELEVATIONS SEE PIPING ARRANGEMENT DRAWINGS.",
+   "bbox": {
+    "x0": 1850.9399,
+    "y0": 1395.7101,
+    "x1": 2054.6742,
+    "y1": 1403.0222
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.854,
+   "role": "note",
+   "owner_id": null
+  },
+  {
+   "id": "t205",
+   "text": "3.",
+   "bbox": {
+    "x0": 1836.9399,
+    "y0": 1404.8503,
+    "x1": 1843.9652,
+    "y1": 1412.1625
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.854,
+   "role": "note",
+   "owner_id": null
+  },
+  {
+   "id": "t206",
+   "text": "BALLAST WATER TREATMENT SYSTEM TO COMPLY WITH IMO BWM CONVENTION REG. D-2.",
+   "bbox": {
+    "x0": 1850.9399,
+    "y0": 1404.8503,
+    "x1": 2110.8767,
+    "y1": 1412.1625
+   },
+   "page": 0,
+   "rotation": 0,
+   "size": 5.854,
+   "role": "note",
+   "owner_id": null
+  }
+ ],
+ "meta": {
+  "generator": "shippid.datasets.synthetic",
+  "seed": 7,
+  "attempt": 0,
+  "paper": "A1",
+  "symbol_scale": 17.404,
+  "crossings": 2,
+  "labels_dropped": 0,
+  "drains_skipped": 0,
+  "bands": true,
+  "sheet_layout": "right",
+  "fanout": true
+ }
+}

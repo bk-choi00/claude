@@ -8,7 +8,11 @@
   search by tag / id / label / line number (the human label is the ``label`` extra:
   GLTFLoader puts the glTF node name into ``userData.name``). Needs network access to the CDN for the three.js modules only.
 * ``mode="plotly"`` -- fully offline HTML (plotly.js embedded): one Mesh3d per object / pipe
-  with hover text, legend groups per system, ``aspectmode="data"``.
+  with hover text, legend groups per system, ``aspectmode="data"``. Vertices are sent as float32,
+  faces as int32, one ``color`` per single-colour item and otherwise a per-face part index
+  (``intensity`` in cell mode over a discrete colour scale) instead of a per-face colour string.
+  Every string from the drawing (title, drawing number, tags, labels...) is HTML-escaped: plotly
+  renders pseudo-HTML (``<a href>``, ``<span style>``) in titles and hover texts.
 """
 
 from __future__ import annotations
@@ -146,6 +150,7 @@ def _write_plotly(layout: Layout3D, doc: PIDDocument, out: Path) -> Path:
     for it in scene_items(layout, doc, outline=False):
         verts, faces, colors = [], [], []
         base = 0
+        palette: dict[str, int] = {}
         for part in it.parts:
             v = np.asarray(part.mesh.vertices, dtype=float)
             v = (np.c_[v, np.ones(len(v))] @ it.transform.T)[:, :3]
@@ -153,31 +158,42 @@ def _write_plotly(layout: Layout3D, doc: PIDDocument, out: Path) -> Path:
             base += len(v)
             verts.append(v)
             faces.append(f)
-            colors += [_hex(part.color)] * len(f)
+            colors.append(np.full(len(f), palette.setdefault(_hex(part.color), len(palette)), dtype=np.uint8))
         if not verts:
             continue
-        V, F = np.vstack(verts), np.vstack(faces)
+        # float32 vertices; int64 faces, which plotly downcasts to the smallest integer type (int8 / int16 / int32)
+        V, F = np.vstack(verts).astype(np.float32), np.vstack(faces).astype(np.int64)
+        hexes = list(palette)
+        if len(hexes) == 1:
+            paint: dict[str, Any] = {"color": hexes[0]}
+        else:  # part index per face over a discrete colour scale (exact colour at each stop)
+            k = len(hexes) - 1
+            paint = {"intensity": np.concatenate(colors), "intensitymode": "cell", "cmin": 0, "cmax": k,
+                     "colorscale": [[i / k, h] for i, h in enumerate(hexes)], "showscale": False}
         ex = it.extras
         if it.kind == "deck":
             group, label = "structure", sys_labels["structure"]
-            text = ex.get("label", it.node)
+            text = html.escape(str(ex.get("label", it.node)))
             opacity = 0.15
         else:
             group, label = it.system, sys_labels.get(it.system, it.system)
             rows = [f"<b>{html.escape(str(ex.get('tag') or ex.get('id')))}</b>"]
             for k in ("label", "class", "category", "line_number", "size", "medium", "deck", "rationale"):
                 if ex.get(k) not in (None, "", []):
-                    rows.append(f"{FIELD_KO.get(k, k)}: {html.escape(str(ex[k]))[:120]}")
+                    rows.append(f"{FIELD_KO.get(k, k)}: {html.escape(str(ex[k])[:120])}")
             text = "<br>".join(rows)
             opacity = 1.0
         fig.add_trace(go.Mesh3d(
-            x=V[:, 0], y=V[:, 1], z=V[:, 2], i=F[:, 0], j=F[:, 1], k=F[:, 2], facecolor=colors,
-            opacity=opacity, flatshading=True, name=label, legendgroup=group, showlegend=group not in shown,
-            hovertext=text, hoverinfo="text", lighting={"ambient": 0.55, "diffuse": 0.8, "specular": 0.2},
+            x=V[:, 0], y=V[:, 1], z=V[:, 2], i=F[:, 0], j=F[:, 1], k=F[:, 2], **paint,
+            opacity=opacity, flatshading=True, name=html.escape(str(label)), legendgroup=group,
+            showlegend=group not in shown, hovertext=text, hoverinfo="text",
+            lighting={"ambient": 0.55, "diffuse": 0.8, "specular": 0.2},
         ))
         shown.add(group)
     drawing = data["drawing"]
-    title = f"{drawing.get('title') or ''} {drawing.get('drawing_no') or ''} – planner: {layout.planner}".strip()
+    # drawing strings come from the PDF: plotly would render <a href> / <span style> in the title
+    title = " ".join(html.escape(str(x)) for x in (drawing.get("title"), drawing.get("drawing_no")) if x)
+    title = f"{title} – planner: {html.escape(str(layout.planner))}".strip(" –")
     fig.update_layout(
         title=title, legend={"groupclick": "togglegroup", "title": {"text": "계통"}},
         scene={"aspectmode": "data", "xaxis": {"title": {"text": "x 선수방향 (m)"}},

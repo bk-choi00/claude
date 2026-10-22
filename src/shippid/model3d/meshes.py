@@ -14,7 +14,8 @@ control, safety) with the actuator in its own colour, pipes use ISO 14726 colour
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from collections import OrderedDict
+from dataclasses import dataclass, replace
 from typing import Optional, Sequence
 
 import numpy as np
@@ -446,35 +447,124 @@ def category_of(cls: SymbolClass) -> Category:
     return get_symbol(cls).category if cls != S.UNKNOWN else Category.EQUIPMENT
 
 
+class _MeshCache:
+    """Bounded LRU of built meshes keyed by their parameters (the GLB and the plotly viewer build the
+    same parts; parallel valves of one size share theirs). Entries are shared: callers copy a mesh
+    before changing it (the scene does)."""
+
+    def __init__(self, max_vertices: int):
+        self.max_vertices = max_vertices
+        self.vertices = 0
+        self.data: OrderedDict = OrderedDict()
+
+    def get(self, key):
+        v = self.data.get(key)
+        if v is not None:
+            self.data.move_to_end(key)
+        return v
+
+    def put(self, key, value, n_vertices: int) -> None:
+        self.data[key] = (value, n_vertices)
+        self.vertices += n_vertices
+        while self.vertices > self.max_vertices and len(self.data) > 1:
+            _, (_, n) = self.data.popitem(last=False)
+            self.vertices -= n
+
+
+_PART_CACHE = _MeshCache(1_000_000)  # vertices kept (about 50 MB with faces at most)
+_PIPE_CACHE = _MeshCache(2_000_000)
+
+
 def object_parts(cls: SymbolClass, size: Sequence[float], actuator: ActuatorType = ActuatorType.NONE
                  ) -> list[Part]:
-    """Parts of one object in its local frame (see module docstring)."""
+    """Parts of one object in its local frame (see module docstring). Cached per (class, size,
+    actuator): the meshes are shared, copy one before modifying it."""
     l, w, h = (max(float(x), 0.02) for x in size)
+    key = (cls, l, w, h, actuator)
+    hit = _PART_CACHE.get(key)
+    if hit is not None:
+        return [replace(p) for p in hit[0]]
     cat = category_of(cls)
     if cat == Category.VALVE:
-        return _valve(cls, actuator, l, w, h)
-    if cat == Category.INSTRUMENT:
-        return _instrument(cls, l, w, h)
-    if cat == Category.FITTING:
-        return _fitting(cls, l, w, h)
-    builder = _EQUIPMENT_BUILDERS.get(cls, _unknown)
-    return builder(l, w, h)
+        parts = _valve(cls, actuator, l, w, h)
+    elif cat == Category.INSTRUMENT:
+        parts = _instrument(cls, l, w, h)
+    elif cat == Category.FITTING:
+        parts = _fitting(cls, l, w, h)
+    else:
+        parts = _EQUIPMENT_BUILDERS.get(cls, _unknown)(l, w, h)
+    _PART_CACHE.put(key, parts, sum(len(p.mesh.vertices) for p in parts))
+    return [replace(p) for p in parts]
+
+
+_UNIT_CYL: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+_UNIT_SPHERE: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+_ALIGN: dict[tuple[float, float, float], np.ndarray] = {}
+
+
+def _unit_cylinder(sections: int) -> tuple[np.ndarray, np.ndarray]:
+    t = _UNIT_CYL.get(sections)
+    if t is None:
+        m = trimesh.creation.cylinder(radius=1.0, height=1.0, sections=sections)
+        t = _UNIT_CYL[sections] = (np.asarray(m.vertices, dtype=np.float64), np.asarray(m.faces, dtype=np.int64))
+    return t
+
+
+def _unit_sphere(subdivisions: int) -> tuple[np.ndarray, np.ndarray]:
+    t = _UNIT_SPHERE.get(subdivisions)
+    if t is None:
+        m = trimesh.creation.icosphere(subdivisions=subdivisions, radius=1.0)
+        t = _UNIT_SPHERE[subdivisions] = (np.asarray(m.vertices, dtype=np.float64),
+                                          np.asarray(m.faces, dtype=np.int64))
+    return t
+
+
+def _align_z(u: np.ndarray) -> np.ndarray:
+    """Rotation taking +z to the unit vector ``u`` (trimesh's ``align_vectors``, cached per direction:
+    the routes are orthogonal, so a handful of directions cover every segment)."""
+    key = (round(float(u[0]), 9), round(float(u[1]), 9), round(float(u[2]), 9))
+    rot = _ALIGN.get(key)
+    if rot is None:
+        rot = trimesh.geometry.align_vectors([0.0, 0.0, 1.0], u)[:3, :3]
+        if len(_ALIGN) > 4096:
+            _ALIGN.clear()
+        _ALIGN[key] = rot
+    return rot
 
 
 def pipe_mesh(points: Sequence[Sequence[float]], diameter: float, sections: int = 14) -> Optional[trimesh.Trimesh]:
-    """Pipe as cylinders per straight segment plus spherical elbows at the bends."""
+    """Pipe as cylinders per straight segment plus spherical elbows at the bends: one unit cylinder
+    and one unit icosphere transformed per segment / bend with numpy (the same geometry as
+    ``trimesh.creation.cylinder(segment=...)`` + ``icosphere``, without building a mesh per piece).
+    Cached per (points, diameter, sections); the mesh is shared, copy it before modifying it."""
     r = max(diameter / 2, 0.005)
-    pts = [np.asarray(p, dtype=float) for p in points]
-    meshes = []
+    pts = np.asarray(points, dtype=float).reshape(-1, 3)
+    key = (pts.round(6).tobytes(), round(float(r), 6), int(sections))
+    hit = _PIPE_CACHE.get(key)
+    if hit is not None:
+        return hit[0]
+    cv, cf = _unit_cylinder(sections)
+    sv, sf = _unit_sphere(1)
+    verts, faces = [], []
+    off = 0
     for a, b in zip(pts, pts[1:]):
-        if np.linalg.norm(b - a) < 1e-6:
+        v = b - a
+        length = float(np.linalg.norm(v))
+        if length < 1e-6:
             continue
-        meshes.append(trimesh.creation.cylinder(radius=r, segment=[a, b], sections=sections))
+        rot = _align_z(v / length)
+        verts.append((cv * (r, r, length)) @ rot.T + (a + v * 0.5))
+        faces.append(cf + off)
+        off += len(cv)
     for p in pts[1:-1]:
-        meshes.append(sphere(r, p, subdivisions=1))
-    if not meshes:
+        verts.append(sv * r + p)
+        faces.append(sf + off)
+        off += len(sv)
+    if not verts:
         return None
-    return trimesh.util.concatenate(meshes)
+    mesh = trimesh.Trimesh(vertices=np.vstack(verts), faces=np.vstack(faces), process=False)
+    _PIPE_CACHE.put(key, mesh, len(mesh.vertices))
+    return mesh
 
 
 def pipe_color(medium: Medium) -> RGB:

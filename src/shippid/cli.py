@@ -121,13 +121,17 @@ def cmd_extract(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace, stages: Sequence[str]) -> int:
-    from .pipeline import run_pipeline, summarize
+    from .pipeline import nothing_extracted, run_pipeline, summarize
 
     cfg = _config(args)
     result = run_pipeline(args.pdf, args.out, cfg, pages=getattr(args, "pages", None),
                           planner=getattr(args, "planner", "auto"),
                           viewer=getattr(args, "viewer", "threejs"), stages=stages)
     _print(summarize(result))
+    if nothing_extracted(result):
+        print("shippid: error: no readable vector content (scanned or empty pages); see pages_not_analysed",
+              file=sys.stderr)
+        return 1
     return 0
 
 

@@ -1,0 +1,10 @@
+﻿id,tag,name,class,type_en,type_ko,page,x,y,confidence,source,letters,loop,variable,function,description,location,measured_on,signal_to,service
+o1,PI-221,,instrument_local,Local instrument,현장 계기,0,787.5,160.3,1.0,vector,PI,221,pressure,indicator,pressure indicator,local (field),350A-SW-016-3S,,
+o2,PT-222,,instrument_panel,Panel / remote instrument,원격(패널) 계기,0,833.8,160.3,0.993,vector,PT,222,pressure,transmitter,pressure transmitter,panel / remote,350A-SW-016-3S,,
+o5,PI-220,,instrument_local,Local instrument,현장 계기,0,614.8,214.3,1.0,vector,PI,220,pressure,indicator,pressure indicator,local (field),350A-SW-015-3S,,
+o12,PI-224,,instrument_local,Local instrument,현장 계기,0,787.5,358.9,1.0,vector,PI,224,pressure,indicator,pressure indicator,local (field),350A-SW-018-3S,,
+o13,PT-225,,instrument_panel,Panel / remote instrument,원격(패널) 계기,0,833.8,358.9,0.993,vector,PT,225,pressure,transmitter,pressure transmitter,panel / remote,350A-SW-018-3S,,
+o17,PI-223,,instrument_local,Local instrument,현장 계기,0,614.8,412.9,1.0,vector,PI,223,pressure,indicator,pressure indicator,local (field),350A-SW-017-3S,,
+o24,PI-227,,instrument_local,Local instrument,현장 계기,0,787.5,546.2,1.0,vector,PI,227,pressure,indicator,pressure indicator,local (field),350A-SW-020-3S,,
+o25,PT-228,,instrument_panel,Panel / remote instrument,원격(패널) 계기,0,833.8,546.2,0.993,vector,PT,228,pressure,transmitter,pressure transmitter,panel / remote,350A-SW-020-3S,,
+o28,PI-226,,instrument_local,Local instrument,현장 계기,0,614.8,600.2,1.0,vector,PI,226,pressure,indicator,pressure indicator,local (field),350A-SW-019-3S,,

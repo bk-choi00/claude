@@ -209,30 +209,35 @@ def item_box(pl: Placement3D, obj: Optional[PIDObject]) -> Box3:
 
 
 class _BoxSet:
-    """Growable list of axis-aligned boxes (with a radius and a tag) and cached numpy views."""
+    """Growable list of axis-aligned boxes (with a radius and a tag) as numpy arrays (capacity
+    doubling: adding a box and reading the arrays are both cheap, also for tens of thousands)."""
 
     def __init__(self) -> None:
-        self.lo: list[tuple[float, float, float]] = []
-        self.hi: list[tuple[float, float, float]] = []
-        self.r: list[float] = []
+        self._n = 0
+        self._lo = np.zeros((64, 3))
+        self._hi = np.zeros((64, 3))
+        self._r = np.zeros(64)
         self.tag: list[Any] = []
-        self._arr: Optional[tuple[np.ndarray, np.ndarray, np.ndarray]] = None
 
     def __len__(self) -> int:
-        return len(self.lo)
+        return self._n
 
     def add(self, lo: Sequence[float], hi: Sequence[float], r: float = 0.0, tag: Any = None) -> None:
-        self.lo.append((float(lo[0]), float(lo[1]), float(lo[2])))
-        self.hi.append((float(hi[0]), float(hi[1]), float(hi[2])))
-        self.r.append(float(r))
+        n = self._n
+        if n == len(self._r):
+            self._lo = np.resize(self._lo, (2 * n, 3))
+            self._hi = np.resize(self._hi, (2 * n, 3))
+            self._r = np.resize(self._r, 2 * n)
+        self._lo[n] = (float(lo[0]), float(lo[1]), float(lo[2]))
+        self._hi[n] = (float(hi[0]), float(hi[1]), float(hi[2]))
+        self._r[n] = float(r)
         self.tag.append(tag)
-        self._arr = None
+        self._n = n + 1
 
     def arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        if self._arr is None:
-            self._arr = (np.array(self.lo, dtype=float).reshape(-1, 3), np.array(self.hi, dtype=float).reshape(-1, 3),
-                         np.array(self.r, dtype=float))
-        return self._arr
+        """(lo, hi, radius) of the boxes added so far (views: do not modify)."""
+        n = self._n
+        return self._lo[:n], self._hi[:n], self._r[:n]
 
 
 class VoxelGrid:
@@ -371,6 +376,7 @@ class VoxelGrid:
         occupied; pipes and reserved cells too in a first pass unless ``hard_only``."""
         blocked = self.blocked(inflate)
         LO, HI, _ = self.items.arrays()
+        LOi, HIi = LO - inflate, HI + inflate  # bodies inflated once per search, not per cell
 
         def ok(q: Cell, strict: bool) -> bool:
             if blocked[q]:
@@ -381,7 +387,7 @@ class VoxelGrid:
                 return False
             if len(LO):
                 p = np.array(self.center(q))
-                if np.any(np.all((p > LO - inflate) & (p < HI + inflate), axis=1)):
+                if np.any(np.all((p > LOi) & (p < HIi), axis=1)):
                     return False
             return True
 
@@ -812,7 +818,11 @@ def _join(ctx: _Ctx, p: Pt, q: Pt) -> list[Pt]:
         return [q]
     g = ctx.grid
     ILO, IHI, _ = g.items.arrays()
-    BLO, BHI = np.vstack([ctx.eq_lo, ILO]), np.vstack([ctx.eq_hi, IHI])
+    # every candidate path stays inside the box spanned by p and q: only boxes overlapping it can count
+    lo, hi = np.minimum(p, q) - 0.05, np.maximum(p, q) + 0.05
+    me = np.all((ctx.eq_lo < hi) & (ctx.eq_hi > lo), axis=1)
+    mi = np.all((ILO < hi) & (IHI > lo), axis=1) if len(ILO) else np.zeros(0, dtype=bool)
+    BLO, BHI = np.vstack([ctx.eq_lo[me], ILO[mi]]), np.vstack([ctx.eq_hi[me], IHI[mi]])
     best, best_hits = None, None
     for order in ((2, 0, 1), (0, 1, 2), (1, 0, 2), (0, 2, 1), (1, 2, 0), (2, 1, 0)):
         pts = [p]
@@ -1835,6 +1845,24 @@ def _spread_nodes(ctx: _Ctx, chains: Sequence[_Chain], nodes: dict[str, Pt], pma
     hi = (room.length - 0.5, room.breadth / 2 - 0.5)
     names = sorted(pos)
     min_gap = 2 * res
+    def close_pairs() -> list[tuple[int, int]]:
+        """Index pairs (i < j, in names order) closer than min_gap on every axis, from a hash of
+        min_gap cells: the pairs the plain double loop would act on, in the same order."""
+        cells: dict[tuple[int, int, int], list[int]] = defaultdict(list)
+        for i, n in enumerate(names):
+            p = pos[n]
+            cells[(math.floor(p[0] / min_gap), math.floor(p[1] / min_gap), math.floor(p[2] / min_gap))].append(i)
+        out: list[tuple[int, int]] = []
+        for (cx, cy, cz), members in cells.items():
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for dz in (-1, 0, 1):
+                        other = cells.get((cx + dx, cy + dy, cz + dz))
+                        if other:
+                            out.extend((i, j) for i in members for j in other if i < j)
+        out.sort()
+        return out
+
     for _ in range(12):
         moved = False
         delta: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
@@ -1848,19 +1876,19 @@ def _spread_nodes(ctx: _Ctx, chains: Sequence[_Chain], nodes: dict[str, Pt], pma
             sgn = 1.0 if pa[ax] >= pb[ax] else -1.0
             share = 1.0 if fixed is not None else 0.5  # both ends movable: each side moves half
             delta[n][ax] += sgn * (need - d) * share
-        for i, n in enumerate(names):
-            for m in names[i + 1:]:
-                pa, pb = pos[n], pos[m]
-                if max(abs(pa[0] - pb[0]), abs(pa[1] - pb[1]), abs(pa[2] - pb[2])) >= min_gap:
-                    continue
-                if abs(pa[2] - pb[2]) >= min_gap:
-                    continue
-                ax = 0 if abs(pa[0] - pb[0]) >= abs(pa[1] - pb[1]) else 1
-                gap = abs(pa[ax] - pb[ax])
-                sgn = 1.0 if (pa[ax] > pb[ax] or (pa[ax] == pb[ax] and n < m)) else -1.0
-                push = (min_gap - gap) / 2
-                delta[n][ax] += sgn * push
-                delta[m][ax] -= sgn * push
+        for i, j in close_pairs():
+            n, m = names[i], names[j]
+            pa, pb = pos[n], pos[m]
+            if max(abs(pa[0] - pb[0]), abs(pa[1] - pb[1]), abs(pa[2] - pb[2])) >= min_gap:
+                continue
+            if abs(pa[2] - pb[2]) >= min_gap:
+                continue
+            ax = 0 if abs(pa[0] - pb[0]) >= abs(pa[1] - pb[1]) else 1
+            gap = abs(pa[ax] - pb[ax])
+            sgn = 1.0 if (pa[ax] > pb[ax] or (pa[ax] == pb[ax] and n < m)) else -1.0
+            push = (min_gap - gap) / 2
+            delta[n][ax] += sgn * push
+            delta[m][ax] -= sgn * push
         for n, (dx, dy) in delta.items():
             if abs(dx) < 1e-6 and abs(dy) < 1e-6:
                 continue
@@ -1928,6 +1956,34 @@ def _place_isolated(ctx: _Ctx, o: PIDObject, inline: dict[str, Placement3D], map
 # ---------------------------------------------------------------------------- audit
 
 
+def _close_segment_pairs(lo: np.ndarray, hi: np.ndarray, r: np.ndarray, cell: float = 2.0
+                         ) -> tuple[np.ndarray, np.ndarray]:
+    """Index pairs (i < j, sorted) of segment boxes whose boxes grown by their own radius overlap or
+    touch: every pair closer than the sum of the radii is among them (a superset found through a
+    hash of ``cell``-sized cubes, instead of testing all n^2 pairs)."""
+    n = len(r)
+    if n < 2:
+        return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64)
+    glo = np.floor((lo - r[:, None] - 1e-6) / cell).astype(np.int64)
+    ghi = np.floor((hi + r[:, None] + 1e-6) / cell).astype(np.int64)
+    buckets: dict[tuple[int, int, int], list[int]] = defaultdict(list)
+    for k, (a, b) in enumerate(zip(glo.tolist(), ghi.tolist())):
+        for x in range(a[0], b[0] + 1):
+            for y in range(a[1], b[1] + 1):
+                for z in range(a[2], b[2] + 1):
+                    buckets[(x, y, z)].append(k)
+    keys: list[np.ndarray] = []
+    for members in buckets.values():
+        if len(members) > 1:
+            m = np.asarray(members, dtype=np.int64)
+            ii, jj = np.triu_indices(len(m), k=1)
+            keys.append(m[ii] * n + m[jj])  # members are ascending: m[ii] < m[jj]
+    if not keys:
+        return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64)
+    u = np.unique(np.concatenate(keys))
+    return u // n, u % n
+
+
 def audit_layout(doc: PIDDocument, routes: Sequence[PipeRoute3D], equipment: Sequence[Placement3D],
                  inline: Sequence[Placement3D], room: EngineRoom) -> dict[str, Any]:
     """Clash counts of a routed layout (bodies = rendered mesh bounds):
@@ -1986,22 +2042,20 @@ def audit_layout(doc: PIDDocument, routes: Sequence[PipeRoute3D], equipment: Seq
              else set() for r in routes]
     pairs: set[tuple[int, int]] = set()
     coincident = 0.0
-    n = len(S_r_a)
-    for i0 in range(0, n, 256):
-        sl = slice(i0, min(n, i0 + 256))
-        gap = np.maximum(0.0, np.maximum(S_lo_a[None, :, :] - S_hi_a[sl, None, :],
-                                         S_lo_a[sl, None, :] - S_hi_a[None, :, :]))
-        d = np.sqrt((gap ** 2).sum(axis=2))
-        lim = S_r_a[sl, None] + S_r_a[None, :] - 1e-3
-        for i, j in zip(*np.nonzero(d < lim)):
-            a, b = int(S_pipe_a[i0 + i]), int(S_pipe_a[j])
+    ci, cj = _close_segment_pairs(S_lo_a, S_hi_a, S_r_a)  # candidates (i < j), sorted
+    if len(ci):
+        gap = np.maximum(0.0, np.maximum(S_lo_a[cj] - S_hi_a[ci], S_lo_a[ci] - S_hi_a[cj]))
+        d = np.sqrt((gap ** 2).sum(axis=1))
+        lim = S_r_a[ci] + S_r_a[cj] - 1e-3
+        for i, j, dij in zip(ci[d < lim].tolist(), cj[d < lim].tolist(), d[d < lim].tolist()):
+            a, b = int(S_pipe_a[i]), int(S_pipe_a[j])
             if a >= b or nodes[a] & nodes[b]:
                 continue
             if (a, b) not in pairs:
                 pairs.add((a, b))
                 ex["pipe_pipe"].append(f"{routes[a].pipe_id} x {routes[b].pipe_id}")
-            if d[i, j] < 1e-6:
-                ov = np.minimum(S_hi_a[i0 + i], S_hi_a[j]) - np.maximum(S_lo_a[i0 + i], S_lo_a[j])
+            if dij < 1e-6:
+                ov = np.minimum(S_hi_a[i], S_hi_a[j]) - np.maximum(S_lo_a[i], S_lo_a[j])
                 coincident += float(max(0.0, ov.max())) if (ov > -1e-9).all() else 0.0
     # inline bodies vs inline bodies / equipment
     overlaps = 0

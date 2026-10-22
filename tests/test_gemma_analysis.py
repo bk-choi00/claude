@@ -1102,3 +1102,15 @@ def test_errors_recorded_by_the_analyzer_are_redacted():
     report = analyzer.review(_report(PIDDocument()))
     dumped = json.dumps(out.meta) + json.dumps(report.meta) + json.dumps(report.llm.model_dump())
     assert "HTTP 401" in dumped and "sk-PROD-KEY-0123456789" not in dumped and "S3cr3tTok3n" not in dumped
+
+
+def test_review_keeps_warning_for_pages_not_analysed(pid):
+    _, doc = pid
+    analyzer, backend = make(lambda m, s, n: REVIEW_OK)
+    report = _report(doc)
+    report.meta["unreadable_pages"] = [1]
+    out = analyzer.review(report)
+    digest = digest_of(backend.calls[0][0], "P&ID digest:\n")
+    assert digest["pages_not_analysed"] == {"unreadable_pages": [1], "empty_pages": []}
+    assert out.summary_en.startswith("WARNING: page(s) 2 were not analysed")
+    assert out.summary_ko.startswith("경고: 2 페이지") and "1번 탱크" in out.summary_ko

@@ -1,0 +1,10 @@
+﻿id,tag,name,class,type_en,type_ko,page,x,y,confidence,source,rating,connections,connected_to,isolation_valves
+o7,,NO.1 MAIN C.S.W. PUMP,pump_centrifugal,Centrifugal pump,원심 펌프,0,732.1,250.9,1.0,vector,"1,500 M3/H X 25 MTH",2,SW-V004; flexible_hose:o9,SW-V005; SW-V003
+o11,,S.W. STRAINER,strainer,Strainer / mud box,스트레이너(머드박스),0,293.4,319.1,1.0,vector,,2,SW-V003; SW-V001; SW-V006; S.W. STRAINER; SW-V009,SW-V003; SW-V001; SW-V006; SW-V002; SW-V009
+o14,,HIGH SEA CHEST,sea_chest,Sea chest,씨체스트,0,141.5,367.3,0.986,vector,,1,SW-V001,SW-V001
+o18,,NO.2 MAIN C.S.W. PUMP,pump_centrifugal,Centrifugal pump,원심 펌프,0,732.1,449.5,1.0,vector,"1,500 M3/H X 25 MTH",2,SW-V007; flexible_hose:o20,SW-V008; SW-V006
+o22,,S.W. STRAINER,strainer,Strainer / mud box,스트레이너(머드박스),0,299.4,471.5,1.0,vector,,2,SW-V003; S.W. STRAINER; SW-V006; SW-V002; SW-V009,SW-V003; SW-V001; SW-V006; SW-V002; SW-V009
+o23,,LOW SEA CHEST,sea_chest,Sea chest,씨체스트,0,147.5,521.5,0.989,vector,,1,SW-V002,SW-V002
+o29,,NO.3 MAIN C.S.W. PUMP,pump_centrifugal,Centrifugal pump,원심 펌프,0,732.1,636.8,1.0,vector,"1,500 M3/H X 25 MTH",2,check_valve:o27; flexible_hose:o31,SW-V010; SW-V009
+o33,,OVERBOARD,overboard,Overboard discharge,선외 배출구,0,682.8,929.7,1.0,vector,,1,SW-V014,SW-V014
+o37,,CENTRAL F.W. COOLER,plate_heat_exchanger,Plate heat exchanger (central cooler),판형 열교환기,0,326.2,1004.1,1.0,vector,,4,TO C.F.W. SYSTEM; FROM C.F.W. SYSTEM; SW-V012; SW-V013,SW-V012; SW-V013

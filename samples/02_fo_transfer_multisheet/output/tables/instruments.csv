@@ -1,0 +1,7 @@
+﻿id,tag,name,class,type_en,type_ko,page,x,y,confidence,source,letters,loop,variable,function,description,location,measured_on,signal_to,service
+o9,PI-900,,instrument_local,Local instrument,현장 계기,0,548.2,312.2,1.0,vector,PI,900,pressure,indicator,pressure indicator,local (field),125-FO-006,,
+o10,PI-901,,instrument_local,Local instrument,현장 계기,0,744.3,312.2,1.0,vector,PI,901,pressure,indicator,pressure indicator,local (field),125-FO-007,,
+o23,PI-902,,instrument_local,Local instrument,현장 계기,0,548.2,466.5,1.0,vector,PI,902,pressure,indicator,pressure indicator,local (field),125-FO-010,,
+o24,PI-903,,instrument_local,Local instrument,현장 계기,0,744.3,466.5,1.0,vector,PI,903,pressure,indicator,pressure indicator,local (field),125-FO-011,,
+o36,LIA-900,,instrument_shared,Shared display (DCS/AMS),공유 표시(AMS),1,616.9,448.3,0.99,vector,LIA,900,level,"indicator, alarm",level indicator alarm,shared display (AMS/DCS),NO.1 H.F.O. SETT. TK,,
+o37,LT-901,,instrument_shared,Shared display (DCS/AMS),공유 표시(AMS),1,905.9,450.7,0.99,vector,LT,901,level,transmitter,level transmitter,shared display (AMS/DCS),M.D.O. SERV. TK,,

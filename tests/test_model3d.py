@@ -930,6 +930,28 @@ def test_astar_flat_buffers_match_the_reference_search():
     assert found > 20 and failed > 5  # both outcomes covered
 
 
+def test_audit_pair_search_finds_every_close_pipe_pair():
+    """The pipe-pipe audit used an all-pairs distance matrix (O(n^2), 24 s on a 40-page set); the
+    hashed candidate search must contain every pair closer than the sum of the radii."""
+    import numpy as np
+    from shippid.model3d.router import _close_segment_pairs
+
+    rng = np.random.default_rng(5)
+    n = 900
+    a = rng.uniform([0, -15, 0], [40, 15, 12], (n, 3))
+    axis = rng.integers(0, 3, n)
+    b = a.copy()
+    b[np.arange(n), axis] += rng.uniform(-8, 8, n)
+    lo, hi, r = np.minimum(a, b), np.maximum(a, b), rng.uniform(0.01, 0.3, n)
+    gap = np.maximum(0.0, np.maximum(lo[None, :, :] - hi[:, None, :], lo[:, None, :] - hi[None, :, :]))
+    close = np.sqrt((gap ** 2).sum(axis=2)) < r[:, None] + r[None, :] - 1e-3
+    expected = {(i, j) for i, j in zip(*np.nonzero(close)) if i < j}
+    ci, cj = _close_segment_pairs(lo, hi, r)
+    got = set(zip(ci.tolist(), cj.tolist()))
+    assert expected and expected <= got and len(got) < n * (n - 1) / 2 / 4
+    assert all(i < j for i, j in got) and list(zip(ci.tolist(), cj.tolist())) == sorted(got)
+
+
 def test_inline_body_clamped_to_room():
     """A 300A valve on a pipe running 0.25 m from the ship side would poke 0.06 m through the shell
     (reviewer: o144 y1 18.06 > 18.0); its body is reduced until it fits."""
@@ -1477,6 +1499,71 @@ def test_viewer_survives_script_breaking_strings(tmp_path):
     b64 = re.search(r'<script id="glb-data" type="application/octet-stream">(.*?)</script>', page, re.S).group(1)
     assert base64.b64decode(b64) == glb.read_bytes()
     assert html_title(page) == f"{nasty} – 3D"
+
+
+def _plotly_figure(html_text: str) -> tuple[list, dict]:
+    m = re.search(r'Plotly\.newPlot\(\s*"[^"]+",\s*(\[.*?\])\s*,\s*(\{.*?\})\s*,\s*\{', html_text, re.S)
+    return json.loads(m.group(1)), json.loads(m.group(2))
+
+
+def test_plotly_viewer_escapes_drawing_strings_and_is_compact(tmp_path):
+    """Regression (review): the drawing title / number went unescaped into the plotly title, where
+    plotly renders <a href> (http/https/mailto) and <span style>: a PDF could put a clickable external
+    link into the offline viewer. Also: no per-face colour strings, float32 vertices."""
+    import numpy as np
+
+    doc = ballast_doc()
+    doc.info.title = '<a href="https://evil.example/sso-login">BILGE SYSTEM - CLICK TO VERIFY</a>'
+    doc.info.drawing_no = '<span style="font-size:80px">X-1</span>'
+    doc.objects[3].tag = '<a href="mailto:x@evil.example">P1</a>'
+    layout = build_layout(doc)
+    out = write_viewer_html(None, layout, doc, tmp_path / "p.html", mode="plotly")
+    data, lay = _plotly_figure(out.read_text(encoding="utf-8"))
+    title = lay["title"]["text"]
+    assert "<a" not in title and "<span" not in title and "&lt;a href=&quot;https://evil.example" in title
+    assert "&lt;span style=" in title and "planner: heuristic" in title
+    hover = " ".join(t.get("hovertext", "") for t in data if isinstance(t.get("hovertext"), str))
+    assert "<a " not in hover and "&lt;a href=&quot;mailto:" in hover
+    assert all("facecolor" not in t for t in data)
+    assert all(t["x"]["dtype"] == "f4" for t in data)
+    multi = [t for t in data if "intensity" in t]
+    assert multi and all(t["intensitymode"] == "cell" and t["showscale"] is False for t in multi)
+    t = multi[0]
+    k = len(t["colorscale"]) - 1
+    idx = np.frombuffer(base64.b64decode(t["intensity"]["bdata"]), dtype=np.uint8)
+    assert idx.max() == k == t["cmax"] and [s[0] for s in t["colorscale"]] == [i / k for i in range(k + 1)]
+    assert all("color" in t for t in data if "intensity" not in t)
+
+
+def test_pipe_mesh_templates_match_trimesh_and_meshes_are_cached():
+    """Regression (review: pipe_mesh 5.35 s for 977 routes, the meshes built twice for GLB + plotly):
+    unit templates transformed with numpy give trimesh's cylinder / icosphere geometry, and the GLB
+    and viewer passes share cached meshes."""
+    import numpy as np
+    import trimesh
+    from shippid.model3d import meshes as M
+
+    def reference(points, diameter, sections=14):
+        r = max(diameter / 2, 0.005)
+        pts = [np.asarray(p, dtype=float) for p in points]
+        parts = [trimesh.creation.cylinder(radius=r, segment=[a, b], sections=sections)
+                 for a, b in zip(pts, pts[1:]) if np.linalg.norm(b - a) >= 1e-6]
+        parts += [M.sphere(r, p, subdivisions=1) for p in pts[1:-1]]
+        return trimesh.util.concatenate(parts)
+
+    routes = [[(1, 2, 3), (4, 2, 3), (4, 2, 3), (4, -1, 3), (4, -1, 0.5)], [(0, 0, 0), (1, 1, 1)],
+              [(5, 5, 5), (5, 5, 2)]]
+    for pts in routes:
+        got, ref = M.pipe_mesh(pts, 0.2731), reference(pts, 0.2731)
+        assert np.array_equal(got.faces, ref.faces)
+        assert np.allclose(got.vertices, ref.vertices, atol=1e-9)
+        assert got.volume == pytest.approx(ref.volume, rel=1e-9)
+        assert M.pipe_mesh(pts, 0.2731) is got  # cached: the second pass reuses it
+    assert M.pipe_mesh([(1, 1, 1), (1, 1, 1)], 0.1) is None
+    a = M.object_parts(S.GATE_VALVE, (0.4, 0.3, 0.6), ActuatorType.HANDWHEEL)
+    b = M.object_parts(S.GATE_VALVE, (0.4, 0.3, 0.6), ActuatorType.HANDWHEEL)
+    assert [p.mesh for p in a] == [p.mesh for p in b] and a[0] is not b[0]
+    assert len(M.object_parts(S.GATE_VALVE, (0.5, 0.3, 0.6), ActuatorType.HANDWHEEL)[0].mesh.vertices)
 
 
 def html_title(page: str) -> str:

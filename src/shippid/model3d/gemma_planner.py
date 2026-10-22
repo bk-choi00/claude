@@ -40,7 +40,8 @@ from ..llm.budget import context_of
 from ..llm.budget import estimate_tokens as estimate_tokens  # re-exported (shared with the review step)
 from ..model import LLMUsage, PIDDocument
 from .heuristic import (Neighbor, default_routing, doc_system, drawing_positions, equipment_adjacency,
-                        flow_order, heuristic_plan, object_labels, object_systems, pipe_medium, process_pipes)
+                        flow_order, heuristic_plan, object_labels, object_systems, pipe_medium, prepare_document,
+                        process_pipes)
 from .plan import (LayoutPlan, LayoutPlanDraft, PlanItem, PlanItemDraft, RoutingPlan, check_plan,
                    is_optional_planned, is_planned, sanitize_items)
 from .solver import object_size, solve_detailed
@@ -168,6 +169,9 @@ class GemmaLayoutPlanner:
 
     # -- public ------------------------------------------------------------------
     def plan(self, doc: PIDDocument, room: EngineRoom) -> tuple[LayoutPlan, LLMUsage]:
+        # the 3D view of the document (sheet links as pipes, noise symbols not planned); idempotent,
+        # so callers that already prepared it (build_layout) pay nothing
+        doc, _ = prepare_document(doc)
         before = self.client.usage.model_copy(deep=True)
         errors: list[str] = []
         required = [o.id for o in doc.objects if is_planned(o)]

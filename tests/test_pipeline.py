@@ -298,3 +298,20 @@ def test_cli_input_errors_are_one_line(ballast_pdf, tmp_path, capsys):
     assert cli_main(["model3d", str(bad), "-o", str(tmp_path / "o6"), "--llm", "none"]) == 2
     err = capsys.readouterr().err.strip().splitlines()
     assert len(err) == 1 and "invalid PIDDocument JSON" in err[0]
+
+
+def test_scanned_only_pdf_is_reported(tmp_path, capsys):
+    import pymupdf
+
+    # a raster-only page (no vector paths, no text): nothing can be extracted
+    doc = pymupdf.open()
+    page = doc.new_page(width=842, height=595)
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 400, 300), False)
+    pix.clear_with(200)
+    page.insert_image(page.rect, pixmap=pix)
+    pdf = tmp_path / "scan.pdf"
+    doc.save(pdf)
+    code = cli_main(["run", str(pdf), "-o", str(tmp_path / "out"), "--llm", "none"])
+    out = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert out["pages_not_analysed"]["unreadable_pages"] or out["pages_not_analysed"]["empty_pages"]

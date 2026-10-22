@@ -1,0 +1,11 @@
+﻿id,tag,name,class,type_en,type_ko,page,x,y,confidence,source,rating,connections,connected_to,isolation_valves
+o1,,NO.1 H.F.O. STOR. TK (P),tank,Tank,탱크,0,175.4,227.3,0.973,vector,"1,200 M3",1,FO001V,FO001V
+o4,,NO.1 H.F.O. TRANSFER PUMP,pump_screw,Screw / gear pump,스크류(기어) 펌프,0,669.1,278.3,1.0,vector,150 M3/H X 4.0 BAR,2,safety_valve:o3; strainer:o7; check_valve:o8,FO004V; FO005V
+o7,,,strainer,Strainer / mud box,스트레이너(머드박스),0,506.9,278.3,1.0,vector,,2,safety_valve:o3; NO.1 H.F.O. TRANSFER PUMP; FO004V,FO004V
+o11,,NO.1 H.F.O. STOR. TK (S),tank,Tank,탱크,0,175.4,320.1,0.973,vector,"2,600 M3",2,FO002V; SH.2,FO002V; FO014V
+o16,,NO.2 H.F.O. STOR. TK (P),tank,Tank,탱크,0,175.4,414.2,0.973,vector,"2,600 M3",1,FO003V,FO003V
+o18,,NO.2 H.F.O. TRANSFER PUMP,pump_screw,Screw / gear pump,스크류(기어) 펌프,0,669.1,432.6,1.0,vector,150 M3/H X 4.0 BAR,2,FO009V; strainer:o21; FO007V,FO006V; FO008V
+o21,,,strainer,Strainer / mud box,스트레이너(머드박스),0,506.9,432.6,1.0,vector,,2,FO009V; NO.2 H.F.O. TRANSFER PUMP; FO006V,FO006V
+o31,,NO.1 H.F.O. SETT. TK,tank,Tank,탱크,1,616.9,404.2,0.977,vector,,1,FO010V,FO010V
+o32,,NO.2 H.F.O. SETT. TK,tank,Tank,탱크,1,765.3,403.4,0.977,vector,150 M3,1,FO011V,FO011V
+o34,,M.D.O. SERV. TK,tank,Tank,탱크,1,905.9,405.4,0.982,vector,,1,FO012V,FO012V

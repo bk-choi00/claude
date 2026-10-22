@@ -1,0 +1,42 @@
+{
+ "llm": "none",
+ "objects": 55,
+ "pipes": 83,
+ "texts": 206,
+ "system": "ballast",
+ "drawing_no": "57694-BA447",
+ "timings_s": {
+  "extract": 1.52,
+  "analyze": 0.02,
+  "model3d": 1.12,
+  "report": 0.14
+ },
+ "outputs": {
+  "extracted": "samples/01_ballast_single_sheet/output/extracted.json",
+  "document": "samples/01_ballast_single_sheet/output/document.json",
+  "analysis": "samples/01_ballast_single_sheet/output/analysis.json",
+  "layout": "samples/01_ballast_single_sheet/output/layout3d.json",
+  "glb": "samples/01_ballast_single_sheet/output/model.glb",
+  "viewer:threejs": "samples/01_ballast_single_sheet/output/viewer.html",
+  "report": "samples/01_ballast_single_sheet/output/report.html"
+ },
+ "findings": {
+  "pass": 12,
+  "not_applicable": 13,
+  "fail": 4
+ },
+ "llm_usage": {
+  "backend": "none",
+  "model": null,
+  "calls": 0,
+  "prompt_tokens": 0,
+  "completion_tokens": 0,
+  "seconds": 0.0,
+  "errors": []
+ },
+ "layout": {
+  "planner": "heuristic",
+  "placements": 55,
+  "routes": 83
+ }
+}

@@ -1,0 +1,42 @@
+{
+ "llm": "none",
+ "objects": 41,
+ "pipes": 58,
+ "texts": 176,
+ "system": "sea_water_cooling",
+ "drawing_no": "51157-SW659",
+ "timings_s": {
+  "extract": 1.53,
+  "analyze": 0.01,
+  "model3d": 0.51,
+  "report": 0.16
+ },
+ "outputs": {
+  "extracted": "samples/03_sw_cooling_yard_symbols_legend/output/extracted.json",
+  "document": "samples/03_sw_cooling_yard_symbols_legend/output/document.json",
+  "analysis": "samples/03_sw_cooling_yard_symbols_legend/output/analysis.json",
+  "layout": "samples/03_sw_cooling_yard_symbols_legend/output/layout3d.json",
+  "glb": "samples/03_sw_cooling_yard_symbols_legend/output/model.glb",
+  "viewer:threejs": "samples/03_sw_cooling_yard_symbols_legend/output/viewer.html",
+  "report": "samples/03_sw_cooling_yard_symbols_legend/output/report.html"
+ },
+ "findings": {
+  "pass": 16,
+  "not_applicable": 12,
+  "fail": 2
+ },
+ "llm_usage": {
+  "backend": "none",
+  "model": null,
+  "calls": 0,
+  "prompt_tokens": 0,
+  "completion_tokens": 0,
+  "seconds": 0.0,
+  "errors": []
+ },
+ "layout": {
+  "planner": "heuristic",
+  "placements": 41,
+  "routes": 58
+ }
+}

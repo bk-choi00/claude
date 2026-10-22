@@ -1406,6 +1406,10 @@ class GemmaAnalyzer:
             digest["sheets"] = self._sheets_digest(doc, max_items)
         if truncated:
             digest["truncated_lists_total_lengths"] = truncated
+        skipped = {k: list(report.meta.get(k) or doc.meta.get(k) or []) for k in ("unreadable_pages", "empty_pages")}
+        if any(skipped.values()):
+            # pages without readable vector content were not analysed: the review must not claim compliance
+            digest["pages_not_analysed"] = skipped
         return digest
 
     @staticmethod
@@ -1537,6 +1541,11 @@ class GemmaAnalyzer:
             out.meta["summary_deterministic"] = {"ko": out.summary_ko, "en": out.summary_en}
         out.summary_ko = res.summary_ko.strip()
         out.summary_en = res.summary_en.strip()
+        skipped = sorted({*(out.meta.get("unreadable_pages") or []), *(out.meta.get("empty_pages") or [])})
+        if skipped:  # keep the deterministic warning even when the model rewrites the summaries
+            pages = ", ".join(str(int(p) + 1) for p in skipped)
+            out.summary_en = f"WARNING: page(s) {pages} were not analysed (no readable vector content).\n" + out.summary_en
+            out.summary_ko = f"경고: {pages} 페이지는 판독 가능한 벡터 데이터가 없어 분석하지 못했습니다.\n" + out.summary_ko
         out.meta["summary_source"] = self.label
         out.meta["review"] = {"source": self.label, "status": "ok", "findings": len(res.findings),
                               "thinking": self.review_thinking, "digest_chars": len(digest_text),

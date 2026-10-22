@@ -1,0 +1,3847 @@
+{
+ "schema_version": "1.0",
+ "units": "m",
+ "planner": "heuristic",
+ "decks": [
+  {
+   "name": "tank_top",
+   "z": 2.75
+  },
+  {
+   "name": "floor",
+   "z": 4.95
+  },
+  {
+   "name": "3rd_deck",
+   "z": 11.55
+  },
+  {
+   "name": "2nd_deck",
+   "z": 17.6
+  },
+  {
+   "name": "upper_deck",
+   "z": 26.4
+  }
+ ],
+ "bounds_min": {
+  "x": 0.0,
+  "y": -17.0,
+  "z": 0.0
+ },
+ "bounds_max": {
+  "x": 38.0,
+  "y": 17.0,
+  "z": 26.4
+ },
+ "placements": [
+  {
+   "object_id": "o10",
+   "cls": "sea_chest",
+   "position": {
+    "x": 5.058,
+    "y": 16.25,
+    "z": 0.0
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 2.0,
+    "y": 1.5,
+    "z": 1.2
+   },
+   "deck": "base_line",
+   "nozzles": {
+    "out": {
+     "x": 5.908,
+     "y": 15.65,
+     "z": 1.2
+    }
+   },
+   "rationale": "[heuristic] sea chest in the hull bottom (low) / side (high) below the waterline (size: catalog)"
+  },
+  {
+   "object_id": "o17",
+   "cls": "sea_chest",
+   "position": {
+    "x": 5.058,
+    "y": 5.1515,
+    "z": 0.0
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 2.0,
+    "y": 1.5,
+    "z": 1.2
+   },
+   "deck": "base_line",
+   "nozzles": {
+    "out": {
+     "x": 5.058,
+     "y": 5.7515,
+     "z": 1.2
+    }
+   },
+   "rationale": "[heuristic] sea chest in the hull bottom (low) / side (high) below the waterline (size: catalog)"
+  },
+  {
+   "object_id": "o34",
+   "cls": "bwts_unit",
+   "position": {
+    "x": 8.0095,
+    "y": -5.6667,
+    "z": 4.95
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 3.6,
+    "y": 1.5,
+    "z": 2.4
+   },
+   "deck": "floor",
+   "nozzles": {
+    "in": {
+     "x": 6.2095,
+     "y": -5.6667,
+     "z": 6.15
+    },
+    "out": {
+     "x": 9.8095,
+     "y": -5.6667,
+     "z": 6.15
+    }
+   },
+   "rationale": "[heuristic] BWTS unit on the floor deck downstream of the ballast pumps (size: catalog x1.50 (DN450))"
+  },
+  {
+   "object_id": "o7",
+   "cls": "pump_centrifugal",
+   "position": {
+    "x": 11.103,
+    "y": 10.2345,
+    "z": 2.75
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 2.4,
+    "y": 1.35,
+    "z": 2.7
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "discharge": {
+     "x": 12.303,
+     "y": 10.2345,
+     "z": 3.425
+    },
+    "suction": {
+     "x": 9.903,
+     "y": 10.2345,
+     "z": 3.425
+    }
+   },
+   "rationale": "[heuristic] pump on the tank top near its suction source (positive suction head) (size: catalog x1.50 (DN450))"
+  },
+  {
+   "object_id": "o19",
+   "cls": "pump_centrifugal",
+   "position": {
+    "x": 12.1455,
+    "y": 4.6364,
+    "z": 2.75
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 2.4,
+    "y": 1.35,
+    "z": 2.7
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "discharge": {
+     "x": 13.3455,
+     "y": 4.6364,
+     "z": 3.425
+    },
+    "suction": {
+     "x": 10.9455,
+     "y": 4.6364,
+     "z": 3.425
+    }
+   },
+   "rationale": "[heuristic] pump on the tank top near its suction source (positive suction head) (size: catalog x1.50 (DN450))"
+  },
+  {
+   "object_id": "o28",
+   "cls": "pump_centrifugal",
+   "position": {
+    "x": 12.1455,
+    "y": 1.5455,
+    "z": 2.75
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 2.4,
+    "y": 1.35,
+    "z": 2.7
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "discharge": {
+     "x": 13.3455,
+     "y": 1.5455,
+     "z": 3.425
+    },
+    "suction": {
+     "x": 10.9455,
+     "y": 1.5455,
+     "z": 3.425
+    }
+   },
+   "rationale": "[heuristic] pump on the tank top near its suction source (positive suction head) (size: catalog x1.50 (DN450))"
+  },
+  {
+   "object_id": "o33",
+   "cls": "duplex_filter",
+   "position": {
+    "x": 6.8845,
+    "y": -3.8657,
+    "z": 4.95
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 1.35,
+    "y": 0.9,
+    "z": 1.65
+   },
+   "deck": "floor",
+   "nozzles": {
+    "in": {
+     "x": 6.2095,
+     "y": -3.8657,
+     "z": 5.775
+    },
+    "out": {
+     "x": 7.5595,
+     "y": -3.8657,
+     "z": 5.775
+    }
+   },
+   "rationale": "[heuristic] duplex / auto-backflush filter on the floor deck in the pump line (size: catalog x1.50 (DN450))"
+  },
+  {
+   "object_id": "o44",
+   "cls": "tank",
+   "position": {
+    "x": 17.2267,
+    "y": -8.2544,
+    "z": 2.75
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 4.0,
+    "y": 3.0,
+    "z": 2.1
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "n0": {
+     "x": 19.0767,
+     "y": -6.7544,
+     "z": 3.275
+    },
+    "n1": {
+     "x": 17.226,
+     "y": -9.7544,
+     "z": 3.8
+    }
+   },
+   "rationale": "[heuristic] storage tank at the ship side on the tank top (size: tank-top tank below the floor)"
+  },
+  {
+   "object_id": "o45",
+   "cls": "tank",
+   "position": {
+    "x": 25.3333,
+    "y": 5.6667,
+    "z": 0.0
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 5.0,
+    "y": 4.0,
+    "z": 2.75
+   },
+   "deck": "base_line",
+   "nozzles": {
+    "n0": {
+     "x": 22.9833,
+     "y": 3.8167,
+     "z": 2.75
+    }
+   },
+   "rationale": "[heuristic] tank outside the engine room (cargo area / peak); represented in the forward double bottom (size: double-bottom height)"
+  },
+  {
+   "object_id": "o46",
+   "cls": "tank",
+   "position": {
+    "x": 25.3333,
+    "y": -8.2593,
+    "z": 0.0
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 5.0,
+    "y": 4.0,
+    "z": 2.75
+   },
+   "deck": "base_line",
+   "nozzles": {
+    "n0": {
+     "x": 25.3333,
+     "y": -6.4093,
+     "z": 2.75
+    },
+    "n1": {
+     "x": 25.3326,
+     "y": -10.1093,
+     "z": 2.75
+    }
+   },
+   "rationale": "[heuristic] tank outside the engine room (cargo area / peak); represented in the forward double bottom (size: double-bottom height)"
+  },
+  {
+   "object_id": "o47",
+   "cls": "tank",
+   "position": {
+    "x": 25.3333,
+    "y": 9.6677,
+    "z": 0.0
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 5.0,
+    "y": 4.0,
+    "z": 2.75
+   },
+   "deck": "base_line",
+   "nozzles": {
+    "n0": {
+     "x": 25.3333,
+     "y": 7.8177,
+     "z": 2.75
+    },
+    "n1": {
+     "x": 25.8242,
+     "y": 7.8177,
+     "z": 2.75
+    }
+   },
+   "rationale": "[heuristic] tank outside the engine room (cargo area / peak); represented in the forward double bottom (size: double-bottom height)"
+  },
+  {
+   "object_id": "o48",
+   "cls": "tank",
+   "position": {
+    "x": 30.3343,
+    "y": -8.2593,
+    "z": 0.0
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 5.0,
+    "y": 4.0,
+    "z": 2.75
+   },
+   "deck": "base_line",
+   "nozzles": {
+    "n0": {
+     "x": 27.9843,
+     "y": -6.4093,
+     "z": 2.75
+    },
+    "n1": {
+     "x": 30.4278,
+     "y": -10.1093,
+     "z": 2.75
+    }
+   },
+   "rationale": "[heuristic] tank outside the engine room (cargo area / peak); represented in the forward double bottom (size: double-bottom height)"
+  },
+  {
+   "object_id": "o49",
+   "cls": "tank",
+   "position": {
+    "x": 31.9417,
+    "y": 5.6667,
+    "z": 0.0
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 5.0,
+    "y": 4.0,
+    "z": 2.75
+   },
+   "deck": "base_line",
+   "nozzles": {
+    "n0": {
+     "x": 34.1639,
+     "y": 3.8167,
+     "z": 2.75
+    },
+    "n1": {
+     "x": 32.0374,
+     "y": 3.8167,
+     "z": 2.75
+    }
+   },
+   "rationale": "[heuristic] tank outside the engine room (cargo area / peak); represented in the forward double bottom (size: double-bottom height)"
+  },
+  {
+   "object_id": "o50",
+   "cls": "overboard",
+   "position": {
+    "x": 34.1639,
+    "y": -16.8,
+    "z": 5.45
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.4,
+    "y": 0.4,
+    "z": 0.4
+   },
+   "deck": "floor",
+   "nozzles": {
+    "in": {
+     "x": 34.1139,
+     "y": -16.6,
+     "z": 5.55
+    }
+   },
+   "rationale": "[heuristic] overboard discharge through the shell with shell valve (size: catalog)"
+  },
+  {
+   "object_id": "o23",
+   "cls": "off_page_connector",
+   "position": {
+    "x": 5.1567,
+    "y": 3.0909,
+    "z": 2.75
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.3,
+    "y": 0.3,
+    "z": 0.3
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 5.3067,
+     "y": 3.0909,
+     "z": 2.9
+    }
+   },
+   "rationale": "[heuristic] off-page connector: pipe continues on another drawing (size: catalog)"
+  },
+  {
+   "object_id": "o29",
+   "cls": "off_page_connector",
+   "position": {
+    "x": 9.162,
+    "y": 0.5152,
+    "z": 2.75
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.3,
+    "y": 0.3,
+    "z": 0.3
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 9.162,
+     "y": 0.6652,
+     "z": 2.9
+    }
+   },
+   "rationale": "[heuristic] off-page connector: pipe continues on another drawing (size: catalog)"
+  },
+  {
+   "object_id": "o8",
+   "cls": "butterfly_valve",
+   "position": {
+    "x": 7.75,
+    "y": 14.1456,
+    "z": 3.222
+   },
+   "yaw_deg": 270.0,
+   "size": {
+    "x": 0.396,
+    "y": 1.056,
+    "z": 1.32
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "out": {
+     "x": 7.75,
+     "y": 13.9476,
+     "z": 3.75
+    },
+    "in": {
+     "x": 7.75,
+     "y": 14.3436,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] inline on 450-BA-011 (pipes p15, p14)"
+  },
+  {
+   "object_id": "o13",
+   "cls": "butterfly_valve",
+   "position": {
+    "x": 5.25,
+    "y": 6.8034,
+    "z": 3.222
+   },
+   "yaw_deg": 90.0,
+   "size": {
+    "x": 0.396,
+    "y": 1.056,
+    "z": 1.32
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "out": {
+     "x": 5.25,
+     "y": 7.0014,
+     "z": 3.75
+    },
+    "in": {
+     "x": 5.25,
+     "y": 6.6054,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] inline on 450-BA-012 (pipes p21, p20)"
+  },
+  {
+   "object_id": "o20",
+   "cls": "butterfly_valve",
+   "position": {
+    "x": 6.1966,
+    "y": 4.75,
+    "z": 3.222
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.396,
+    "y": 1.056,
+    "z": 1.32
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "out": {
+     "x": 6.3946,
+     "y": 4.75,
+     "z": 3.75
+    },
+    "in": {
+     "x": 5.9986,
+     "y": 4.75,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] inline on 450-BA-013 (pipes p35, p34)"
+  },
+  {
+   "object_id": "o6",
+   "cls": "butterfly_valve",
+   "position": {
+    "x": 10.3034,
+    "y": 8.25,
+    "z": 3.222
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.396,
+    "y": 1.056,
+    "z": 1.32
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 10.1054,
+     "y": 8.25,
+     "z": 3.75
+    },
+    "out": {
+     "x": 10.5014,
+     "y": 8.25,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] inline on 450-BA-014 (pipes p10, p12)"
+  },
+  {
+   "object_id": "o5",
+   "cls": "check_valve",
+   "position": {
+    "x": 15.5906,
+    "y": 9.25,
+    "z": 3.354
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.924,
+    "y": 0.792,
+    "z": 1.056
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 15.1286,
+     "y": 9.25,
+     "z": 3.75
+    },
+    "out": {
+     "x": 16.0526,
+     "y": 9.25,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] inline on 450-BA-015 (pipes p5, p6, p7)"
+  },
+  {
+   "object_id": "o3",
+   "cls": "butterfly_valve",
+   "position": {
+    "x": 16.4012,
+    "y": 9.25,
+    "z": 3.222
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.396,
+    "y": 1.056,
+    "z": 1.32
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 16.2032,
+     "y": 9.25,
+     "z": 3.75
+    },
+    "out": {
+     "x": 16.5992,
+     "y": 9.25,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] inline on 450-BA-015 (pipes p5, p6, p7)"
+  },
+  {
+   "object_id": "o18",
+   "cls": "butterfly_valve",
+   "position": {
+    "x": 10.3034,
+    "y": 6.25,
+    "z": 3.222
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.396,
+    "y": 1.056,
+    "z": 1.32
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 10.1054,
+     "y": 6.25,
+     "z": 3.75
+    },
+    "out": {
+     "x": 10.5014,
+     "y": 6.25,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] inline on 450-BA-016 (pipes p30, p32)"
+  },
+  {
+   "object_id": "o16",
+   "cls": "check_valve",
+   "position": {
+    "x": 15.0906,
+    "y": 6.75,
+    "z": 3.354
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.924,
+    "y": 0.792,
+    "z": 1.056
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 14.6286,
+     "y": 6.75,
+     "z": 3.75
+    },
+    "out": {
+     "x": 15.5526,
+     "y": 6.75,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] inline on 450-BA-017 (pipes p25, p26, p27)"
+  },
+  {
+   "object_id": "o14",
+   "cls": "butterfly_valve",
+   "position": {
+    "x": 15.9097,
+    "y": 6.75,
+    "z": 3.222
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.396,
+    "y": 1.056,
+    "z": 1.32
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 15.7117,
+     "y": 6.75,
+     "z": 3.75
+    },
+    "out": {
+     "x": 16.1077,
+     "y": 6.75,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] inline on 450-BA-017 (pipes p25, p26, p27)"
+  },
+  {
+   "object_id": "o27",
+   "cls": "butterfly_valve",
+   "position": {
+    "x": 9.6168,
+    "y": 3.75,
+    "z": 3.222
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.396,
+    "y": 1.056,
+    "z": 1.32
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 9.4188,
+     "y": 3.75,
+     "z": 3.75
+    },
+    "out": {
+     "x": 9.8148,
+     "y": 3.75,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] inline on 450-BA-018 (pipes p36, p46)"
+  },
+  {
+   "object_id": "o26",
+   "cls": "check_valve",
+   "position": {
+    "x": 14.4606,
+    "y": 3.75,
+    "z": 3.354
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.924,
+    "y": 0.792,
+    "z": 1.056
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 13.9986,
+     "y": 3.75,
+     "z": 3.75
+    },
+    "out": {
+     "x": 14.9226,
+     "y": 3.75,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] inline on 450-BA-019 (pipes p42, p43, p44)"
+  },
+  {
+   "object_id": "o24",
+   "cls": "butterfly_valve",
+   "position": {
+    "x": 15.2709,
+    "y": 3.75,
+    "z": 3.222
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.396,
+    "y": 1.056,
+    "z": 1.32
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 15.0729,
+     "y": 3.75,
+     "z": 3.75
+    },
+    "out": {
+     "x": 15.4689,
+     "y": 3.75,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] inline on 450-BA-019 (pipes p42, p43, p44)"
+  },
+  {
+   "object_id": "o35",
+   "cls": "flow_meter",
+   "position": {
+    "x": 12.7114,
+    "y": -1.75,
+    "z": 3.222
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 1.32,
+    "y": 0.792,
+    "z": 1.056
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 12.0514,
+     "y": -1.75,
+     "z": 3.75
+    },
+    "out": {
+     "x": 13.3714,
+     "y": -1.75,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] inline on 450-BA-022 (pipes p56, p57)"
+  },
+  {
+   "object_id": "o32",
+   "cls": "butterfly_valve",
+   "position": {
+    "x": 14.412,
+    "y": -1.75,
+    "z": 3.222
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.396,
+    "y": 1.056,
+    "z": 1.32
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 14.214,
+     "y": -1.75,
+     "z": 3.75
+    },
+    "out": {
+     "x": 14.61,
+     "y": -1.75,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] inline on 450-BA-023 (pipes p58, p59)"
+  },
+  {
+   "object_id": "o36",
+   "cls": "butterfly_valve",
+   "position": {
+    "x": 8.8034,
+    "y": -1.25,
+    "z": 4.222
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.396,
+    "y": 1.056,
+    "z": 1.32
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 8.6054,
+     "y": -1.25,
+     "z": 4.75
+    },
+    "out": {
+     "x": 9.0014,
+     "y": -1.25,
+     "z": 4.75
+    }
+   },
+   "rationale": "[router] inline on 450-BA-024 (pipes p51, p53)"
+  },
+  {
+   "object_id": "o37",
+   "cls": "butterfly_valve",
+   "position": {
+    "x": 33.8034,
+    "y": -15.75,
+    "z": 3.222
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.396,
+    "y": 1.056,
+    "z": 1.32
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 33.6054,
+     "y": -15.75,
+     "z": 3.75
+    },
+    "out": {
+     "x": 34.0014,
+     "y": -15.75,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] inline on 450-BA-031 (pipes p71, p72)"
+  },
+  {
+   "object_id": "o38",
+   "cls": "butterfly_valve",
+   "position": {
+    "x": 18.7952,
+    "y": -5.75,
+    "z": 3.3075
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.332,
+    "y": 0.885,
+    "z": 1.107
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 18.6292,
+     "y": -5.75,
+     "z": 3.75
+    },
+    "out": {
+     "x": 18.9612,
+     "y": -5.75,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] inline on 350-BA-025 (pipes p60, p73)"
+  },
+  {
+   "object_id": "o39",
+   "cls": "butterfly_valve",
+   "position": {
+    "x": 21.75,
+    "y": 3.3862,
+    "z": 3.3075
+   },
+   "yaw_deg": 90.0,
+   "size": {
+    "x": 0.332,
+    "y": 0.885,
+    "z": 1.107
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 21.75,
+     "y": 3.2202,
+     "z": 3.75
+    },
+    "out": {
+     "x": 21.75,
+     "y": 3.5522,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] inline on 350-BA-026 (pipes p62, p74)"
+  },
+  {
+   "object_id": "o40",
+   "cls": "butterfly_valve",
+   "position": {
+    "x": 24.6138,
+    "y": -6.25,
+    "z": 3.3075
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.332,
+    "y": 0.885,
+    "z": 1.107
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 24.4478,
+     "y": -6.25,
+     "z": 3.75
+    },
+    "out": {
+     "x": 24.7798,
+     "y": -6.25,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] inline on 350-BA-027 (pipes p64, p75)"
+  },
+  {
+   "object_id": "o41",
+   "cls": "butterfly_valve",
+   "position": {
+    "x": 26.75,
+    "y": 6.6962,
+    "z": 3.3075
+   },
+   "yaw_deg": 90.0,
+   "size": {
+    "x": 0.332,
+    "y": 0.885,
+    "z": 1.107
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 26.75,
+     "y": 6.5302,
+     "z": 3.75
+    },
+    "out": {
+     "x": 26.75,
+     "y": 6.8622,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] inline on 350-BA-028 (pipes p66, p76)"
+  },
+  {
+   "object_id": "o42",
+   "cls": "butterfly_valve",
+   "position": {
+    "x": 28.7543,
+    "y": -6.25,
+    "z": 3.3075
+   },
+   "yaw_deg": 180.0,
+   "size": {
+    "x": 0.332,
+    "y": 0.885,
+    "z": 1.107
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 28.9203,
+     "y": -6.25,
+     "z": 3.75
+    },
+    "out": {
+     "x": 28.5883,
+     "y": -6.25,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] inline on 350-BA-029 (pipes p68, p77)"
+  },
+  {
+   "object_id": "o43",
+   "cls": "butterfly_valve",
+   "position": {
+    "x": 32.25,
+    "y": 3.3713,
+    "z": 3.3075
+   },
+   "yaw_deg": 90.0,
+   "size": {
+    "x": 0.332,
+    "y": 0.885,
+    "z": 1.107
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 32.25,
+     "y": 3.2053,
+     "z": 3.75
+    },
+    "out": {
+     "x": 32.25,
+     "y": 3.5373,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] inline on 350-BA-030 (pipes p70, p78)"
+  },
+  {
+   "object_id": "o9",
+   "cls": "ball_valve",
+   "position": {
+    "x": 9.25,
+    "y": 7.7214,
+    "z": 3.6
+   },
+   "yaw_deg": 270.0,
+   "size": {
+    "x": 0.3,
+    "y": 0.3,
+    "z": 0.4
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "in": {
+     "x": 9.25,
+     "y": 7.8714,
+     "z": 3.75
+    },
+    "out": {
+     "x": 9.25,
+     "y": 7.5714,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] inline on 50-BA-035 (pipes p11, p17)"
+  },
+  {
+   "object_id": "o1",
+   "cls": "instrument_panel",
+   "position": {
+    "x": 13.25,
+    "y": 9.75,
+    "z": 4.3
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.15,
+    "y": 0.1,
+    "z": 0.15
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "n0": {
+     "x": 13.25,
+     "y": 9.75,
+     "z": 4.3
+    }
+   },
+   "rationale": "[router] instrument on a stub of its line"
+  },
+  {
+   "object_id": "o11",
+   "cls": "instrument_panel",
+   "position": {
+    "x": 13.25,
+    "y": 6.25,
+    "z": 4.3
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.15,
+    "y": 0.1,
+    "z": 0.15
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "n0": {
+     "x": 13.25,
+     "y": 6.25,
+     "z": 4.3
+    }
+   },
+   "rationale": "[router] instrument on a stub of its line"
+  },
+  {
+   "object_id": "o12",
+   "cls": "instrument_shared",
+   "position": {
+    "x": 14.25,
+    "y": 6.75,
+    "z": 4.3
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.15,
+    "y": 0.1,
+    "z": 0.15
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "n0": {
+     "x": 14.25,
+     "y": 6.75,
+     "z": 4.3
+    }
+   },
+   "rationale": "[router] instrument on a stub of its line"
+  },
+  {
+   "object_id": "o2",
+   "cls": "instrument_shared",
+   "position": {
+    "x": 14.75,
+    "y": 9.25,
+    "z": 4.3
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.15,
+    "y": 0.1,
+    "z": 0.15
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "n0": {
+     "x": 14.75,
+     "y": 9.25,
+     "z": 4.3
+    }
+   },
+   "rationale": "[router] instrument on a stub of its line"
+  },
+  {
+   "object_id": "o15",
+   "cls": "instrument_panel",
+   "position": {
+    "x": 10.75,
+    "y": 5.75,
+    "z": 4.3
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.15,
+    "y": 0.1,
+    "z": 0.15
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "n0": {
+     "x": 10.75,
+     "y": 5.75,
+     "z": 4.3
+    }
+   },
+   "rationale": "[router] instrument on a stub of its line"
+  },
+  {
+   "object_id": "o21",
+   "cls": "instrument_panel",
+   "position": {
+    "x": 13.3,
+    "y": 3.25,
+    "z": 3.75
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.15,
+    "y": 0.1,
+    "z": 0.15
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "n0": {
+     "x": 13.3,
+     "y": 3.25,
+     "z": 3.75
+    }
+   },
+   "rationale": "[router] instrument on a stub of its line"
+  },
+  {
+   "object_id": "o22",
+   "cls": "instrument_shared",
+   "position": {
+    "x": 13.75,
+    "y": 4.25,
+    "z": 4.3
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.15,
+    "y": 0.1,
+    "z": 0.15
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "n0": {
+     "x": 13.75,
+     "y": 4.25,
+     "z": 4.3
+    }
+   },
+   "rationale": "[router] instrument on a stub of its line"
+  },
+  {
+   "object_id": "o25",
+   "cls": "instrument_panel",
+   "position": {
+    "x": 10.25,
+    "y": 3.75,
+    "z": 4.3
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.15,
+    "y": 0.1,
+    "z": 0.15
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "n0": {
+     "x": 10.25,
+     "y": 3.75,
+     "z": 4.3
+    }
+   },
+   "rationale": "[router] instrument on a stub of its line"
+  },
+  {
+   "object_id": "o30",
+   "cls": "instrument_shared",
+   "position": {
+    "x": 10.75,
+    "y": -1.75,
+    "z": 4.3
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.15,
+    "y": 0.1,
+    "z": 0.15
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "n0": {
+     "x": 10.75,
+     "y": -1.75,
+     "z": 4.3
+    }
+   },
+   "rationale": "[router] instrument on a stub of its line"
+  },
+  {
+   "object_id": "o31",
+   "cls": "instrument_shared",
+   "position": {
+    "x": 13.75,
+    "y": -1.75,
+    "z": 4.3
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.15,
+    "y": 0.1,
+    "z": 0.15
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "n0": {
+     "x": 13.75,
+     "y": -1.75,
+     "z": 4.3
+    }
+   },
+   "rationale": "[router] instrument on a stub of its line"
+  },
+  {
+   "object_id": "o51",
+   "cls": "instrument_shared",
+   "position": {
+    "x": 17.226,
+    "y": -10.0544,
+    "z": 4.35
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.15,
+    "y": 0.1,
+    "z": 0.15
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "n0": {
+     "x": 17.226,
+     "y": -10.0544,
+     "z": 4.35
+    }
+   },
+   "rationale": "[router] instrument on a stub of its line"
+  },
+  {
+   "object_id": "o4",
+   "cls": "instrument_panel",
+   "position": {
+    "x": 10.75,
+    "y": 9.25,
+    "z": 4.3
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.15,
+    "y": 0.1,
+    "z": 0.15
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "n0": {
+     "x": 10.75,
+     "y": 9.25,
+     "z": 4.3
+    }
+   },
+   "rationale": "[router] instrument on a stub of its line"
+  },
+  {
+   "object_id": "o52",
+   "cls": "instrument_shared",
+   "position": {
+    "x": 25.3326,
+    "y": -10.1093,
+    "z": 3.3
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.15,
+    "y": 0.1,
+    "z": 0.15
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "n0": {
+     "x": 25.3326,
+     "y": -10.1093,
+     "z": 3.3
+    }
+   },
+   "rationale": "[router] instrument on a stub of its line"
+  },
+  {
+   "object_id": "o53",
+   "cls": "instrument_shared",
+   "position": {
+    "x": 32.0374,
+    "y": 3.8167,
+    "z": 3.3
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.15,
+    "y": 0.1,
+    "z": 0.15
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "n0": {
+     "x": 32.0374,
+     "y": 3.8167,
+     "z": 3.3
+    }
+   },
+   "rationale": "[router] instrument on a stub of its line"
+  },
+  {
+   "object_id": "o54",
+   "cls": "instrument_shared",
+   "position": {
+    "x": 30.4278,
+    "y": -10.1093,
+    "z": 3.3
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.15,
+    "y": 0.1,
+    "z": 0.15
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "n0": {
+     "x": 30.4278,
+     "y": -10.1093,
+     "z": 3.3
+    }
+   },
+   "rationale": "[router] instrument on a stub of its line"
+  },
+  {
+   "object_id": "o55",
+   "cls": "instrument_shared",
+   "position": {
+    "x": 25.8242,
+    "y": 7.8177,
+    "z": 3.3
+   },
+   "yaw_deg": 0.0,
+   "size": {
+    "x": 0.15,
+    "y": 0.1,
+    "z": 0.15
+   },
+   "deck": "tank_top",
+   "nozzles": {
+    "n0": {
+     "x": 25.8242,
+     "y": 7.8177,
+     "z": 3.3
+    }
+   },
+   "rationale": "[router] instrument on a stub of its line"
+  }
+ ],
+ "routes": [
+  {
+   "pipe_id": "p1",
+   "points": [
+    {
+     "x": 13.25,
+     "y": 9.75,
+     "z": 4.3
+    },
+    {
+     "x": 13.25,
+     "y": 9.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.0217,
+   "medium": "ballast_water",
+   "line_number": null
+  },
+  {
+   "pipe_id": "p2",
+   "points": [
+    {
+     "x": 14.75,
+     "y": 9.25,
+     "z": 4.3
+    },
+    {
+     "x": 14.75,
+     "y": 9.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.0217,
+   "medium": "ballast_water",
+   "line_number": null
+  },
+  {
+   "pipe_id": "p3",
+   "points": [
+    {
+     "x": 12.303,
+     "y": 10.2345,
+     "z": 3.425
+    },
+    {
+     "x": 12.6816,
+     "y": 10.2345,
+     "z": 3.425
+    },
+    {
+     "x": 12.6816,
+     "y": 10.2345,
+     "z": 3.25
+    },
+    {
+     "x": 12.75,
+     "y": 10.2345,
+     "z": 3.25
+    },
+    {
+     "x": 12.75,
+     "y": 10.25,
+     "z": 3.25
+    },
+    {
+     "x": 13.25,
+     "y": 10.25,
+     "z": 3.25
+    },
+    {
+     "x": 13.25,
+     "y": 10.25,
+     "z": 3.75
+    },
+    {
+     "x": 13.25,
+     "y": 9.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-015"
+  },
+  {
+   "pipe_id": "p4",
+   "points": [
+    {
+     "x": 13.25,
+     "y": 9.75,
+     "z": 3.75
+    },
+    {
+     "x": 13.25,
+     "y": 8.25,
+     "z": 3.75
+    },
+    {
+     "x": 14.75,
+     "y": 8.25,
+     "z": 3.75
+    },
+    {
+     "x": 14.75,
+     "y": 9.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-015"
+  },
+  {
+   "pipe_id": "p5",
+   "points": [
+    {
+     "x": 15.1286,
+     "y": 9.25,
+     "z": 3.75
+    },
+    {
+     "x": 14.75,
+     "y": 9.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-015"
+  },
+  {
+   "pipe_id": "p6",
+   "points": [
+    {
+     "x": 16.0526,
+     "y": 9.25,
+     "z": 3.75
+    },
+    {
+     "x": 16.2032,
+     "y": 9.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-015"
+  },
+  {
+   "pipe_id": "p7",
+   "points": [
+    {
+     "x": 16.5992,
+     "y": 9.25,
+     "z": 3.75
+    },
+    {
+     "x": 17.25,
+     "y": 9.25,
+     "z": 3.75
+    },
+    {
+     "x": 17.25,
+     "y": 6.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-015"
+  },
+  {
+   "pipe_id": "p8",
+   "points": [
+    {
+     "x": 10.75,
+     "y": 9.25,
+     "z": 4.3
+    },
+    {
+     "x": 10.75,
+     "y": 9.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.0217,
+   "medium": "ballast_water",
+   "line_number": null
+  },
+  {
+   "pipe_id": "p9",
+   "points": [
+    {
+     "x": 7.75,
+     "y": 9.75,
+     "z": 3.75
+    },
+    {
+     "x": 7.75,
+     "y": 8.25,
+     "z": 3.75
+    },
+    {
+     "x": 9.25,
+     "y": 8.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-014"
+  },
+  {
+   "pipe_id": "p10",
+   "points": [
+    {
+     "x": 10.1054,
+     "y": 8.25,
+     "z": 3.75
+    },
+    {
+     "x": 9.25,
+     "y": 8.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-014"
+  },
+  {
+   "pipe_id": "p11",
+   "points": [
+    {
+     "x": 9.25,
+     "y": 8.25,
+     "z": 3.75
+    },
+    {
+     "x": 9.25,
+     "y": 7.8714,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.0605,
+   "medium": "ballast_water",
+   "line_number": "50-BA-035"
+  },
+  {
+   "pipe_id": "p12",
+   "points": [
+    {
+     "x": 10.5014,
+     "y": 8.25,
+     "z": 3.75
+    },
+    {
+     "x": 10.75,
+     "y": 8.25,
+     "z": 3.75
+    },
+    {
+     "x": 10.75,
+     "y": 9.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-014"
+  },
+  {
+   "pipe_id": "p13",
+   "points": [
+    {
+     "x": 9.903,
+     "y": 10.2345,
+     "z": 3.425
+    },
+    {
+     "x": 9.5244,
+     "y": 10.2345,
+     "z": 3.425
+    },
+    {
+     "x": 9.5244,
+     "y": 10.2345,
+     "z": 3.25
+    },
+    {
+     "x": 9.25,
+     "y": 10.2345,
+     "z": 3.25
+    },
+    {
+     "x": 9.25,
+     "y": 10.25,
+     "z": 3.25
+    },
+    {
+     "x": 9.25,
+     "y": 10.25,
+     "z": 2.75
+    },
+    {
+     "x": 9.25,
+     "y": 8.75,
+     "z": 2.75
+    },
+    {
+     "x": 11.75,
+     "y": 8.75,
+     "z": 2.75
+    },
+    {
+     "x": 11.75,
+     "y": 8.75,
+     "z": 3.75
+    },
+    {
+     "x": 10.75,
+     "y": 8.75,
+     "z": 3.75
+    },
+    {
+     "x": 10.75,
+     "y": 9.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-014"
+  },
+  {
+   "pipe_id": "p14",
+   "points": [
+    {
+     "x": 7.75,
+     "y": 14.3436,
+     "z": 3.75
+    },
+    {
+     "x": 7.75,
+     "y": 15.75,
+     "z": 3.75
+    },
+    {
+     "x": 5.75,
+     "y": 15.75,
+     "z": 3.75
+    },
+    {
+     "x": 5.75,
+     "y": 15.75,
+     "z": 1.75
+    },
+    {
+     "x": 5.75,
+     "y": 15.65,
+     "z": 1.75
+    },
+    {
+     "x": 5.908,
+     "y": 15.65,
+     "z": 1.75
+    },
+    {
+     "x": 5.908,
+     "y": 15.65,
+     "z": 1.2
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-011"
+  },
+  {
+   "pipe_id": "p15",
+   "points": [
+    {
+     "x": 7.75,
+     "y": 13.9476,
+     "z": 3.75
+    },
+    {
+     "x": 7.75,
+     "y": 9.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-011"
+  },
+  {
+   "pipe_id": "p16",
+   "points": [
+    {
+     "x": 7.75,
+     "y": 9.75,
+     "z": 3.75
+    },
+    {
+     "x": 7.75,
+     "y": 9.75,
+     "z": 2.75
+    },
+    {
+     "x": 7.75,
+     "y": 7.25,
+     "z": 2.75
+    },
+    {
+     "x": 7.75,
+     "y": 7.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-033"
+  },
+  {
+   "pipe_id": "p17",
+   "points": [
+    {
+     "x": 9.25,
+     "y": 7.5714,
+     "z": 3.75
+    },
+    {
+     "x": 9.25,
+     "y": 6.75,
+     "z": 3.75
+    },
+    {
+     "x": 9.25,
+     "y": 6.75,
+     "z": 2.75
+    },
+    {
+     "x": 9.25,
+     "y": 0.8652,
+     "z": 2.75
+    },
+    {
+     "x": 9.162,
+     "y": 0.8652,
+     "z": 2.75
+    },
+    {
+     "x": 9.162,
+     "y": 0.8652,
+     "z": 2.9
+    },
+    {
+     "x": 9.162,
+     "y": 0.6652,
+     "z": 2.9
+    }
+   ],
+   "diameter": 0.0605,
+   "medium": "ballast_water",
+   "line_number": "50-BA-035"
+  },
+  {
+   "pipe_id": "p18",
+   "points": [
+    {
+     "x": 13.25,
+     "y": 6.25,
+     "z": 4.3
+    },
+    {
+     "x": 13.25,
+     "y": 6.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.0217,
+   "medium": "ballast_water",
+   "line_number": null
+  },
+  {
+   "pipe_id": "p19",
+   "points": [
+    {
+     "x": 14.25,
+     "y": 6.75,
+     "z": 4.3
+    },
+    {
+     "x": 14.25,
+     "y": 6.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.0217,
+   "medium": "ballast_water",
+   "line_number": null
+  },
+  {
+   "pipe_id": "p20",
+   "points": [
+    {
+     "x": 5.25,
+     "y": 6.6054,
+     "z": 3.75
+    },
+    {
+     "x": 5.25,
+     "y": 5.75,
+     "z": 3.75
+    },
+    {
+     "x": 5.25,
+     "y": 5.75,
+     "z": 1.75
+    },
+    {
+     "x": 5.25,
+     "y": 5.7515,
+     "z": 1.75
+    },
+    {
+     "x": 5.058,
+     "y": 5.7515,
+     "z": 1.75
+    },
+    {
+     "x": 5.058,
+     "y": 5.7515,
+     "z": 1.2
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-012"
+  },
+  {
+   "pipe_id": "p21",
+   "points": [
+    {
+     "x": 5.25,
+     "y": 7.0014,
+     "z": 3.75
+    },
+    {
+     "x": 5.25,
+     "y": 7.25,
+     "z": 3.75
+    },
+    {
+     "x": 7.75,
+     "y": 7.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-012"
+  },
+  {
+   "pipe_id": "p22",
+   "points": [
+    {
+     "x": 7.75,
+     "y": 7.25,
+     "z": 3.75
+    },
+    {
+     "x": 7.75,
+     "y": 6.25,
+     "z": 3.75
+    },
+    {
+     "x": 8.75,
+     "y": 6.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-033"
+  },
+  {
+   "pipe_id": "p23",
+   "points": [
+    {
+     "x": 13.3455,
+     "y": 4.6364,
+     "z": 3.425
+    },
+    {
+     "x": 13.7241,
+     "y": 4.6364,
+     "z": 3.425
+    },
+    {
+     "x": 13.7241,
+     "y": 4.6364,
+     "z": 3.25
+    },
+    {
+     "x": 13.75,
+     "y": 4.6364,
+     "z": 3.25
+    },
+    {
+     "x": 13.75,
+     "y": 5.75,
+     "z": 3.25
+    },
+    {
+     "x": 13.75,
+     "y": 5.75,
+     "z": 3.75
+    },
+    {
+     "x": 13.25,
+     "y": 5.75,
+     "z": 3.75
+    },
+    {
+     "x": 13.25,
+     "y": 6.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-017"
+  },
+  {
+   "pipe_id": "p24",
+   "points": [
+    {
+     "x": 13.25,
+     "y": 6.25,
+     "z": 3.75
+    },
+    {
+     "x": 14.25,
+     "y": 6.25,
+     "z": 3.75
+    },
+    {
+     "x": 14.25,
+     "y": 6.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-017"
+  },
+  {
+   "pipe_id": "p25",
+   "points": [
+    {
+     "x": 14.6286,
+     "y": 6.75,
+     "z": 3.75
+    },
+    {
+     "x": 14.25,
+     "y": 6.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-017"
+  },
+  {
+   "pipe_id": "p26",
+   "points": [
+    {
+     "x": 15.5526,
+     "y": 6.75,
+     "z": 3.75
+    },
+    {
+     "x": 15.7117,
+     "y": 6.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-017"
+  },
+  {
+   "pipe_id": "p27",
+   "points": [
+    {
+     "x": 16.1077,
+     "y": 6.75,
+     "z": 3.75
+    },
+    {
+     "x": 17.25,
+     "y": 6.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-017"
+  },
+  {
+   "pipe_id": "p28",
+   "points": [
+    {
+     "x": 17.25,
+     "y": 6.75,
+     "z": 3.75
+    },
+    {
+     "x": 17.25,
+     "y": 5.75,
+     "z": 3.75
+    },
+    {
+     "x": 16.75,
+     "y": 5.75,
+     "z": 3.75
+    },
+    {
+     "x": 16.75,
+     "y": 3.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-034"
+  },
+  {
+   "pipe_id": "p29",
+   "points": [
+    {
+     "x": 10.75,
+     "y": 5.75,
+     "z": 4.3
+    },
+    {
+     "x": 10.75,
+     "y": 5.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.0217,
+   "medium": "ballast_water",
+   "line_number": null
+  },
+  {
+   "pipe_id": "p30",
+   "points": [
+    {
+     "x": 8.75,
+     "y": 6.25,
+     "z": 3.75
+    },
+    {
+     "x": 10.1054,
+     "y": 6.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-016"
+  },
+  {
+   "pipe_id": "p31",
+   "points": [
+    {
+     "x": 8.75,
+     "y": 6.25,
+     "z": 3.75
+    },
+    {
+     "x": 8.75,
+     "y": 6.25,
+     "z": 2.75
+    },
+    {
+     "x": 8.75,
+     "y": 4.75,
+     "z": 2.75
+    },
+    {
+     "x": 8.25,
+     "y": 4.75,
+     "z": 2.75
+    },
+    {
+     "x": 8.25,
+     "y": 4.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-018"
+  },
+  {
+   "pipe_id": "p32",
+   "points": [
+    {
+     "x": 10.5014,
+     "y": 6.25,
+     "z": 3.75
+    },
+    {
+     "x": 10.75,
+     "y": 6.25,
+     "z": 3.75
+    },
+    {
+     "x": 10.75,
+     "y": 5.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-016"
+  },
+  {
+   "pipe_id": "p33",
+   "points": [
+    {
+     "x": 10.9455,
+     "y": 4.6364,
+     "z": 3.425
+    },
+    {
+     "x": 10.5669,
+     "y": 4.6364,
+     "z": 3.425
+    },
+    {
+     "x": 10.5669,
+     "y": 4.6364,
+     "z": 3.25
+    },
+    {
+     "x": 10.25,
+     "y": 4.6364,
+     "z": 3.25
+    },
+    {
+     "x": 10.25,
+     "y": 4.75,
+     "z": 3.25
+    },
+    {
+     "x": 10.25,
+     "y": 4.75,
+     "z": 2.75
+    },
+    {
+     "x": 10.25,
+     "y": 5.75,
+     "z": 2.75
+    },
+    {
+     "x": 11.75,
+     "y": 5.75,
+     "z": 2.75
+    },
+    {
+     "x": 11.75,
+     "y": 5.75,
+     "z": 3.75
+    },
+    {
+     "x": 10.75,
+     "y": 5.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-016"
+  },
+  {
+   "pipe_id": "p34",
+   "points": [
+    {
+     "x": 5.3067,
+     "y": 3.0909,
+     "z": 2.9
+    },
+    {
+     "x": 5.6853,
+     "y": 3.0909,
+     "z": 2.9
+    },
+    {
+     "x": 5.6853,
+     "y": 3.0909,
+     "z": 2.75
+    },
+    {
+     "x": 5.75,
+     "y": 3.0909,
+     "z": 2.75
+    },
+    {
+     "x": 5.75,
+     "y": 3.25,
+     "z": 2.75
+    },
+    {
+     "x": 5.75,
+     "y": 3.25,
+     "z": 3.75
+    },
+    {
+     "x": 5.75,
+     "y": 4.75,
+     "z": 3.75
+    },
+    {
+     "x": 5.9986,
+     "y": 4.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-013"
+  },
+  {
+   "pipe_id": "p35",
+   "points": [
+    {
+     "x": 6.3946,
+     "y": 4.75,
+     "z": 3.75
+    },
+    {
+     "x": 8.25,
+     "y": 4.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-013"
+  },
+  {
+   "pipe_id": "p36",
+   "points": [
+    {
+     "x": 8.25,
+     "y": 4.75,
+     "z": 3.75
+    },
+    {
+     "x": 8.25,
+     "y": 3.75,
+     "z": 3.75
+    },
+    {
+     "x": 9.4188,
+     "y": 3.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-018"
+  },
+  {
+   "pipe_id": "p37",
+   "points": [
+    {
+     "x": 13.3,
+     "y": 3.25,
+     "z": 3.75
+    },
+    {
+     "x": 12.75,
+     "y": 3.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.0217,
+   "medium": "ballast_water",
+   "line_number": null
+  },
+  {
+   "pipe_id": "p38",
+   "points": [
+    {
+     "x": 13.75,
+     "y": 4.25,
+     "z": 4.3
+    },
+    {
+     "x": 13.75,
+     "y": 4.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.0217,
+   "medium": "ballast_water",
+   "line_number": null
+  },
+  {
+   "pipe_id": "p39",
+   "points": [
+    {
+     "x": 16.75,
+     "y": 3.75,
+     "z": 3.75
+    },
+    {
+     "x": 16.75,
+     "y": -0.75,
+     "z": 3.75
+    },
+    {
+     "x": 7.75,
+     "y": -0.75,
+     "z": 3.75
+    },
+    {
+     "x": 7.75,
+     "y": -1.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-020"
+  },
+  {
+   "pipe_id": "p40",
+   "points": [
+    {
+     "x": 13.3455,
+     "y": 1.5455,
+     "z": 3.425
+    },
+    {
+     "x": 13.7241,
+     "y": 1.5455,
+     "z": 3.425
+    },
+    {
+     "x": 13.7241,
+     "y": 1.5455,
+     "z": 3.25
+    },
+    {
+     "x": 13.75,
+     "y": 1.5455,
+     "z": 3.25
+    },
+    {
+     "x": 13.75,
+     "y": 1.75,
+     "z": 3.25
+    },
+    {
+     "x": 13.75,
+     "y": 1.75,
+     "z": 3.75
+    },
+    {
+     "x": 13.75,
+     "y": 2.75,
+     "z": 3.75
+    },
+    {
+     "x": 12.75,
+     "y": 2.75,
+     "z": 3.75
+    },
+    {
+     "x": 12.75,
+     "y": 3.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-019"
+  },
+  {
+   "pipe_id": "p41",
+   "points": [
+    {
+     "x": 12.75,
+     "y": 3.25,
+     "z": 3.75
+    },
+    {
+     "x": 12.75,
+     "y": 3.25,
+     "z": 4.75
+    },
+    {
+     "x": 13.75,
+     "y": 3.25,
+     "z": 4.75
+    },
+    {
+     "x": 13.75,
+     "y": 4.75,
+     "z": 4.75
+    },
+    {
+     "x": 13.75,
+     "y": 4.75,
+     "z": 3.75
+    },
+    {
+     "x": 13.75,
+     "y": 4.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-019"
+  },
+  {
+   "pipe_id": "p42",
+   "points": [
+    {
+     "x": 13.9986,
+     "y": 3.75,
+     "z": 3.75
+    },
+    {
+     "x": 13.75,
+     "y": 3.75,
+     "z": 3.75
+    },
+    {
+     "x": 13.75,
+     "y": 4.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-019"
+  },
+  {
+   "pipe_id": "p43",
+   "points": [
+    {
+     "x": 14.9226,
+     "y": 3.75,
+     "z": 3.75
+    },
+    {
+     "x": 15.0729,
+     "y": 3.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-019"
+  },
+  {
+   "pipe_id": "p44",
+   "points": [
+    {
+     "x": 15.4689,
+     "y": 3.75,
+     "z": 3.75
+    },
+    {
+     "x": 16.75,
+     "y": 3.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-019"
+  },
+  {
+   "pipe_id": "p45",
+   "points": [
+    {
+     "x": 10.25,
+     "y": 3.75,
+     "z": 4.3
+    },
+    {
+     "x": 10.25,
+     "y": 3.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.0217,
+   "medium": "ballast_water",
+   "line_number": null
+  },
+  {
+   "pipe_id": "p46",
+   "points": [
+    {
+     "x": 9.8148,
+     "y": 3.75,
+     "z": 3.75
+    },
+    {
+     "x": 10.25,
+     "y": 3.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-018"
+  },
+  {
+   "pipe_id": "p47",
+   "points": [
+    {
+     "x": 10.9455,
+     "y": 1.5455,
+     "z": 3.425
+    },
+    {
+     "x": 10.5669,
+     "y": 1.5455,
+     "z": 3.425
+    },
+    {
+     "x": 10.5669,
+     "y": 1.5455,
+     "z": 3.25
+    },
+    {
+     "x": 10.25,
+     "y": 1.5455,
+     "z": 3.25
+    },
+    {
+     "x": 10.25,
+     "y": 1.75,
+     "z": 3.25
+    },
+    {
+     "x": 10.25,
+     "y": 1.75,
+     "z": 3.75
+    },
+    {
+     "x": 10.25,
+     "y": 3.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-018"
+  },
+  {
+   "pipe_id": "p48",
+   "points": [
+    {
+     "x": 10.75,
+     "y": -1.75,
+     "z": 4.3
+    },
+    {
+     "x": 10.75,
+     "y": -1.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.0217,
+   "medium": "ballast_water",
+   "line_number": null
+  },
+  {
+   "pipe_id": "p49",
+   "points": [
+    {
+     "x": 13.75,
+     "y": -1.75,
+     "z": 4.3
+    },
+    {
+     "x": 13.75,
+     "y": -1.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.0217,
+   "medium": "ballast_water",
+   "line_number": null
+  },
+  {
+   "pipe_id": "p50",
+   "points": [
+    {
+     "x": 6.2095,
+     "y": -3.8657,
+     "z": 5.775
+    },
+    {
+     "x": 5.8309,
+     "y": -3.8657,
+     "z": 5.775
+    },
+    {
+     "x": 5.8309,
+     "y": -3.8657,
+     "z": 5.75
+    },
+    {
+     "x": 5.75,
+     "y": -3.8657,
+     "z": 5.75
+    },
+    {
+     "x": 5.75,
+     "y": -3.75,
+     "z": 5.75
+    },
+    {
+     "x": 5.75,
+     "y": -3.75,
+     "z": 3.75
+    },
+    {
+     "x": 7.75,
+     "y": -3.75,
+     "z": 3.75
+    },
+    {
+     "x": 7.75,
+     "y": -1.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-020"
+  },
+  {
+   "pipe_id": "p51",
+   "points": [
+    {
+     "x": 8.6054,
+     "y": -1.25,
+     "z": 4.75
+    },
+    {
+     "x": 7.75,
+     "y": -1.25,
+     "z": 4.75
+    },
+    {
+     "x": 7.75,
+     "y": -1.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-024"
+  },
+  {
+   "pipe_id": "p52",
+   "points": [
+    {
+     "x": 7.5595,
+     "y": -3.8657,
+     "z": 5.775
+    },
+    {
+     "x": 7.9381,
+     "y": -3.8657,
+     "z": 5.775
+    },
+    {
+     "x": 7.9381,
+     "y": -3.8657,
+     "z": 5.75
+    },
+    {
+     "x": 8.25,
+     "y": -3.8657,
+     "z": 5.75
+    },
+    {
+     "x": 8.25,
+     "y": -3.75,
+     "z": 5.75
+    },
+    {
+     "x": 8.25,
+     "y": -3.75,
+     "z": 5.25
+    },
+    {
+     "x": 8.25,
+     "y": -2.75,
+     "z": 5.25
+    },
+    {
+     "x": 4.75,
+     "y": -2.75,
+     "z": 5.25
+    },
+    {
+     "x": 4.75,
+     "y": -5.75,
+     "z": 5.25
+    },
+    {
+     "x": 4.75,
+     "y": -5.75,
+     "z": 6.25
+    },
+    {
+     "x": 5.75,
+     "y": -5.75,
+     "z": 6.25
+    },
+    {
+     "x": 5.75,
+     "y": -5.6667,
+     "z": 6.25
+    },
+    {
+     "x": 5.8309,
+     "y": -5.6667,
+     "z": 6.25
+    },
+    {
+     "x": 5.8309,
+     "y": -5.6667,
+     "z": 6.15
+    },
+    {
+     "x": 6.2095,
+     "y": -5.6667,
+     "z": 6.15
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-021"
+  },
+  {
+   "pipe_id": "p53",
+   "points": [
+    {
+     "x": 9.0014,
+     "y": -1.25,
+     "z": 4.75
+    },
+    {
+     "x": 9.25,
+     "y": -1.25,
+     "z": 4.75
+    },
+    {
+     "x": 9.25,
+     "y": -2.25,
+     "z": 4.75
+    },
+    {
+     "x": 9.25,
+     "y": -2.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-024"
+  },
+  {
+   "pipe_id": "p54",
+   "points": [
+    {
+     "x": 9.8095,
+     "y": -5.6667,
+     "z": 6.15
+    },
+    {
+     "x": 10.1881,
+     "y": -5.6667,
+     "z": 6.15
+    },
+    {
+     "x": 10.1881,
+     "y": -5.6667,
+     "z": 6.25
+    },
+    {
+     "x": 10.25,
+     "y": -5.6667,
+     "z": 6.25
+    },
+    {
+     "x": 10.25,
+     "y": -5.75,
+     "z": 6.25
+    },
+    {
+     "x": 10.25,
+     "y": -5.75,
+     "z": 3.75
+    },
+    {
+     "x": 9.25,
+     "y": -5.75,
+     "z": 3.75
+    },
+    {
+     "x": 9.25,
+     "y": -2.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-022"
+  },
+  {
+   "pipe_id": "p55",
+   "points": [
+    {
+     "x": 9.25,
+     "y": -2.25,
+     "z": 3.75
+    },
+    {
+     "x": 9.25,
+     "y": -2.25,
+     "z": 2.75
+    },
+    {
+     "x": 9.25,
+     "y": -1.75,
+     "z": 2.75
+    },
+    {
+     "x": 10.75,
+     "y": -1.75,
+     "z": 2.75
+    },
+    {
+     "x": 10.75,
+     "y": -1.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-022"
+  },
+  {
+   "pipe_id": "p56",
+   "points": [
+    {
+     "x": 12.0514,
+     "y": -1.75,
+     "z": 3.75
+    },
+    {
+     "x": 10.75,
+     "y": -1.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-022"
+  },
+  {
+   "pipe_id": "p57",
+   "points": [
+    {
+     "x": 13.3714,
+     "y": -1.75,
+     "z": 3.75
+    },
+    {
+     "x": 13.75,
+     "y": -1.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-023"
+  },
+  {
+   "pipe_id": "p58",
+   "points": [
+    {
+     "x": 14.214,
+     "y": -1.75,
+     "z": 3.75
+    },
+    {
+     "x": 13.75,
+     "y": -1.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-023"
+  },
+  {
+   "pipe_id": "p59",
+   "points": [
+    {
+     "x": 14.61,
+     "y": -1.75,
+     "z": 3.75
+    },
+    {
+     "x": 17.75,
+     "y": -1.75,
+     "z": 3.75
+    },
+    {
+     "x": 17.75,
+     "y": -2.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-023"
+  },
+  {
+   "pipe_id": "p60",
+   "points": [
+    {
+     "x": 17.75,
+     "y": -2.75,
+     "z": 3.75
+    },
+    {
+     "x": 17.75,
+     "y": -5.75,
+     "z": 3.75
+    },
+    {
+     "x": 18.6292,
+     "y": -5.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.3556,
+   "medium": "ballast_water",
+   "line_number": "350-BA-025"
+  },
+  {
+   "pipe_id": "p61",
+   "points": [
+    {
+     "x": 17.75,
+     "y": -2.75,
+     "z": 3.75
+    },
+    {
+     "x": 21.75,
+     "y": -2.75,
+     "z": 3.75
+    },
+    {
+     "x": 21.75,
+     "y": -0.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-032"
+  },
+  {
+   "pipe_id": "p62",
+   "points": [
+    {
+     "x": 21.75,
+     "y": -0.75,
+     "z": 3.75
+    },
+    {
+     "x": 21.75,
+     "y": 3.2202,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.3556,
+   "medium": "ballast_water",
+   "line_number": "350-BA-026"
+  },
+  {
+   "pipe_id": "p63",
+   "points": [
+    {
+     "x": 21.75,
+     "y": -0.75,
+     "z": 3.75
+    },
+    {
+     "x": 24.25,
+     "y": -0.75,
+     "z": 3.75
+    },
+    {
+     "x": 24.25,
+     "y": -2.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-032"
+  },
+  {
+   "pipe_id": "p64",
+   "points": [
+    {
+     "x": 24.25,
+     "y": -2.25,
+     "z": 3.75
+    },
+    {
+     "x": 24.25,
+     "y": -6.25,
+     "z": 3.75
+    },
+    {
+     "x": 24.4478,
+     "y": -6.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.3556,
+   "medium": "ballast_water",
+   "line_number": "350-BA-027"
+  },
+  {
+   "pipe_id": "p65",
+   "points": [
+    {
+     "x": 24.25,
+     "y": -2.25,
+     "z": 3.75
+    },
+    {
+     "x": 26.75,
+     "y": -2.25,
+     "z": 3.75
+    },
+    {
+     "x": 26.75,
+     "y": -0.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-032"
+  },
+  {
+   "pipe_id": "p66",
+   "points": [
+    {
+     "x": 26.75,
+     "y": -0.25,
+     "z": 3.75
+    },
+    {
+     "x": 26.75,
+     "y": 6.5302,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.3556,
+   "medium": "ballast_water",
+   "line_number": "350-BA-028"
+  },
+  {
+   "pipe_id": "p67",
+   "points": [
+    {
+     "x": 26.75,
+     "y": -0.25,
+     "z": 3.75
+    },
+    {
+     "x": 29.75,
+     "y": -0.25,
+     "z": 3.75
+    },
+    {
+     "x": 29.75,
+     "y": -2.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-031"
+  },
+  {
+   "pipe_id": "p68",
+   "points": [
+    {
+     "x": 29.75,
+     "y": -2.75,
+     "z": 3.75
+    },
+    {
+     "x": 29.75,
+     "y": -6.25,
+     "z": 3.75
+    },
+    {
+     "x": 28.9203,
+     "y": -6.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.3556,
+   "medium": "ballast_water",
+   "line_number": "350-BA-029"
+  },
+  {
+   "pipe_id": "p69",
+   "points": [
+    {
+     "x": 29.75,
+     "y": -2.75,
+     "z": 3.75
+    },
+    {
+     "x": 31.25,
+     "y": -2.75,
+     "z": 3.75
+    },
+    {
+     "x": 31.25,
+     "y": -3.25,
+     "z": 3.75
+    },
+    {
+     "x": 32.25,
+     "y": -3.25,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-031"
+  },
+  {
+   "pipe_id": "p70",
+   "points": [
+    {
+     "x": 32.25,
+     "y": -3.25,
+     "z": 3.75
+    },
+    {
+     "x": 32.25,
+     "y": 3.2053,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.3556,
+   "medium": "ballast_water",
+   "line_number": "350-BA-030"
+  },
+  {
+   "pipe_id": "p71",
+   "points": [
+    {
+     "x": 32.25,
+     "y": -3.25,
+     "z": 3.75
+    },
+    {
+     "x": 32.25,
+     "y": -15.75,
+     "z": 3.75
+    },
+    {
+     "x": 33.6054,
+     "y": -15.75,
+     "z": 3.75
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-031"
+  },
+  {
+   "pipe_id": "p72",
+   "points": [
+    {
+     "x": 34.0014,
+     "y": -15.75,
+     "z": 3.75
+    },
+    {
+     "x": 34.25,
+     "y": -15.75,
+     "z": 3.75
+    },
+    {
+     "x": 34.25,
+     "y": -15.75,
+     "z": 5.75
+    },
+    {
+     "x": 34.25,
+     "y": -16.2214,
+     "z": 5.75
+    },
+    {
+     "x": 34.1139,
+     "y": -16.2214,
+     "z": 5.75
+    },
+    {
+     "x": 34.1139,
+     "y": -16.2214,
+     "z": 5.55
+    },
+    {
+     "x": 34.1139,
+     "y": -16.6,
+     "z": 5.55
+    }
+   ],
+   "diameter": 0.4572,
+   "medium": "ballast_water",
+   "line_number": "450-BA-031"
+  },
+  {
+   "pipe_id": "p73",
+   "points": [
+    {
+     "x": 18.9612,
+     "y": -5.75,
+     "z": 3.75
+    },
+    {
+     "x": 19.25,
+     "y": -5.75,
+     "z": 3.75
+    },
+    {
+     "x": 19.25,
+     "y": -5.75,
+     "z": 3.25
+    },
+    {
+     "x": 19.25,
+     "y": -6.4266,
+     "z": 3.25
+    },
+    {
+     "x": 19.0767,
+     "y": -6.4266,
+     "z": 3.25
+    },
+    {
+     "x": 19.0767,
+     "y": -6.4266,
+     "z": 3.275
+    },
+    {
+     "x": 19.0767,
+     "y": -6.7544,
+     "z": 3.275
+    }
+   ],
+   "diameter": 0.3556,
+   "medium": "ballast_water",
+   "line_number": "350-BA-025"
+  },
+  {
+   "pipe_id": "p74",
+   "points": [
+    {
+     "x": 21.75,
+     "y": 3.5522,
+     "z": 3.75
+    },
+    {
+     "x": 21.75,
+     "y": 3.75,
+     "z": 3.75
+    },
+    {
+     "x": 22.75,
+     "y": 3.75,
+     "z": 3.75
+    },
+    {
+     "x": 22.75,
+     "y": 3.75,
+     "z": 3.25
+    },
+    {
+     "x": 22.75,
+     "y": 3.8167,
+     "z": 3.25
+    },
+    {
+     "x": 22.9833,
+     "y": 3.8167,
+     "z": 3.25
+    },
+    {
+     "x": 22.9833,
+     "y": 3.8167,
+     "z": 2.75
+    }
+   ],
+   "diameter": 0.3556,
+   "medium": "ballast_water",
+   "line_number": "350-BA-026"
+  },
+  {
+   "pipe_id": "p75",
+   "points": [
+    {
+     "x": 24.7798,
+     "y": -6.25,
+     "z": 3.75
+    },
+    {
+     "x": 25.25,
+     "y": -6.25,
+     "z": 3.75
+    },
+    {
+     "x": 25.25,
+     "y": -6.25,
+     "z": 3.25
+    },
+    {
+     "x": 25.25,
+     "y": -6.4093,
+     "z": 3.25
+    },
+    {
+     "x": 25.3333,
+     "y": -6.4093,
+     "z": 3.25
+    },
+    {
+     "x": 25.3333,
+     "y": -6.4093,
+     "z": 2.75
+    }
+   ],
+   "diameter": 0.3556,
+   "medium": "ballast_water",
+   "line_number": "350-BA-027"
+  },
+  {
+   "pipe_id": "p76",
+   "points": [
+    {
+     "x": 26.75,
+     "y": 6.8622,
+     "z": 3.75
+    },
+    {
+     "x": 26.75,
+     "y": 7.75,
+     "z": 3.75
+    },
+    {
+     "x": 25.25,
+     "y": 7.75,
+     "z": 3.75
+    },
+    {
+     "x": 25.25,
+     "y": 7.75,
+     "z": 3.25
+    },
+    {
+     "x": 25.25,
+     "y": 7.8177,
+     "z": 3.25
+    },
+    {
+     "x": 25.3333,
+     "y": 7.8177,
+     "z": 3.25
+    },
+    {
+     "x": 25.3333,
+     "y": 7.8177,
+     "z": 2.75
+    }
+   ],
+   "diameter": 0.3556,
+   "medium": "ballast_water",
+   "line_number": "350-BA-028"
+  },
+  {
+   "pipe_id": "p77",
+   "points": [
+    {
+     "x": 28.5883,
+     "y": -6.25,
+     "z": 3.75
+    },
+    {
+     "x": 27.75,
+     "y": -6.25,
+     "z": 3.75
+    },
+    {
+     "x": 27.75,
+     "y": -6.25,
+     "z": 3.25
+    },
+    {
+     "x": 27.75,
+     "y": -6.4093,
+     "z": 3.25
+    },
+    {
+     "x": 27.9843,
+     "y": -6.4093,
+     "z": 3.25
+    },
+    {
+     "x": 27.9843,
+     "y": -6.4093,
+     "z": 2.75
+    }
+   ],
+   "diameter": 0.3556,
+   "medium": "ballast_water",
+   "line_number": "350-BA-029"
+  },
+  {
+   "pipe_id": "p78",
+   "points": [
+    {
+     "x": 32.25,
+     "y": 3.5373,
+     "z": 3.75
+    },
+    {
+     "x": 32.25,
+     "y": 3.75,
+     "z": 3.75
+    },
+    {
+     "x": 34.25,
+     "y": 3.75,
+     "z": 3.75
+    },
+    {
+     "x": 34.25,
+     "y": 3.75,
+     "z": 3.25
+    },
+    {
+     "x": 34.25,
+     "y": 3.8167,
+     "z": 3.25
+    },
+    {
+     "x": 34.1639,
+     "y": 3.8167,
+     "z": 3.25
+    },
+    {
+     "x": 34.1639,
+     "y": 3.8167,
+     "z": 2.75
+    }
+   ],
+   "diameter": 0.3556,
+   "medium": "ballast_water",
+   "line_number": "350-BA-030"
+  },
+  {
+   "pipe_id": "p79",
+   "points": [
+    {
+     "x": 17.226,
+     "y": -9.7544,
+     "z": 3.8
+    },
+    {
+     "x": 17.226,
+     "y": -10.0544,
+     "z": 3.8
+    },
+    {
+     "x": 17.226,
+     "y": -10.0544,
+     "z": 4.35
+    }
+   ],
+   "diameter": 0.0217,
+   "medium": "ballast_water",
+   "line_number": null
+  },
+  {
+   "pipe_id": "p80",
+   "points": [
+    {
+     "x": 25.3326,
+     "y": -10.1093,
+     "z": 2.75
+    },
+    {
+     "x": 25.3326,
+     "y": -10.1093,
+     "z": 3.3
+    }
+   ],
+   "diameter": 0.0217,
+   "medium": "ballast_water",
+   "line_number": null
+  },
+  {
+   "pipe_id": "p81",
+   "points": [
+    {
+     "x": 32.0374,
+     "y": 3.8167,
+     "z": 2.75
+    },
+    {
+     "x": 32.0374,
+     "y": 3.8167,
+     "z": 3.3
+    }
+   ],
+   "diameter": 0.0217,
+   "medium": "ballast_water",
+   "line_number": null
+  },
+  {
+   "pipe_id": "p82",
+   "points": [
+    {
+     "x": 30.4278,
+     "y": -10.1093,
+     "z": 2.75
+    },
+    {
+     "x": 30.4278,
+     "y": -10.1093,
+     "z": 3.3
+    }
+   ],
+   "diameter": 0.0217,
+   "medium": "ballast_water",
+   "line_number": null
+  },
+  {
+   "pipe_id": "p83",
+   "points": [
+    {
+     "x": 25.8242,
+     "y": 7.8177,
+     "z": 2.75
+    },
+    {
+     "x": 25.8242,
+     "y": 7.8177,
+     "z": 3.3
+    }
+   ],
+   "diameter": 0.0217,
+   "medium": "ballast_water",
+   "line_number": null
+  }
+ ],
+ "notes": [
+  "3D arrangement inferred from a P&ID (which has no spatial data): a plausible engine-room layout for visualisation, not a survey or a design",
+  "engine room envelope is a heuristic for a large container ship: ~38 m ER length, ~34 m usable breadth, D ~ 26 m (ship type 24,000 TEU CONTAINER CARRIER); not a survey",
+  "plan: heuristic arrangement from marine rules of thumb and the drawing position (bow right, port top)",
+  "planner: heuristic; items by source: heuristic 16",
+  "solver: ok 16; unsatisfied relations 0; covered nozzles 0",
+  "chain p13: no path clear of other pipes / inline items / terminals; routed with them as soft costs (may touch or cross them)",
+  "chain p41: no path clear of other pipes / inline items / terminals; routed with them as soft costs (may touch or cross them)",
+  "router: 60 chains (16 stubs), A* 44 (widened 8, soft obstacles 2, re-routed for inline items 0), Manhattan fallback 0, segments through equipment 0, pipe/inline-item clashes 2, pipe-pipe clashes 1 (pipes sharing no node), inline item overlaps 0, items outside the room 0, total pipe length 247.9 m, grid 0.5 m, 0.74 s",
+  "router audit: pipe/item clashes e.g. p13 through o6; p33 through o18",
+  "router audit: pipe/pipe clashes e.g. p23 x p41",
+  "layout built in 0.77 s"
+ ],
+ "llm": {
+  "backend": "none",
+  "model": null,
+  "calls": 0,
+  "prompt_tokens": 0,
+  "completion_tokens": 0,
+  "seconds": 0.0,
+  "errors": []
+ }
+}

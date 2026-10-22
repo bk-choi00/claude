@@ -1,0 +1,22 @@
+﻿line_number,size,medium,system_code,spec,from,to,valves_fittings,runs,length_pt,pipe_ids,page
+125-FO-001,125A,fuel_oil,FO,,NO.1 H.F.O. STOR. TK (P),tee j1 on 125-FO-005,FO001V,2,184.9,p1 p2,0
+125-FO-002,125A,fuel_oil,FO,,NO.1 H.F.O. STOR. TK (S),tee j6 on 125-FO-014,FO002V,2,133.1,p18 p19,0
+125-FO-004,125A,fuel_oil,FO,,NO.2 H.F.O. STOR. TK (P),tee j8 on 125-FO-014,FO003V,2,133.1,p26 p27,0
+125-FO-005,125A,fuel_oil,FO,,tee j1 on 125-FO-001,strainer:o7,FO004V,2,107.8,p5 p7,0
+125-FO-006,125A,fuel_oil,FO,,strainer:o7,NO.1 H.F.O. TRANSFER PUMP,,3,142.8,p8 p10 p11,0
+125-FO-007,125A,fuel_oil,FO,,NO.1 H.F.O. TRANSFER PUMP,tee j7 on 125-FO-011,FO005V; check_valve:o8,5,248.8,p12 p13 p14 p16 p17,0
+125-FO-009,125A,fuel_oil,FO,,tee j8 on 125-FO-014,strainer:o21,FO006V,2,126.9,p28 p29,0
+125-FO-010,125A,fuel_oil,FO,,strainer:o21,NO.2 H.F.O. TRANSFER PUMP,,3,142.8,p30 p32 p33,0
+125-FO-011,125A,fuel_oil,FO,,NO.2 H.F.O. TRANSFER PUMP,tee j7 on 125-FO-007,FO008V; FO007V,5,317.1,p22 p34 p35 p36 p38,0
+125-FO-013,125A,fuel_oil,FO,,tee j7 on 125-FO-007,TO H.F.O. SETT. TKS,,1,82.9,p23,0
+125-FO-014,125A,fuel_oil,FO,,tee j1 on 125-FO-001,tee j8 on 125-FO-004,,2,135.2,p6 p20,0
+125-FO-015,125A,fuel_oil,FO,,FROM H.F.O. TRANSFER PUMPS,tee j13 on 65-FO-016,,1,165.4,p39,1
+125-FO-020,125A,fuel_oil,FO,,tee j15 on 125-FO-021,TO F.O. PURIFIERS,FO013V,3,358.8,p45 p47 p51,1
+125-FO-021,125A,fuel_oil,FO,,tee j13 on 125-FO-015,tee j15 on 65-FO-018,,2,379.8,p41 p43,1
+25-FO-008,25A,fuel_oil,FO,,tee j3 on 125-FO-006,tee j4 on 125-FO-007,safety_valve:o3,2,189.2,p3 p4,0
+25-FO-012,25A,fuel_oil,FO,,tee j10 on 125-FO-010,tee j11 on 125-FO-011,FO009V,2,189.2,p24 p25,0
+65-FO-016,65A,fuel_oil,FO,,tee j13 on 125-FO-015,TO NO.1 H.F.O. STOR. TK (S),FO014V,2,125.4,p40 p52,1
+65-FO-017,65A,fuel_oil,FO,,tee j14 on 125-FO-021,NO.1 H.F.O. SETT. TK,FO010V,2,125.4,p42 p48,1
+65-FO-018,65A,fuel_oil,FO,,tee j15 on 125-FO-021,NO.2 H.F.O. SETT. TK,FO011V,2,125.4,p44 p49,1
+65-FO-019,65A,fuel_oil,FO,,tee j16 on 125-FO-020,M.D.O. SERV. TK,FO012V,2,125.4,p46 p50,1
+,,fuel_oil,,,SH.2,NO.1 H.F.O. STOR. TK (S),,1,16.5,p21,0

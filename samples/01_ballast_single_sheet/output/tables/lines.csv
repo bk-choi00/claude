@@ -1,0 +1,26 @@
+﻿line_number,size,medium,system_code,spec,from,to,valves_fittings,runs,length_pt,pipe_ids,page
+350-BA-025,350A,ballast_water,BA,,tee j21 on 450-BA-023,F.P.TK,BA023V,2,115.9,p60 p73,0
+350-BA-026,350A,ballast_water,BA,,tee j22 on 450-BA-032,NO.1 W.B.TK (P),BA024V,2,115.9,p62 p74,0
+350-BA-027,350A,ballast_water,BA,,tee j23 on 450-BA-032,NO.1 W.B.TK (S),BA025V,2,115.9,p64 p75,0
+350-BA-028,350A,ballast_water,BA,,tee j24 on 450-BA-032,NO.2 W.B.TK (P),BA026V,2,115.9,p66 p76,0
+350-BA-029,350A,ballast_water,BA,,tee j25 on 450-BA-031,NO.2 W.B.TK (S),BA027V,2,115.9,p68 p77,0
+350-BA-030,350A,ballast_water,BA,,tee j26 on 450-BA-031,NO.3 W.B.TK (P),BA028V,2,115.9,p70 p78,0
+450-BA-011,450A,ballast_water,BA,,HIGH SEA CHEST,tee j5 on 450-BA-014,BA011V,2,161.0,p14 p15,0
+450-BA-012,450A,ballast_water,BA,,LOW SEA CHEST,tee j6 on 450-BA-033,BA012V,2,159.4,p20 p21,0
+450-BA-013,450A,ballast_water,BA,,FROM DEBALLAST MAIN,tee j12 on 450-BA-018,BA013V,2,125.6,p34 p35,0
+450-BA-014,450A,ballast_water,BA,,tee j5 on 450-BA-011,NO.1 BALLAST PUMP,BA014V,4,178.4,p9 p10 p12 p13,0
+450-BA-015,450A,ballast_water,BA,,NO.1 BALLAST PUMP,tee j9 on 450-BA-017,BA016V; BA015V,5,428.3,p3 p4 p5 p6 p7,0
+450-BA-016,450A,ballast_water,BA,,tee j10 on 450-BA-033,NO.2 BALLAST PUMP,BA017V,3,162.2,p30 p32 p33,0
+450-BA-017,450A,ballast_water,BA,,NO.2 BALLAST PUMP,tee j9 on 450-BA-015,BA018V; check_valve:o16,5,252.9,p23 p24 p25 p26 p27,0
+450-BA-018,450A,ballast_water,BA,,tee j10 on 450-BA-033,NO.3 BALLAST PUMP,BA019V,4,314.6,p31 p36 p46 p47,0
+450-BA-019,450A,ballast_water,BA,,NO.3 BALLAST PUMP,tee j15 on 450-BA-034,BA020V; check_valve:o26,5,252.9,p40 p41 p42 p43 p44,0
+450-BA-020,450A,ballast_water,BA,,NO.1 BWTS FILTER,tee j15 on 450-BA-034,,2,1146.9,p39 p50,0
+450-BA-021,450A,ballast_water,BA,,NO.1 BWTS FILTER,B.W.T. UNIT,,1,74.6,p52,0
+450-BA-022,450A,ballast_water,BA,,B.W.T. UNIT,flow_meter:o35,,3,139.7,p54 p55 p56,0
+450-BA-023,450A,ballast_water,BA,,flow_meter:o35,tee j21 on 350-BA-025,BA021V,3,249.4,p57 p58 p59,0
+450-BA-024,450A,ballast_water,BA,,tee j17 on 450-BA-020,tee j18 on 450-BA-022,BA022V,2,285.8,p51 p53,0
+450-BA-031,450A,ballast_water,BA,,tee j24 on 450-BA-032,OVERBOARD,BA029V,4,500.2,p67 p69 p71 p72,0
+450-BA-032,450A,ballast_water,BA,,tee j21 on 450-BA-023,tee j24 on 350-BA-028,,3,409.8,p61 p63 p65,0
+450-BA-033,450A,ballast_water,BA,,tee j5 on 450-BA-014,tee j10 on 450-BA-016,,2,159.2,p16 p22,0
+450-BA-034,450A,ballast_water,BA,,tee j9 on 450-BA-015,tee j15 on 450-BA-020,,1,152.4,p28,0
+50-BA-035,50A,ballast_water,BA,,tee j3 on 450-BA-014,TO BILGE WELL,ball_valve:o9,2,343.1,p11 p17,0
