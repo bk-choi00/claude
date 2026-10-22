@@ -37,6 +37,7 @@ library classes (gate vs ball valve, check vs SDNR valve) by clear margins.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from dataclasses import dataclass
 from typing import Optional, Sequence
@@ -244,8 +245,37 @@ class TemplateLibrary:
     def __init__(self, specs: Optional[Sequence[SymbolSpec]] = None):
         self.specs = list(specs if specs is not None else all_symbols())
         self.variants: list[Variant] = []
+        self.n_extra = 0  # leading variants added by :meth:`extended` (templates learned for one document)
+        self._keys: list[tuple] = []  # dedupe key per variant
+        self._add_specs(self.specs, set())
+        self._build_arrays()
+
+    @classmethod
+    def extended(cls, extra: Sequence[SymbolSpec], base: Optional["TemplateLibrary"] = None) -> "TemplateLibrary":
+        """``base`` (default: the cached library) with the variants of ``extra`` in front (they win
+        ties), without rebuilding the base variants; used for templates learned from a drawing's
+        legend (:mod:`shippid.extract.legend`)."""
+        base = base if base is not None else get_library()
+        lib = cls.__new__(cls)
+        lib.specs = list(extra) + list(base.specs)
+        lib.variants = []
+        lib._keys = []
         seen: set = set()
-        for spec in self.specs:
+        lib._add_specs(extra, seen)
+        lib.n_extra = len(lib.variants)
+        grids: list[Optional[np.ndarray]] = [None] * lib.n_extra
+        for v, key in zip(base.variants, base._keys):
+            if key in seen:
+                continue
+            seen.add(key)
+            lib.variants.append(dataclasses.replace(v, idx=len(lib.variants)))
+            lib._keys.append(key)
+            grids.append(base.grid[v.idx])
+        lib._build_arrays(grids)
+        return lib
+
+    def _add_specs(self, specs: Sequence[SymbolSpec], seen: set) -> None:
+        for spec in specs:
             versions = [(spec, False)]
             stripped = _strip_port_stubs(spec)
             if len(stripped) != len(spec.prims) and stripped:
@@ -268,7 +298,7 @@ class TemplateLibrary:
                             seen.add(sig)
                             v.idx = len(self.variants)
                             self.variants.append(v)
-        self._build_arrays()
+                            self._keys.append(sig)
 
     @staticmethod
     def _make(vspec: SymbolSpec, rot: int, mir: bool, act: ActuatorType, stripped: bool, orig: SymbolSpec) -> Optional[Variant]:
@@ -301,7 +331,8 @@ class TemplateLibrary:
         v.fill_tree = cKDTree(fill_pts) if len(fill_pts) else None
         return v
 
-    def _build_arrays(self) -> None:
+    def _build_arrays(self, grids: Optional[Sequence[Optional[np.ndarray]]] = None) -> None:
+        """Vectorised data of the coarse pass; ``grids``: distance grids already computed per variant."""
         V = len(self.variants)
         self.W = np.array([v.w for v in self.variants])
         self.H = np.array([v.h for v in self.variants])
@@ -321,8 +352,8 @@ class TemplateLibrary:
         E = 1.0 + 2 * MARGIN
         self.grid = np.zeros((V, GRID, GRID), dtype=np.float32)
         for v in self.variants:
-            rel = v.pts / v.D
-            self.grid[v.idx] = _dt_grid(rel, E)
+            pre = grids[v.idx] if grids is not None else None
+            self.grid[v.idx] = pre if pre is not None else _dt_grid(v.pts / v.D, E)
 
     def __len__(self) -> int:
         return len(self.variants)

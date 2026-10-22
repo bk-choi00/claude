@@ -51,8 +51,21 @@ from ..model import (
 from ..pdf.reader import PageContent, open_pdf, read_page
 from ..symbols import category_of, get_symbol
 from .candidates import Candidate, group_candidates
+from .legend import (
+    LEGEND_TIE,
+    LegendBook,
+    PageGeometry,
+    find_legends,
+    heading_lines,
+    is_learned_variant,
+    name_stub_ports,
+    page_has_heading,
+    page_lines,
+    prepare_page,
+)
+from .legend import rerank as legend_rerank
 from .pipes import MLine, Separation, separate
-from .primitives import PrimSet, bbox_dist, bbox_union, estimate_unit, point_prim_dist, point_seg_dist
+from .primitives import PrimSet, bbox_dist, bbox_inside, bbox_union, estimate_unit, point_prim_dist, point_seg_dist
 from .regions import Regions, detect_regions
 from .symbols_match import (
     CandidateShape,
@@ -88,6 +101,7 @@ class ExtractOptions:
     # on dense sheets, random clutter would use ~10x more. The search stops when the budget is spent.
     propagate_line_numbers: bool = True  # unlabelled runs take the nearest line number along the line
     keep_legend_symbols: bool = False
+    learn_legends: bool = True  # extract_pdf: symbol templates learned from the document's legends
 
 
 class IdAllocator:
@@ -162,10 +176,13 @@ class _Matcher:
     pipe_ends: Optional[np.ndarray] = None  # (n, 2) end points of pipe lines
     tol: float = 2.5  # snap tolerance (points)
     group_units: float = 0.12
+    pipe_segs: Optional[np.ndarray] = None  # (n, 4) pipe lines (legend templates with stripped stubs check them)
 
     def detect(self, prim_ids: Sequence[int]) -> Detection:
         cs = _shape_for(self.ps, prim_ids)
         res = match_candidate(cs, self.lib, self.unit, cache=self.cache, size_prior=self.prior)
+        if self.lib.n_extra:  # templates learned from the legend: prefer them, check stripped stubs
+            res = legend_rerank(res, self.lib, self.pipe_segs, self.tol)
         return Detection(sorted(prim_ids), cs, res)
 
     def piped(self, prim_ids: Sequence[int]) -> bool:
@@ -205,9 +222,10 @@ def classify_candidates(ps: PrimSet, cands: Sequence[Candidate], unit: float, op
     so stretchable equipment drawn implausibly small is penalised; ``pipes``: the pipe
     lines found by stroke separation; ``stats`` receives bookkeeping (budget use)."""
     ends = np.array([pt for ml in pipes for pt in ml.endpoints()], dtype=float).reshape(-1, 2)
+    segs = np.array([(ml.x0, ml.y0, ml.x1, ml.y1) for ml in pipes], dtype=float).reshape(-1, 4)
     budget = max(100.0, opts.decompose_budget * len(cands))
     m = _Matcher(ps, lib or get_library(), unit, cache if cache is not None else MatchCache(), opts.accept_score,
-                 size_prior, budget, pipe_ends=ends, tol=tol, group_units=opts.group_units)
+                 size_prior, budget, pipe_ends=ends, tol=tol, group_units=opts.group_units, pipe_segs=segs)
     accept = m.accept
     dets: list[Detection] = []
     for c in cands:
@@ -535,6 +553,8 @@ def _size_prior(dets: list[Detection], accept: float) -> None:
             return r.score * (0.9 + 0.1 * math.exp(-z * z / (2 * 0.6 ** 2)))
         ranked = sorted(d.results, key=lambda r: -adj(r))
         top = d.results[0]
+        if is_learned_variant(top.variant) and top.score >= ranked[0].score - LEGEND_TIE:
+            continue  # the drawing's legend decided between look-alikes (its templates have their own size)
         if ranked[0].variant.cls != top.variant.cls and ranked[0].score >= top.score - 0.03:
             # switch class only; keep the canonical orientation chosen by the matcher
             winner = ranked[0].variant.cls
@@ -688,14 +708,27 @@ class _Stage:
 
 
 def _analyse(pc: PageContent, lines: list[TextLine], cfg: Config, opts: ExtractOptions, lib: TemplateLibrary,
-             cache: MatchCache, unit: Optional[float], timing: dict[str, float], anchored: bool = False) -> _Stage:
-    """Regions, stroke separation and symbol classification for one symbol unit."""
+             cache: MatchCache, unit: Optional[float], timing: dict[str, float], anchored: bool = False,
+             legend_boxes: Sequence[BBox4] = (), geometry: Optional[PageGeometry] = None) -> _Stage:
+    """Regions, stroke separation and symbol classification for one symbol unit. ``legend_boxes``:
+    legend regions found by :func:`shippid.extract.legend.find_legends` (also headings such as
+    '범례' the region finder does not know) -- excluded like the region finder's legends;
+    ``geometry``: the page as prepared for legend finding (the same first steps, reused once)."""
     tol = cfg.snap_tol
     t = time.perf_counter()
-    ps = PrimSet.from_page(pc)
-    _mark_text_strokes(ps, lines)
-    unit0 = unit or estimate_unit(ps.prims, [p.id for p in ps.prims if p.role != "text"], max(0.6, 0.5 * tol))
-    regions = detect_regions(ps, lines, pc.width, pc.height, tol, unit0)
+    if geometry is not None and unit is None and geometry.lines is lines and geometry.tol == tol:
+        ps, unit0, regions = geometry.ps, geometry.unit, geometry.regions
+    else:
+        ps = PrimSet.from_page(pc)
+        _mark_text_strokes(ps, lines)
+        unit0 = unit or estimate_unit(ps.prims, [p.id for p in ps.prims if p.role != "text"], max(0.6, 0.5 * tol))
+        regions = detect_regions(ps, lines, pc.width, pc.height, tol, unit0)
+    for box in legend_boxes:
+        if not any(bbox_inside(box, b, tol) for b in regions.legends):
+            regions.legends.append(tuple(box))
+            for p in ps.prims:
+                if p.role == "" and bbox_inside(p.bbox, box, tol):
+                    p.role = "excluded"
     if unit is None:
         free_ids = [p.id for p in ps.prims if p.role == ""]
         unit = estimate_unit(ps.prims, free_ids, max(0.6, 0.5 * tol), default=unit0)
@@ -837,8 +870,13 @@ def _valve_unit(dets: Sequence[Detection], min_n: int = 3) -> Optional[float]:
 
 def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids: Optional[IdAllocator] = None,
                  options: Optional[ExtractOptions] = None, cache: Optional[MatchCache] = None,
-                 content: Optional[PageContent] = None) -> PIDDocument:
-    """Extract one PyMuPDF page into a single-page :class:`PIDDocument`."""
+                 content: Optional[PageContent] = None, legend: Optional[LegendBook] = None,
+                 geometry: Optional[PageGeometry] = None) -> PIDDocument:
+    """Extract one PyMuPDF page into a single-page :class:`PIDDocument`. ``legend``: what was learned
+    from the document's legends (:class:`shippid.extract.legend.LegendBook`); its templates are
+    matched alongside the built-in library (a ``cache`` must belong to that combined library).
+    ``geometry``: this page as prepared by :func:`shippid.extract.legend.prepare_page` (reused,
+    not recomputed; it must not be used for anything else afterwards)."""
     cfg = config or Config()
     opts = options or ExtractOptions()
     ids = ids or IdAllocator()
@@ -846,7 +884,9 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
     timing: dict[str, float] = {}
     t0 = time.perf_counter()
 
-    pc = content or read_page(page)
+    if geometry is not None and content is not None and geometry.pc is not content:
+        geometry = None  # prepared from another reading of the page
+    pc = content or (geometry.pc if geometry is not None else None) or read_page(page)
     timing["read"] = time.perf_counter() - t0
     doc = PIDDocument(source=str(getattr(getattr(page, "parent", None), "name", "") or ""))
     doc.pages.append(PageInfo(index=page_index, width=pc.width, height=pc.height, rotation=pc.rotation))
@@ -866,19 +906,23 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
         return doc
 
     tol = cfg.snap_tol
-    lib = get_library()
-    rules = [(s.x0, s.y0, s.x1, s.y1) for s in pc.segments if s.curve < 0 and s.length >= 2.0]
-    lines = build_lines(pc.words, separators=rules)
+    lib = (legend.library if legend is not None else None) or get_library()
+    leg_boxes = legend.regions(page_index) if legend is not None else []
+    if geometry is not None:
+        lines = geometry.lines
+    else:
+        rules = [(s.x0, s.y0, s.x1, s.y1) for s in pc.segments if s.curve < 0 and s.length >= 2.0]
+        lines = build_lines(pc.words, separators=rules)
     page_meta["annotation_chars"] = pc.n_annot_chars
     page_meta["tessellated_arcs"] = pc.n_arcs
     page_meta["text_sources"] = {s: sum(1 for t in lines if t.source == s) for s in ("text", "hidden", "annotation")}
-    st = _analyse(pc, lines, cfg, opts, lib, cache, None, timing)
+    st = _analyse(pc, lines, cfg, opts, lib, cache, None, timing, legend_boxes=leg_boxes, geometry=geometry)
     ref = _valve_unit(st.dets)
     if ref is not None and abs(ref / st.unit - 1.0) > 0.15:
         # the first estimate (median size of symbol-only stroke clusters) is biased by the mix of
         # symbols on the sheet; matched valve scales are the reliable symbol unit -> redo with it
         log.debug("page %d: symbol unit %.2f -> %.2f (from matched valves)", page_index, st.unit, ref)
-        st = _analyse(pc, lines, cfg, opts, lib, cache, ref, timing, anchored=True)
+        st = _analyse(pc, lines, cfg, opts, lib, cache, ref, timing, anchored=True, legend_boxes=leg_boxes)
     elif not st.anchored:
         # too few repeated valve drawings to probe the unit: one or two confidently matched
         # valves still anchor it, and the size prior of stretchable equipment then applies
@@ -886,7 +930,7 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
         if few is not None and abs(few / st.unit - 1.0) <= 0.15:  # same unit: only the classification changes
             st = _classify_stage(dataclasses.replace(st, anchored=True), cfg, opts, lib, cache, timing)
         elif few is not None:
-            st = _analyse(pc, lines, cfg, opts, lib, cache, few, timing, anchored=True)
+            st = _analyse(pc, lines, cfg, opts, lib, cache, few, timing, anchored=True, legend_boxes=leg_boxes)
     ps, regions, sep, cands, dets, diag_lines, unit = st.ps, st.regions, st.sep, st.cands, st.dets, st.diag_lines, st.unit
 
     # ---- network
@@ -900,6 +944,8 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
                            is_valve=spec is not None and spec.category == Category.VALVE))
     pipe_lines = sep.pipe_lines + diag_lines
     net = build_network(pipe_lines, bodies, sep.dots, unit, tol)
+    if legend is not None:  # a learned stub merged into its pipe: the attachment takes the stub's port name
+        name_stub_ports(net, [(k, d.best) for k, d in enumerate(dets) if d.cls != SymbolClass.UNKNOWN and d.best], tol)
     review: dict[int, list[str]] = defaultdict(list)  # calibration notes per detection (confidence lowered)
     for k, d in enumerate(dets):
         b = d.best
@@ -951,6 +997,18 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
             attrs["stretch"] = [round(best.sx / best.scale, 3), round(best.sy / best.scale, 3)]
         if review.get(k):
             attrs["calibration"] = review[k]  # why the confidence is below the review threshold
+        actuator = best.variant.actuator if (accepted and best and category == Category.VALVE) else ActuatorType.NONE
+        if legend is not None and best is not None:
+            if accepted:
+                tpl = legend.template_for(best.variant)
+                if tpl:
+                    attrs["template"] = tpl  # learned from / confirmed by the drawing's legend
+                if category == Category.VALVE:
+                    actuator = legend.actuator_for(best.variant, actuator)
+            else:
+                hit = legend.describe_unknown(d.shape)
+                if hit:
+                    attrs["legend"] = hit  # drawn like a legend row whose description names no known class
         obj = PIDObject(
             id=obj_ids[k],
             cls=d.cls,
@@ -959,7 +1017,7 @@ def extract_page(page, page_index: int = 0, config: Optional[Config] = None, ids
             page=page_index,
             rotation=best.variant.rotation if (accepted and best) else 0,
             mirrored=bool(best.variant.mirrored) if (accepted and best) else False,
-            actuator=best.variant.actuator if (accepted and best and category == Category.VALVE) else ActuatorType.NONE,
+            actuator=actuator,
             ports=[Port(name=n, position=Point(x=x, y=y), direction=_ports_dir(dv)) for n, (x, y), dv in net.ports.get(k, [])],
             attributes=attrs,
             confidence=round(float(min(1.0, max(0.0, d.score))), 4),
@@ -1384,23 +1442,78 @@ def _merge_info(infos: list[DrawingInfo]) -> DrawingInfo:
     return out
 
 
+def _learn_legends(pdf, page_list: Sequence[int], cfg: Config, contents: dict[int, PageContent],
+                   geoms: dict[int, PageGeometry]) -> Optional[LegendBook]:
+    """Legends of every page of the document. Selected pages are read once (their content is kept
+    in ``contents``, and the prepared geometry of pages with a legend heading in ``geoms``, for the
+    extraction); other pages are read only when their text has a legend heading word. None when the
+    document has no legend rows."""
+    legends = []
+    selected = set(page_list)
+    for idx in range(pdf.page_count):
+        page = pdf[idx]
+        if idx in selected:
+            pc = read_page(page)
+            contents[idx] = pc
+        else:
+            try:
+                if not page_has_heading(page.get_text("text")):
+                    continue
+            except Exception:  # pragma: no cover - a page whose text cannot be read is not a legend sheet
+                continue
+            pc = read_page(page)
+        if pc.empty or not pc.readable or not page_has_heading(pc):
+            continue
+        try:
+            lines = page_lines(pc)
+            if not heading_lines(lines):
+                continue
+            g = prepare_page(pc, cfg, lines)
+            if idx in selected:
+                geoms[idx] = g
+            legends.extend(find_legends(pc, idx, cfg, geometry=g))
+        except Exception:  # pragma: no cover - legend learning must never stop the extraction
+            log.exception("legend reading failed on page %d; built-in symbols only", idx)
+            geoms.pop(idx, None)
+    if not any(lg.rows for lg in legends):
+        return None
+    return LegendBook.learn(legends)
+
+
 def extract_pdf(path: str | Path, config: Optional[Config] = None, pages: Optional[Iterable[int]] = None,
                 options: Optional[ExtractOptions] = None) -> PIDDocument:
-    """Extract every (or the selected) page of a readable P&ID PDF."""
+    """Extract every (or the selected) page of a readable P&ID PDF.
+
+    With ``options.learn_legends`` (default) the legends of the document -- on the selected pages
+    or on any other page, e.g. a separate legend sheet -- are read first and their symbols are
+    matched alongside the built-in library for this document (:mod:`shippid.extract.legend`);
+    ``doc.meta["legend"]`` reports the rows, the learned templates and the unmapped rows."""
     cfg = config or Config()
+    opts = options or ExtractOptions()
     t0 = time.perf_counter()
     pdf = open_pdf(path)
     try:
         doc = PIDDocument(source=str(path))
         doc.meta["extractor"] = "vector"
         ids = IdAllocator()
-        cache = MatchCache(cfg.symbol_max_size)
         infos = []
         page_list = list(pages) if pages is not None else list(range(pdf.page_count))
         for idx in page_list:
             if idx < 0 or idx >= pdf.page_count:
                 raise IndexError(f"page {idx} out of range (document has {pdf.page_count} pages)")
-            part = extract_page(pdf[idx], idx, cfg, ids, options, cache)
+        contents: dict[int, PageContent] = {}
+        geoms: dict[int, PageGeometry] = {}
+        book: Optional[LegendBook] = None
+        if opts.learn_legends:
+            t1 = time.perf_counter()
+            book = _learn_legends(pdf, page_list, cfg, contents, geoms)
+            if book is not None:
+                doc.meta["legend"] = book.to_meta()
+                doc.meta["legend"]["seconds"] = round(time.perf_counter() - t1, 3)
+        cache = MatchCache(cfg.symbol_max_size)
+        for idx in page_list:
+            part = extract_page(pdf[idx], idx, cfg, ids, opts, cache, content=contents.pop(idx, None), legend=book,
+                                geometry=geoms.pop(idx, None))
             _merge_into(doc, part)
             infos.append(part.info)
         doc.info = _merge_info(infos)

@@ -86,13 +86,15 @@ def test_export_variants(variant, seed, tmp_path):
     variants = pytest.importorskip("shippid.datasets.variants")
     from shippid.analysis.gemma import GemmaAnalyzer
     from shippid.evaluate import evaluate_document, match_boxes
-    from shippid.extract.pipeline import extract_pdf
+    from shippid.extract.pipeline import ExtractOptions, extract_pdf
     from shippid.llm.base import LLMClient, MockBackend
 
     gt, pdf = variants.make_variant(seed, variant)
     path = tmp_path / f"{variant}_{seed}.pdf"
     path.write_bytes(pdf)
-    doc = extract_pdf(path)
+    # the yard_symbols calibration below is about symbol styles the extractor has not seen, i.e. without
+    # learning them from the drawing's legend (legend learning: tests/test_legend.py)
+    doc = extract_pdf(path, options=ExtractOptions(learn_legends=variant != "yard_symbols"))
     r = evaluate_document(doc, gt)
     assert r["detection"]["f1"] >= 0.99, r["detection"]
     assert r["connections"]["f1"] >= 0.99, r["connections"]
