@@ -48,11 +48,9 @@ def _config(args: argparse.Namespace) -> Config:
         "api_key": args.api_key, "cache_dir": args.llm_cache, "max_image_side": args.max_image_side,
     }
     cfg = load_config(args.config, **{k: v for k, v in overrides.items() if v is not None})
-    # Model ids differ per backend; pick the right default when only --llm was given.
-    if args.model is None and cfg.llm.backend == "gemini" and cfg.llm.model == "google/gemma-4-31B-it":
-        cfg.llm.model = "gemma-4-31b-it"
-    if args.model is None and cfg.llm.backend == "ollama" and cfg.llm.model == "google/gemma-4-31B-it":
-        cfg.llm.model = "gemma4:31b"
+    if args.base_url is not None:
+        # an explicit --base-url wins over the per-backend default endpoint (llm.factory)
+        cfg.llm.base_url_explicit = True  # type: ignore[attr-defined]
     return cfg
 
 
