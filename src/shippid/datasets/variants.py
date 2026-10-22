@@ -693,8 +693,8 @@ def _apply_text(ctx: _Ctx, rng: random.Random) -> None:
         _set_text(ctx, k, new_text, font, size, x0, y0)
         u = rng.random()
         op.mode = "char" if u < p_char else ("word" if u < p_char + p_word else "whole")
-        if rng.random() < p_hidden:
-            op.hidden_font = "helv"
+        if rng.random() < p_hidden:  # PDFSHX=2 style invisible copy (a CJK font where Latin-1 cannot encode it)
+            op.hidden_font = KOREA_FONT if any(ord(c) > 255 for c in new_text) else "helv"
         modes[op.mode] += 1
         fonts[font] += 1
     ctx.params["fragmented_text"] = {"families": fam, "p_mixed_font": round(p_mix, 3), "modes": dict(modes),
@@ -754,6 +754,14 @@ def _apply_through(ctx: _Ctx, rng: random.Random) -> None:
             return 1
         return None
 
+    def endpoint(paths: list[_Path], q: tuple[float, float]) -> tuple[_Path, tuple[float, float]]:
+        """The path of a pipe that ends at port ``q`` and its exact end point (``q`` if none does)."""
+        for path in paths:
+            e = end_at(path, q)
+            if e is not None:
+                return path, _seg_points(path.segs)[e]
+        return paths[0], q
+
     def style(p: _Path) -> tuple:
         return (round(p.width, 6), p.color, p.dashes, p.layer)
 
@@ -769,10 +777,8 @@ def _apply_through(ctx: _Ctx, rng: random.Random) -> None:
             merge[(ka, ea)] = (kb, eb)
             merge[(kb, eb)] = (ka, ea)
             continue
-        src = next((p for p in pa_ if end_at(p, pin) is not None), pa_[0])
-        a = _seg_points(src.segs)[end_at(src, pin) or 0] if end_at(src, pin) is not None else pin
-        dst = next((p for p in pb_ if end_at(p, pout) is not None), pb_[0])
-        b = _seg_points(dst.segs)[end_at(dst, pout) or 0] if end_at(dst, pout) is not None else pout
+        src, a = endpoint(pa_, pin)
+        _, b = endpoint(pb_, pout)
         standalone.append(_Path([("l", a[0], a[1], b[0], b[1])], src.width, src.color, None, src.dashes, False,
                                 src.layer, "through", None))
     merged_away: set[int] = set()
@@ -843,9 +849,7 @@ def _layer_key(op) -> str:
             return "pipe"
         return op.role if op.role in ("signal", "notes", "legend", "dim", "old", "construction") else "sheet"
     if isinstance(op, _Sym):
-        if op.role in ("legend", "old"):
-            return op.role
-        return op.role
+        return op.role  # "legend" | "old" | object category
     if isinstance(op, _Circ):
         return "pipe"
     role = op.role
@@ -1240,6 +1244,9 @@ def _render(ctx: _Ctx) -> bytes:
 
 def _finalize(ctx: _Ctx, components: list[str]) -> PIDDocument:
     doc = ctx.doc
+    hidden = sorted({op.gt for op in ctx.ops if isinstance(op, _Text) and op.gt is not None and op.hidden_font
+                     and op.gt not in ctx.drop_texts})
+    hidden_ids = [doc.texts[k].id for k in hidden]
     if ctx.drop_texts:
         keep = [t for k, t in enumerate(doc.texts) if k not in ctx.drop_texts]
         idmap = {t.id: f"t{k + 1}" for k, t in enumerate(keep)}
@@ -1250,6 +1257,9 @@ def _finalize(ctx: _Ctx, components: list[str]) -> PIDDocument:
         for p in doc.pipes:
             p.text_ids = [idmap[x] for x in p.text_ids if x in idmap]
         doc.texts = keep
+        hidden_ids = [idmap[x] for x in hidden_ids]
+    if hidden_ids:
+        ctx.params.setdefault("fragmented_text", {})["hidden_text_ids"] = hidden_ids
     o = ctx.opts
     f, (dx, dy) = o.scale, o.offset
     if abs(f - 1.0) > 1e-12 or dx or dy:

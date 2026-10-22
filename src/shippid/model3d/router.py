@@ -9,26 +9,32 @@
 2. Junction / hub positions: the drawing position mapped into the room (affine fit of drawing
    centre -> 3D centre over the placed equipment, falling back to the plain normalised mapping)
    blended with the positions of the nodes they connect to, at the elevation band of their line,
-   snapped to a free voxel. The node cell is a *terminal* cell (hard for chains not ending there),
+   spread apart where the inline items of a chain need a longer run than the distance between its
+   ends (or junctions crowd into neighbouring cells), and snapped to a free voxel that keeps those
+   runs. The node cell is a *terminal* cell (hard for chains not ending there),
    its six neighbours are reserved (a soft cost for them); a hub's body is registered as an
    obstacle right away. Every equipment nozzle used by a chain gets its own approach (nozzle ->
    stub along the face normal -> centre of a free cell, one cell per nozzle where possible) whose
-   cells are terminal cells as well.
+   cells are terminal cells as well; approaches of different nozzles are kept apart.
 3. Each chain is routed with orthogonal A* on a voxel grid (0.25-0.5 m): bend penalty, a cost for
    running away from the preferred elevation band of the medium / line, search bounded to a box
    around the endpoints (widened once), largest pipe size first (plan priority lines before
    everything), global time budget. Hard: equipment boxes inflated by OD/2 + clearance, the real
    bodies of inline items / hubs placed so far (mesh bounds incl. stems and actuators, vertical-run
    orientation) inflated likewise, other pipes within r1 + r2 + gap of their centre-line, other
-   chains' terminal cells. Pipes of chains sharing a terminal node are passable (soft) only next to
-   that terminal. Only when no such path exists are pipes / items / terminals turned into soft
+   chains' terminal cells. Pipes of chains sharing a terminal (the same junction / hub, or the same
+   nozzle) are passable at a high cost only next to that terminal; equipment cells next to a
+   terminal likewise. Only when no such path exists are pipes / items / terminals turned into soft
    costs (recorded in the notes); failures fall back to a Manhattan path through the elevation band.
 4. Right after a chain is routed its inline items are placed along the polyline in drawing order,
    near positions proportional to the drawn pipe lengths, on straight (preferably horizontal)
    segments, away from shared junctions, at the candidate position whose body stays clear of
    equipment, other pipes, other items and terminal approaches; bodies are clamped to the room.
-   They then become obstacles for the following chains, and the polyline is split back into one
-   :class:`PipeRoute3D` per original pipe id.
+   Chains carrying items pay a cost for running right under other pipes (stem / handwheel
+   headroom). If no clash-free spot exists the chain is ripped up and re-routed once with room
+   around it, or with a straight run of the needed length out of one terminal, whichever leaves
+   fewer clashes (noted). The bodies then become obstacles for the following chains, and the
+   polyline is split back into one :class:`PipeRoute3D` per original pipe id.
 5. Audit (reported in the notes): segments through equipment, pipe / inline-item clashes,
    pipe-pipe clashes between pipes that share no node, overlapping items, items outside the room.
 """
@@ -504,7 +510,6 @@ class RouteStats:
     widened: int = 0
     relaxed: int = 0
     retried: int = 0  # chains re-routed with room for their inline items
-    item_clash_chains: int = 0  # chains whose items could not be placed clear of everything
     fallback: int = 0
     stubs: int = 0
     seconds: float = 0.0
@@ -1636,7 +1641,7 @@ def route(doc: PIDDocument, placements: Sequence[Placement3D], room: EngineRoom,
                        default=0.0)
         if tb is None:
             stats.stubs += 1
-            sizes = [_inline_size(objs[i], od) for i, _, _ in ch.items]
+            sizes = item_sizes
             tip = max(sizes[-1]) / 2 if sizes and objs[ch.items[-1][0]].category == Category.INSTRUMENT else 0.0
             pts = _stub(ctx, cc, a, ta.normal, 0.3 + sum(s[0] for s in sizes) + 0.1 * len(sizes), od, tip)
         else:
@@ -1689,8 +1694,6 @@ def route(doc: PIDDocument, placements: Sequence[Placement3D], room: EngineRoom,
                 notes += extra + [f"{label}: re-routed {how} for its inline items (item clashes {before} -> {n_left})"]
             else:
                 notes += first_notes
-        if left:
-            stats.item_clash_chains += 1
         inline.extend(placed_items)
         cum = _cum(pts)
         cuts = [0.0]
