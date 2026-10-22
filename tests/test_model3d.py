@@ -847,6 +847,89 @@ def test_router_orthogonal_routes_per_pipe_and_inline_items(name):
 
 
 
+def _reference_astar(cost, start, goal, band_k, start_dir=6, bend=2.0, band_w=0.35, eps=1.25,
+                     max_expansions=120_000):
+    """The router's original dict-based A* (kept here as the reference for the flat-buffer version)."""
+    import heapq
+
+    dirs = ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
+    sx, sy, sz = cost.shape
+    flat = cost.ravel().tolist()
+    gi, gj, gk = goal
+    inf = float("inf")
+    best_g, parent = {}, {}
+    s_state = ((start[0] * sy + start[1]) * sz + start[2]) * 7 + start_dir
+    best_g[s_state] = 0.0
+    h0 = abs(start[0] - gi) + abs(start[1] - gj) + abs(start[2] - gk)
+    heap = [(eps * h0, h0, 0.0, start[0], start[1], start[2], start_dir)]
+    expansions, goal_state = 0, None
+    while heap:
+        f, h, g, i, j, k, d = heapq.heappop(heap)
+        state = ((i * sy + j) * sz + k) * 7 + d
+        if g > best_g.get(state, inf):
+            continue
+        if i == gi and j == gj and k == gk:
+            goal_state = state
+            break
+        expansions += 1
+        if expansions > max_expansions:
+            return None
+        band_pen = band_w * abs(k - band_k)
+        for nd, (di, dj, dk) in enumerate(dirs):
+            if d < 6 and nd == (d ^ 1):
+                continue
+            ni, nj, nk = i + di, j + dj, k + dk
+            if ni < 0 or nj < 0 or nk < 0 or ni >= sx or nj >= sy or nk >= sz:
+                continue
+            c = flat[(ni * sy + nj) * sz + nk]
+            if c < 0:
+                continue
+            ng = g + 1.0 + c + (bend if (d < 6 and nd != d) else 0.0) + (band_pen if dk == 0 else 0.0)
+            ns = ((ni * sy + nj) * sz + nk) * 7 + nd
+            if ng < best_g.get(ns, inf):
+                best_g[ns] = ng
+                parent[ns] = state
+                nh = abs(ni - gi) + abs(nj - gj) + abs(nk - gk)
+                heapq.heappush(heap, (ng + eps * nh, nh, ng, ni, nj, nk, nd))
+    if goal_state is None:
+        return None
+    cells, s = [], goal_state
+    while True:
+        c = s // 7
+        cells.append((c // (sz * sy), (c // sz) % sy, c % sz))
+        if s == s_state or s not in parent:
+            break
+        s = parent[s]
+    return cells[::-1]
+
+
+def test_astar_flat_buffers_match_the_reference_search():
+    """Regression (review: astar self-time 21.9 s on a 10-page set, 13.7M dict.get calls): the
+    flat-buffer A* must return exactly the reference search's path (same expansion order), on
+    random grids with walls, soft costs, every start direction and expansion limits."""
+    import numpy as np
+    from shippid.model3d.router import astar
+
+    rng = np.random.default_rng(3)
+    found = failed = 0
+    for trial in range(80):
+        shape = tuple(int(x) for x in rng.integers(4, 30, 3))
+        soft = rng.choice([0.0, 0.6, 6.0, 40.0], size=shape, p=[0.7, 0.15, 0.1, 0.05])
+        cost = np.where(rng.random(shape) < rng.uniform(0.0, 0.35), -1.0, soft)
+        free = np.argwhere(cost >= 0)
+        if len(free) < 2:
+            continue
+        s = tuple(int(x) for x in free[rng.integers(len(free))])
+        g = tuple(int(x) for x in free[rng.integers(len(free))])
+        kw = dict(start_dir=int(rng.integers(0, 7)), max_expansions=int(rng.choice([50, 2000, 100_000])))
+        band = int(rng.integers(0, shape[2]))
+        ref = _reference_astar(cost, s, g, band, **kw)
+        assert astar(cost, s, g, band, **kw) == ref, trial
+        found += ref is not None
+        failed += ref is None
+    assert found > 20 and failed > 5  # both outcomes covered
+
+
 def test_inline_body_clamped_to_room():
     """A 300A valve on a pipe running 0.25 m from the ship side would poke 0.06 m through the shell
     (reviewer: o144 y1 18.06 > 18.0); its body is reduced until it fits."""
